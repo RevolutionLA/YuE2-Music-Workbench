@@ -1,0 +1,16 @@
+{
+  "name": "dsh-profile-web",
+  "private": true,
+  "dependencies": {
+    "yue2-lab-plugin": "file:../../.."
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app"
+      ],
+      "patchReload": "live"
+    }
+  }
+}

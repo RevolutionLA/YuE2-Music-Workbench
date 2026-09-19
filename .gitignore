@@ -1,0 +1,114 @@
+# ===== 运行时/环境（不入库） =====
+py312/
+hf_download/
+cache/
+tmp/
+__pycache__/
+*.pyc
+
+# ===== 密钥/本地配置（绝不入库） =====
+secrets/local_env.bat
+*.env
+
+# ===== 看门狗/引擎运行时产物 =====
+_watchdog.pid
+watchdog.log
+_engine.log
+_dbg*.log
+
+# ===== 本机遗留脚本（历史启动方式，仅供参考，不入库） =====
+legacy_scripts/
+
+# ===== 中文报告类（本机体检/复盘，不入库） =====
+docs/体检报告_*.md
+
+# ===== 生成产物（不入库） =====
+output/
+results/
+history_data/
+voices/
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.pth
+*.onnx
+*.pyd
+*.bin
+*.index
+*.pt
+
+# ===== 运行时数据（不入库） =====
+data/
+
+# ===== RVC 换声/训练运行时产物（不入库） =====
+rvc/logs/
+rvc/trains/
+rvc/jobs/
+rvc/_manual*.log
+rvc/_manual_trace.log
+*.npy
+*.tfevents*
+
+# ===== 降噪模型权重等大文件（不入库，脚本自动下载） =====
+scripts/model_trained_on_dns3.tar
+
+# ===== 引擎/第三方大目录 =====
+cpp/
+
+# ===== 日志与临时文件 =====
+*.log
+server_err.txt
+server_out.txt
+_boot_test.log
+_stress*
+stress_results.json
+_tools_*
+_verify*
+verify_best.log
+_chat.json
+_cur.json
+_full.js
+_task_test.txt
+
+# ===== dsh 插件：依赖与运行时产物 =====
+dsh-plugin/node_modules/
+dsh-plugin/_dsh_home/
+# 但保留 profiles 里的挂载配置（插件装载的唯一定义处）
+!dsh-plugin/_dsh_home/
+dsh-plugin/_dsh_home/*
+!dsh-plugin/_dsh_home/profiles/
+dsh-plugin/_dsh_home/profiles/*
+!dsh-plugin/_dsh_home/profiles/web/
+!dsh-plugin/_dsh_home/profiles/headless/
+dsh-plugin/_dsh_home/profiles/web/*
+!dsh-plugin/_dsh_home/profiles/web/cordis.patch.yml
+!dsh-plugin/_dsh_home/profiles/web/cordis.yml
+!dsh-plugin/_dsh_home/profiles/web/package.json
+!dsh-plugin/_dsh_home/profiles/web/pnpm-workspace.yaml
+!dsh-plugin/_dsh_home/profiles/web/pnpm-lock.yaml
+dsh-plugin/_dsh_home/profiles/headless/*
+!dsh-plugin/_dsh_home/profiles/headless/cordis.patch.yml
+!dsh-plugin/_dsh_home/profiles/headless/cordis.yml
+!dsh-plugin/_dsh_home/profiles/headless/package.json
+!dsh-plugin/_dsh_home/profiles/headless/pnpm-workspace.yaml
+!dsh-plugin/_dsh_home/profiles/headless/pnpm-lock.yaml
+dsh-plugin/_dsh_web.log
+dsh-plugin/_gateway.log
+dsh-plugin/_restart_dsh_web.ps1
+dsh-plugin/_*.js
+dsh-plugin/_*.html
+dsh-plugin/_ck*.txt
+dsh-plugin/_hl_*.log
+dsh-plugin/package-lock.json
+_gw*.log
+sheetsage2-output/
+dsh-plugin/_edge_tmp/
+dsh-plugin/_cdp_*.mjs
+
+# ===== scripts 运行时杂音 =====
+scripts/__pycache__/
+scripts/bak/
+
+# ===== SheetSage2 大权重（不入库，运行时自动下载） =====
+checkpoints/model.safetensors

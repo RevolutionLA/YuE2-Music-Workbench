@@ -1,0 +1,2048 @@
+"""音乐工作台 - YuE2 音乐生成 Web 服务入口。
+
+在编译好的网关（main.cp312-win_amd64.pyd）之上扩展新路由：
+  * 模型切换（Q8_0 / Q4_K_M / 其它 GGUF 量化）
+  * 本地音色库（参考音频 + 参考文本）
+  * 参考音频 -> 歌词 的翻唱工作流（ASR）
+  * 模板 / 预设管理
+原有的音乐生成、health、presets 等接口全部保留。
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import base64
+import re
+import secrets
+import shutil
+import subprocess
+import threading
+import time
+from datetime import datetime
+from pathlib import Path
+
+# 本地回环直连，绕过系统代理（如 Clash/V2Ray 的 127.0.0.1:7890）。
+# 必须在 import main 之前设置：编译网关内部的 httpx 客户端默认 trust_env=True，
+# 走了系统代理会导致访问本地 audio.cpp 后端全部 502。
+for _pk in ("NO_PROXY", "no_proxy"):
+    _pv = os.environ.get(_pk, "")
+    if "127.0.0.1" not in _pv:
+        os.environ[_pk] = (_pv + "," if _pv else "") + "127.0.0.1,localhost,::1"
+
+import uvicorn
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+import httpx
+
+import main  # 编译网关
+from settings import settings
+import voices
+import asr
+import denoise
+
+router = APIRouter(prefix="/api")
+app = main.app  # 复用编译网关的 FastAPI 应用
+
+# 网关 7863 页面一律不自动弹出：用户入口统一是 3081 工作台（启动脚本负责打开）。
+# 不论双击 bat 还是看门狗自动重启网关，都不会再弹 7863 迷惑用户；7863 服务本身保留。
+main.settings.open_browser = False
+
+ROOT = Path(__file__).resolve().parent
+
+
+def _hide_engine_windows_loop() -> None:
+    """常驻线程：隐藏 audiocpp 引擎的控制台窗口。
+
+    编译网关（main.pyd）内部的 start_audiocpp 未带 CREATE_NO_WINDOW，
+    每次拉起引擎都会弹一个刷 ggml 日志的 CMD 窗口；pyd 无法修改，
+    这里周期性把标题含 audiocpp_server.exe 的可见窗口 SW_HIDE 兜底。
+    """
+    if os.name != "nt":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    SW_HIDE = 0
+    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    buf = ctypes.create_unicode_buffer(512)
+
+    def _on_window(hwnd, _lparam):
+        if user32.IsWindowVisible(hwnd):
+            user32.GetWindowTextW(hwnd, buf, 512)
+            if "audiocpp_server" in buf.value.lower():
+                user32.ShowWindow(hwnd, SW_HIDE)
+        return True
+
+    while True:
+        try:
+            user32.EnumWindows(enum_proc(_on_window), 0)
+        except Exception:
+            pass
+        time.sleep(0.5)  # 高频扫，窗口弹出后几乎立刻隐藏，肉眼无感
+
+
+threading.Thread(target=_hide_engine_windows_loop, daemon=True).start()
+
+MODEL_DIR = ROOT / "cpp" / "model"
+SERVER_JSON = ROOT / "cpp" / "server.json"
+AUDIOCPP_BIN = ROOT / settings.audiocpp_bin
+
+# 允许前端跨域访问（本地页面与接口同源，默认即可；此处为安全兜底）。
+# 本机使用：仅放行本机来源，杜绝任意网页经 CORS 打内网接口。
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:7863", "http://localhost:7863",
+        "http://127.0.0.1:3081", "http://localhost:3081",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# --------------------------------------------------------------------------- #
+# 模型切换
+# --------------------------------------------------------------------------- #
+_QUANT_MAP = {
+    "q8_0": "Q8_0（高精度 · 推荐质量）",
+    "q8_0_f16": "Q8_0+F16（最大精度）",
+    "bf16": "BF16（原始精度）",
+    "q4_k_m": "Q4_K_M（省显存 · 6GB卡首选）",
+    "q4_k_s": "Q4_K_S",
+    "q4_k": "Q4_K",
+    "q4_0": "Q4_0（轻量 · 6GB卡可跑）",
+    "q4_1": "Q4_1",
+    "q5_k_m": "Q5_K_M",
+    "q5_k_s": "Q5_K_S",
+    "q5_0": "Q5_0",
+    "q5_1": "Q5_1",
+    "q6_k": "Q6_K",
+    "q6_k_m": "Q6_K_M",
+    "q3_k_m": "Q3_K_M（极小显存）",
+    "q3_k": "Q3_K",
+    "q2_k": "Q2_K（最小体积）",
+}
+
+
+def _read_server_json() -> dict:
+    return json.loads(SERVER_JSON.read_text(encoding="utf-8"))
+
+
+def _write_server_json(cfg: dict) -> None:
+    SERVER_JSON.write_text(
+        json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def _quant_label(name: str) -> str:
+    base = name.lower().replace(".gguf", "").replace("yue2-", "").replace("yue-", "")
+    base = re.sub(r"^yue2?[-_]?3b?[-_]?", "", base)
+    for key, label in _QUANT_MAP.items():
+        if key in base:
+            return label
+    return name
+
+
+def available_models() -> list[dict]:
+    """扫描 cpp/model/ 下所有可用的 yue2 主模型（gguf，不含 vae）。
+
+    后端 audio.cpp 的路径规则（实测）：
+      * models[].path            相对后端工作目录 cpp\\ ，因此要带 "model/" 前缀
+      * session_options 里的 gguf  相对 path 所在目录解析，必须是纯文件名
+    """
+    items: list[dict] = []
+    for gguf in sorted(MODEL_DIR.rglob("*.gguf")):
+        if "vae" in gguf.name.lower():
+            continue
+        parent = gguf.parent
+        vae = next(
+            (p.name for p in parent.glob("*vae*.gguf")),
+            next((p.name for p in gguf.parent.glob("**/*vae*.gguf")), None),
+        )
+        rel = gguf.relative_to(MODEL_DIR).as_posix()
+        items.append(
+            {
+                "file": gguf.name,
+                "path": rel,
+                "server_path": "model/" + rel,          # 写入 server.json 的 path
+                "model_gguf": gguf.name,                # session_options：纯文件名
+                "size_gb": round(gguf.stat().st_size / 1024**3, 2),
+                "vae": vae,
+                "quant": _quant_label(gguf.name),
+            }
+        )
+    return items
+
+
+# 引擎模式持久化：cuda（默认）/ cpu 兜底。CPU 慢 5-10 倍但显存不足时必然能出结果。
+# 注意：不用引擎的 --min-free-memory-mb 守卫——它同时检查主机内存且预估极度悲观
+# （把 mmap 权重+最大 KV cache 全算满，12GB+），在 16GB 内存的机器上会拦掉所有加载。
+# 显存预检由 _gpu_free_mb()（nvidia-smi）完成，只看显存。
+_ENGINE_STATE = ROOT / "data" / "engine_state.json"
+_VRAM_HEADROOM_MB = 700   # 生成时显存需预留的余量（Q4 实测峰值约 4.6GB + 系统占用）
+
+
+def _engine_state_read() -> dict:
+    try:
+        return json.loads(_ENGINE_STATE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _engine_state_write(updates: dict) -> dict:
+    state = _engine_state_read()
+    state.update(updates)
+    _ENGINE_STATE.parent.mkdir(parents=True, exist_ok=True)
+    _ENGINE_STATE.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return state
+
+
+def backend_mode() -> str:
+    mode = _engine_state_read().get("backend", "cuda")
+    return mode if mode in ("cuda", "cpu") else "cuda"
+
+
+def _gpu_free_mb() -> int | None:
+    """查询 GPU 当前空闲显存（MiB）；查询失败返回 None（不拦截）。"""
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            text=True, timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),  # 侧栏轮询高频调用，必须隐藏窗口
+        )
+        return int(out.strip().splitlines()[0])
+    except Exception:
+        return None
+
+
+def _hide_engine_windows_once() -> None:
+    """立即隐藏所有 audiocpp 引擎控制台窗口（配合拉起引擎后调用）。"""
+    if os.name != "nt":
+        return
+
+    def _hide():
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+            buf = ctypes.create_unicode_buffer(512)
+
+            def _on_window(hwnd, _lparam):
+                user32.GetWindowTextW(hwnd, buf, 512)
+                if "audiocpp_server" in buf.value.lower():
+                    user32.ShowWindow(hwnd, 0)  # SW_HIDE
+                return True
+
+            # 引擎窗口创建需要一点时间，连续扫几轮确保覆盖
+            for _ in range(10):
+                user32.EnumWindows(enum_proc(_on_window), 0)
+                time.sleep(0.3)
+        except Exception:
+            pass
+
+    threading.Thread(target=_hide, daemon=True).start()
+
+
+def _restart_audiocpp(server_json_path: str, backend: str | None = None) -> None:
+    """杀掉当前 audio.cpp 服务进程，并按新配置重启。
+
+    cwd 必须是 cpp\\ ：后端以工作目录为基准解析模型相对路径。
+    backend 参数可临时覆盖本次启动的后端（cpu/cuda），不改变持久化模式。
+    """
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/IM", "audiocpp_server.exe", "/F"],
+            capture_output=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    else:
+        subprocess.run(["pkill", "-f", "audiocpp_server"], capture_output=True)
+    time.sleep(1.0)
+    exe = str(AUDIOCPP_BIN)
+    args = [exe, "--config", server_json_path]
+    mode = (backend or backend_mode()).lower()
+    if mode != "cuda":
+        args += ["--backend", mode]
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    workdir = str(AUDIOCPP_BIN.parent)
+    if creationflags:
+        subprocess.Popen(args, cwd=workdir, creationflags=creationflags)
+    else:
+        subprocess.Popen(args, cwd=workdir)
+    _hide_engine_windows_once()  # 引擎若被外部机制带出控制台窗口，立即压下
+
+
+@router.get("/models/list")
+def models_list():
+    return {"models": available_models()}
+
+
+@router.get("/models/current")
+def models_current():
+    """返回当前 server.json 生效的模型（相对 cpp/model 的路径，供前端下拉回显）。"""
+    try:
+        cfg = _read_server_json()
+        p = (cfg.get("models") or [{}])[0].get("path", "")
+    except Exception:
+        p = ""
+    p = (p or "").replace("\\", "/")
+    if p.startswith("model/"):
+        p = p[len("model/"):]
+    return {"path": p}
+
+
+# --------------------------------------------------------------------------- #
+# 引擎后端模式（cuda / cpu 兜底）
+# --------------------------------------------------------------------------- #
+@router.get("/backend/mode")
+def backend_mode_get():
+    ok, free = _vram_ok_for_gpu()
+    return {
+        "mode": backend_mode(),
+        "vram_free_mb": free,
+        "vram_ok": ok,
+        "headroom_mb": _VRAM_HEADROOM_MB,
+    }
+
+
+@router.post("/backend/mode")
+def backend_mode_set(payload: dict):
+    mode = (payload.get("mode") or "").strip().lower()
+    if mode not in ("cuda", "cpu"):
+        raise HTTPException(status_code=400, detail="mode must be cuda or cpu")
+    if mode == backend_mode():
+        return {"ok": True, "mode": mode, "message": f"引擎已是 {mode} 模式"}
+    _engine_state_write({"backend": mode})
+    _restart_audiocpp(str(SERVER_JSON))
+    return {
+        "ok": True,
+        "mode": mode,
+        "message": ("已切换 CPU 模式：显存不足也能出结果，但速度慢约 5-10 倍"
+                    if mode == "cpu" else "已切回 GPU（CUDA）模式"),
+    }
+
+
+# ---------- 谱面提取（SheetSage2 音频 → ABC 记谱，供"改词翻唱"工作流） ----------
+# 异步任务模式：真实歌曲转谱常超 1 分钟，超出 dsh 反代超时上限，
+# 因此提交后立即返回 job_id，前端轮询 /api/score/result 取结果。
+_SCORE_JOBS: dict[str, dict] = {}
+_SCORE_LOCK = threading.Lock()
+# 乐谱持久化：转谱结果落盘 data/scores/，刷新/重启不丢，可复用回填
+SCORES_DIR = ROOT / "data" / "scores"
+
+
+def _score_save(job_id: str, abc: str) -> dict:
+    """乐谱入库（JSON 文件），返回记录（含 id、时间、ABC）。"""
+    SCORES_DIR.mkdir(parents=True, exist_ok=True)
+    rec = {"id": job_id, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "abc": abc}
+    (SCORES_DIR / f"{job_id}.json").write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+    return rec
+
+
+@router.get("/score/status")
+def score_status():
+    """SheetSage2 就绪状态（权重/HF 缓存是否已下载），供前端决定是否显示入口。"""
+    import sheetsage_pt
+    try:
+        ready = bool(sheetsage_pt.mert_cached() or sheetsage_pt.resolve_checkpoint().is_dir())
+    except FileNotFoundError:
+        ready = False  # 权重未下载是新装环境常态，返回未就绪而非 500
+    return {"ready": ready}
+
+
+def _score_run(job_id: str, src: Path, melody_only: bool):
+    """后台线程：执行转谱并写回任务表。"""
+    started = time.time()
+    try:
+        import sheetsage_pt
+        abc = sheetsage_pt.transcribe_abc(str(src), melody_only=melody_only)
+        rec = _score_save(job_id, abc)  # 落盘：刷新/重启不丢，可复用回填
+        with _SCORE_LOCK:
+            _SCORE_JOBS[job_id].update({"done": True, "abc": abc, "score_id": rec["id"]})
+        _win_toast("🎼 乐谱提取完成", f"耗时 {int(time.time()-started)//60} 分 {int(time.time()-started)%60} 秒，已入库可回填")
+    except Exception as e:
+        with _SCORE_LOCK:
+            _SCORE_JOBS[job_id].update({"done": True, "error": str(e)[:300]})
+        _win_toast("✕ 乐谱提取失败", str(e)[:120])
+    finally:
+        try:
+            src.unlink(missing_ok=True)
+        except Exception:
+            pass
+        # 任务表只保留最近 20 条，防内存累积
+        with _SCORE_LOCK:
+            if len(_SCORE_JOBS) > 20:
+                for k in sorted(_SCORE_JOBS.keys())[:-20]:
+                    _SCORE_JOBS.pop(k, None)
+
+
+@router.post("/score")
+async def score_submit(audio: UploadFile = File(...), melody_only: str = Form("true")):
+    """提交转谱任务，立即返回 job_id（前端轮询 /api/score/result）。"""
+    ext = Path(audio.filename or "in.wav").suffix.lower()
+    if ext not in (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".wma"):
+        ext = ".wav"
+    data = await audio.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="上传音频为空")
+    if len(data) > 200 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="音频超过 200MB 上限")
+    tmp_dir = Path("tmp/score")
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    job_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + os.urandom(3).hex()
+    src = tmp_dir / f"score_{job_id}{ext}"
+    await asyncio.to_thread(src.write_bytes, data)  # 大文件写盘放线程池，避免阻塞事件循环
+    with _SCORE_LOCK:
+        _SCORE_JOBS[job_id] = {"done": False, "ts": time.time()}
+    threading.Thread(target=_score_run, args=(job_id, src, melody_only != "false"), daemon=True).start()
+    return {"job_id": job_id}
+
+
+@router.get("/score/result")
+def score_result(job_id: str):
+    with _SCORE_LOCK:
+        job = _SCORE_JOBS.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="任务不存在或已过期")
+        return {"done": job["done"], "abc": job.get("abc"), "error": job.get("error"),
+                "score_id": job.get("score_id")}
+
+
+@router.get("/scores")
+def scores_list():
+    """已保存乐谱列表（新→旧），供创作页回填复用。"""
+    if not SCORES_DIR.is_dir():
+        return []
+    out = []
+    for p in SCORES_DIR.glob("*.json"):
+        try:
+            rec = json.loads(p.read_text(encoding="utf-8"))
+            out.append({"id": rec.get("id"), "time": rec.get("time"),
+                        "abc_preview": (rec.get("abc") or "")[:120]})
+        except Exception:
+            continue
+    out.sort(key=lambda r: r.get("id") or "", reverse=True)
+    return out
+
+
+@router.get("/scores/{score_id}")
+def scores_get(score_id: str):
+    # 路径穿越防护：只允许纯文件名（Windows 下反斜杠不分段，必须显式 basename）
+    score_id = os.path.basename(score_id.replace("\\", "/"))
+    p = (SCORES_DIR / f"{score_id}.json").resolve()
+    if p.parent != SCORES_DIR.resolve() or not p.is_file():
+        raise HTTPException(status_code=404, detail="乐谱不存在")
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+@router.delete("/scores/{score_id}")
+def scores_delete(score_id: str):
+    score_id = os.path.basename(score_id.replace("\\", "/"))
+    p = (SCORES_DIR / f"{score_id}.json").resolve()
+    if p.parent == SCORES_DIR.resolve() and p.is_file():
+        p.unlink()
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
+# 生成历史（服务端留存音频，可回放 / 回填 / 下载）
+# --------------------------------------------------------------------------- #
+HIST_DIR = ROOT / "data" / "records"
+HIST_JSON = HIST_DIR / "history.json"
+HIST_KEEP = 1000
+
+
+def _hist_read() -> list[dict]:
+    if not HIST_JSON.is_file():
+        return []
+    try:
+        data = json.loads(HIST_JSON.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _hist_write(items: list[dict]) -> None:
+    HIST_JSON.write_text(
+        json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+@router.get("/history")
+def history_list():
+    return {"items": _hist_read()}
+
+
+@router.get("/history/active")
+def history_active():
+    """进行中/排队的任务（历史页顶部展示）：生成 + 换声 + 音色训练。"""
+    items = []
+    # 生成任务：output/ 里 running/pending 状态的 meta（cancelled 已终止，不算进行中）
+    if OUTPUT_DIR.is_dir():
+        for p in sorted(OUTPUT_DIR.glob("*.json"), reverse=True):
+            m = _output_read_meta(p.stem)
+            if m and m.get("status") in ("running", "pending"):
+                m["kind"] = m.get("kind") or "generate"
+                items.append(m)
+    # 换声任务
+    with _RVC_LOCK:
+        items += [j for j in _RVC_JOBS.values() if j.get("status") == "running"]
+    # 音色制作任务
+    if RVC_TRAIN_DIR.is_dir():
+        for d in sorted(RVC_TRAIN_DIR.iterdir(), reverse=True):
+            job = _rvc_train_read(d.name)
+            if job.get("status") in ("running", "pending"):
+                if job.get("status") == "running" and job.get("step") == "训练中":
+                    cur, total = _rvc_train_epoch(job.get("name", ""), int(job.get("epochs") or 0))
+                    if cur:
+                        job["epoch"] = cur
+                        job["epochs_total"] = total or job.get("epochs", 0)
+                job["kind"] = "train"
+                items.append(job)
+    return {"items": items}
+
+
+@router.post("/history")
+async def history_add(audio: UploadFile = File(...), meta: str = Form("{}")):
+    HIST_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        m = json.loads(meta or "{}")
+    except Exception:
+        m = {}
+    now = datetime.now()
+    rid = now.strftime("%Y%m%d_%H%M%S_") + os.urandom(3).hex()
+    fn = rid + ".wav"
+    data = await audio.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty audio")
+    await asyncio.to_thread(HIST_DIR.joinpath(fn).write_bytes, data)  # 音频写盘放线程池
+    item = {
+        "id": rid,
+        "ts": now.isoformat(timespec="seconds"),
+        "file": fn,
+        "bytes": len(data),
+        "style": str(m.get("style", ""))[:600],
+        "lyrics": str(m.get("lyrics", ""))[:4000],
+        "cot": m.get("cot", "full"),
+        "abc": str(m.get("abc", ""))[:4000],
+        "seed": m.get("seed"),
+        "cfg": m.get("cfg_scale"),
+        "steps": m.get("num_inference_steps"),
+        "sec": m.get("sec"),
+        "seed_actual": m.get("seed_actual"),
+        "model": m.get("model_used", ""),
+    }
+    items = [item] + _hist_read()
+    # 只保留最近 HIST_KEEP 条，同时删除落盘的旧音频
+    for gone in items[HIST_KEEP:]:
+        (HIST_DIR / gone.get("file", "")).unlink(missing_ok=True)
+    items = items[:HIST_KEEP]
+    _hist_write(items)
+    return {"ok": True, "item": item}
+
+
+@router.get("/history/{rid}/audio")
+def history_audio(rid: str):
+    rid = os.path.basename(rid)
+    fn = next((i["file"] for i in _hist_read() if i["id"] == rid), None)
+    if not fn:
+        raise HTTPException(status_code=404, detail="not found")
+    fp = HIST_DIR / fn
+    if not fp.is_file():
+        raise HTTPException(status_code=404, detail="audio file missing")
+    return Response(content=fp.read_bytes(), media_type="audio/wav")
+
+
+@router.delete("/history/clear")
+def history_clear():
+    for i in _hist_read():
+        (HIST_DIR / i.get("file", "")).unlink(missing_ok=True)
+    _hist_write([])
+    return {"ok": True}
+
+
+@router.delete("/history/{rid}")
+def history_delete(rid: str):
+    rid = os.path.basename(rid)
+    items = _hist_read()
+    keep = [i for i in items if i["id"] != rid]
+    if len(keep) == len(items):
+        raise HTTPException(status_code=404, detail="not found")
+    for gone in items:
+        if gone["id"] == rid:
+            (HIST_DIR / gone.get("file", "")).unlink(missing_ok=True)
+    _hist_write(keep)
+    return {"ok": True}
+
+
+@router.post("/models/switch")
+def models_switch(payload: dict):
+    path = (payload.get("path") or "").strip().replace("\\", "/")
+    if not path:
+        raise HTTPException(status_code=400, detail="path is required")
+    # 只允许 model/ 前缀 + 纯文件名，防 ../ 穿越（server.json 本就要求相对路径）
+    safe = Path(path).name
+    target = MODEL_DIR / safe
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail=f"model file not found: {safe}")
+    cfg = _read_server_json()
+    # session_options：纯文件名，由后端相对 path 所在目录解析
+    model_gguf = target.name
+    vae = (payload.get("vae") or "").strip().replace("\\", "/")
+    vae = Path(vae).name if vae else None
+    if not vae:
+        vae = next((p.name for p in target.parent.glob("*vae*.gguf")), None)
+    if not vae or not (target.parent / vae).is_file():
+        # 模型目录内没有 vae 时，退回 cpp/model 根的公共 vae（同目录文件用纯文件名）
+        if (target.parent / "yue2-vae-f16.gguf").is_file():
+            vae = "yue2-vae-f16.gguf"
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"未在 {target.parent.name} 目录找到 vae gguf，无法切换",
+            )
+    model_entry = cfg["models"][0]
+    # path 相对后端工作目录 cpp\ —— 必须带 model/ 前缀
+    model_entry["path"] = "model/" + path
+    model_entry["session_options"] = {
+        "yue2.model_gguf": model_gguf,
+        "yue2.vae_gguf": vae,
+    }
+    _write_server_json(cfg)
+    # 重启后端加载新模型
+    _restart_audiocpp(str(SERVER_JSON))
+    return {
+        "ok": True,
+        "message": f"已切换到 {model_gguf}，后端已重启加载。",
+        "path": path,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 服务端托管生成任务：output/ 自动落盘，成败都保存（前端刷新不丢任务）
+# --------------------------------------------------------------------------- #
+OUTPUT_DIR = ROOT / "output"
+
+
+def _output_meta_path(rid: str) -> Path:
+    return OUTPUT_DIR / f"{rid}.json"
+
+
+def _output_wav_path(rid: str) -> Path:
+    return OUTPUT_DIR / f"{rid}.wav"
+
+
+def _output_read_meta(rid: str) -> dict | None:
+    p = _output_meta_path(rid)
+    if not p.is_file():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _output_write_meta(meta: dict) -> None:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    (_output_meta_path(meta["id"])).write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+# 内存中的当前任务（服务重启后靠 output/*.json 的 running 状态恢复为 error/orphan）
+_GEN_JOB: dict | None = None
+_GEN_LOCK = threading.Lock()
+# 启动后懒清理只允许执行一次的标志（防止前端轮询把运行中任务误判为中断）
+_ORPHAN_SWEEP_DONE = False
+
+# GPU 全局互斥闸门：生成/批量/换声/训练四类 GPU 任务统一排队，防止并发打满显存互杀后端
+_GPU_SEM = threading.Semaphore(1)
+
+
+class _GpuBusy(HTTPException):
+    def __init__(self, detail: str):
+        super().__init__(status_code=409, detail=detail)
+
+
+def _gen_set_job(job: dict | None) -> None:
+    global _GEN_JOB
+    with _GEN_LOCK:
+        _GEN_JOB = job
+
+
+def _gen_get_job() -> dict | None:
+    with _GEN_LOCK:
+        return _GEN_JOB
+
+
+_CANCEL_EVENT = threading.Event()  # 用户主动终止：中断当前推理并停止后续连发
+
+
+def _kill_audiocpp_now() -> None:
+    """强杀引擎进程以立即中断推理（连接断开即刻失败），下次生成前 _ensure_backend 会自动重启。"""
+    def _kill():
+        try:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/IM", "audiocpp_server.exe", "/F"],
+                               capture_output=True,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            else:
+                subprocess.run(["pkill", "-f", "audiocpp_server"], capture_output=True)
+        except Exception:
+            pass
+    threading.Thread(target=_kill, daemon=True).start()
+
+
+def _is_vram_error(msg: str) -> bool:
+    return bool(re.search(
+        r"memory|alloc|oom|out_of_memory|free_memory|cuda_error|vram",
+        str(msg), re.I,
+    ))
+
+
+def _gen_run_once(payload: dict) -> tuple[int, str, bytes, dict]:
+    """调用一次 /api/music/generate，返回 (status_code, detail, content, headers)。"""
+    with httpx.Client(
+        base_url="http://127.0.0.1:7863", timeout=settings.audiocpp_timeout_sec,
+        trust_env=False,
+    ) as client:
+        r = client.post("/api/music/generate", json=payload)
+    detail = r.text[:800]
+    try:
+        detail = json.loads(detail).get("detail", detail)
+    except Exception:
+        pass
+    return r.status_code, detail, r.content, dict(r.headers)
+
+
+def _vram_ok_for_gpu() -> tuple[bool, int | None]:
+    """生成前显存预检：空闲显存需 >= 权重峰值(~3GB) + 余量。返回 (是否通过, 空闲MB)。"""
+    free = _gpu_free_mb()
+    if free is None:
+        return True, None  # 查不到就不拦截，交给引擎自己报错
+    return free >= _VRAM_HEADROOM_MB + 3000, free
+
+
+def _audiocpp_alive() -> bool:
+    """后端健康探测（1s 超时，任何异常视为掉线）。"""
+    try:
+        r = httpx.get(settings.audiocpp_base_url + "/health", timeout=1.0)
+        return r.status_code < 500
+    except Exception:
+        return False
+
+
+def _commit_free_mb() -> int | None:
+    """系统可用提交内存（MB）。查不到返回 None。"""
+    try:
+        import ctypes
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        m = MEMORYSTATUSEX(); m.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+        return int(m.ullAvailPageFile // (1024 * 1024))  # 可用提交 = 可用页文件
+    except Exception:
+        return None
+
+
+def _ensure_backend() -> None:
+    """生成/换声前自检：后端掉线则自动拉起，避免整次生成直接失败。"""
+    if _audiocpp_alive():
+        return
+    try:
+        _restart_audiocpp(str(SERVER_JSON))
+    except Exception:
+        pass
+    # 等后端就绪（最多 90s，加载权重需要时间）
+    for _ in range(45):
+        if _audiocpp_alive():
+            return
+        time.sleep(2.0)
+
+
+def _win_toast(title: str, body: str) -> None:
+    """Windows 系统通知（浏览器最小化/后台也可见）。fire-and-forget，失败静默。"""
+    try:
+        # 文本经 base64 传入，杜绝 $/引号/反引号 破坏 PowerShell 表达式
+        tb64 = base64.b64encode(title.encode("utf-8")).decode("ascii")
+        bb64 = base64.b64encode(body.encode("utf-8")).decode("ascii")
+        ps = (
+            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, "
+            "ContentType = WindowsRuntime] | Out-Null; "
+            f"$ti = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{tb64}')); "
+            f"$bo = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{bb64}')); "
+            "$t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent("
+            "[Windows.UI.Notifications.ToastTemplateType]::ToastText02); "
+            "$x = $t.GetXml(); "
+            "$x = $x -replace '<text id=\"1\">', ('<text id=\"1\">' + $ti + '</text><text id=\"2\">') ; "
+            "$x = $x -replace '</text></toast>', ($bo + '</text></toast>'); "
+            "[void]$t.LoadXml($x); "
+            "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("
+            "'音乐工作台').Show([Windows.UI.Notifications.ToastNotification]::new($t))"
+        )
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
+
+
+def _gen_run(job: dict, payload: dict) -> None:
+    """后台线程：调用本网关的 /api/music/generate，把结果落盘到 output/。
+
+    无论成功或失败，meta（含 style / lyrics / 全部参数 / 错误信息）都会保存。
+    GPU 显存不足（预检或引擎报错）时自动切 CPU 后端重试（慢但能出结果），
+    完成后自动切回 GPU 模式。切换过程记录在 job.cpu_fallback / job.gpu_error。
+    """
+    rid = job["id"]
+    started = time.time()
+    used_cpu_fallback = False
+    try:
+        # 后端自检：audiocpp 掉线（如上次异常崩溃）则自动拉起，避免整次生成直接失败
+        _ensure_backend()
+        # 提交内存预检：full/32步 重负载任务实测需 ~23GB commit（权重+AR/NAR 缓存），
+        # 不足时 audiocpp 会在推理中段 abort（0xc0000409）白白等几分钟，这里提前拦截
+        cf = _commit_free_mb()
+        if cf is not None and cf < 8000:
+            raise RuntimeError(
+                f"系统可用提交内存不足（剩 {cf // 1024}GB，需 ≥8GB）。"
+                "请关闭其他占内存的程序后重试；或把页面文件调大（建议初始 30GB/最大 48GB）。")
+        # 生成前显存预检：不足就直接用 CPU，不先撞一次墙
+        if backend_mode() == "cuda":
+            # 若之前提取过乐谱，SheetSage2/MERT 模型常驻 GPU 会挤占显存，
+            # 先把它们从显存卸载并清空缓存，避免生成被误判降级 CPU。
+            try:
+                import sheetsage_pt
+                sheetsage_pt.unload()
+            except Exception:
+                pass
+            ok, free = _vram_ok_for_gpu()
+            if not ok:
+                used_cpu_fallback = True
+                job.update(
+                    status="running", cpu_fallback=True,
+                    gpu_error=f"生成前显存预检不足：空闲 {free}MB",
+                    note="显存不足，已自动切换 CPU 后端（速度慢约 5-10 倍）",
+                )
+                _output_write_meta(job)
+                _restart_audiocpp(str(SERVER_JSON), backend="cpu")
+                _wait_backend_ready()
+
+        def attempt() -> tuple[int, str, bytes, dict]:
+            try:
+                return _gen_run_once(payload)
+            except Exception as e:
+                return 0, str(e)[:800], b"", {}
+
+        if _CANCEL_EVENT.is_set():
+            return
+
+        code, detail, content, headers = attempt()
+
+        # 用户主动终止：引擎进程已被强杀，这次调用以连接失败收场
+        if _CANCEL_EVENT.is_set():
+            return
+
+        # 引擎仍然报显存类错误（预检漏网/竞争）：切 CPU 重试一次
+        if code != 200 and not used_cpu_fallback and backend_mode() == "cuda" and _is_vram_error(detail):
+            used_cpu_fallback = True
+            job.update(
+                status="running", cpu_fallback=True,
+                gpu_error=str(detail)[:800],
+                note="显存不足，已自动切换 CPU 后端重试（速度慢约 5-10 倍）",
+            )
+            _output_write_meta(job)
+            _restart_audiocpp(str(SERVER_JSON), backend="cpu")
+            _wait_backend_ready()
+            if _CANCEL_EVENT.is_set():
+                return
+            code, detail, content, headers = attempt()
+
+        elapsed = round(time.time() - started, 1)
+        title = (job.get("style") or "").split(",")[0][:40] or rid
+        if code != 200:
+            job.update(status="error", error=str(detail), sec=elapsed)
+            _output_write_meta(job)
+            _win_toast("✕ 生成失败：" + title, str(detail)[:120])
+        else:
+            seed_actual = headers.get("X-Seed") or payload.get("seed")
+            wav = _output_wav_path(rid)
+            wav.write_bytes(content)
+            job.update(
+                status="done",
+                bytes=len(content),
+                sec=elapsed,
+                seed_actual=seed_actual,
+                file=wav.name,
+            )
+            _output_write_meta(job)
+            _win_toast(
+                "🎵 生成完成：" + title,
+                f"耗时 {int(elapsed // 60)} 分 {int(elapsed % 60)} 秒，已保存到 output/",
+            )
+
+        # 兜底用完把引擎切回 GPU，避免下次不明不白变慢
+        if used_cpu_fallback and backend_mode() == "cpu":
+            try:
+                _engine_state_write({"backend": "cuda"})
+                _restart_audiocpp(str(SERVER_JSON), backend="cuda")
+            except Exception:
+                pass
+    except Exception as e:  # 网络/超时/后端崩溃都算失败，同样落盘
+        job.update(status="error", error=str(e)[:800], sec=round(time.time() - started, 1))
+        _output_write_meta(job)
+
+
+def _wait_backend_ready(timeout: float = 300.0) -> bool:
+    """等待 audio.cpp 后端 /health 恢复（模型加载可能要 1-2 分钟）。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with httpx.Client(base_url=settings.audiocpp_base_url,
+                              timeout=5.0, trust_env=False) as c:
+                if c.get("/health").status_code == 200:
+                    return True
+        except Exception:
+            pass
+        time.sleep(2.0)
+    return False
+
+
+@router.post("/generate/stop")
+def generate_stop():
+    """用户主动终止当前生成/连发任务：标记 cancelled、强杀引擎立即中断推理、
+    阻止后续连发与批量队列继续。网关本身不停，下次生成会自动重启引擎。"""
+    job = _gen_get_job()
+    # 占位 job（id=None，排队中）只清状态不写盘，避免生成 output/None.json
+    cancelled_any = bool(job and job.get("id") and job.get("status") == "running")
+    if cancelled_any:
+        job["status"] = "cancelled"
+        job["error"] = "用户主动终止"
+        job["sec"] = None
+        _output_write_meta(job)
+    _gen_set_job(None)  # 立即结束轮询/恢复态
+    _CANCEL_EVENT.set()
+    _kill_audiocpp_now()
+    # 批量队列一并叫停：未开始的全部取消
+    state = _batch_snapshot()
+    if state.get("running"):
+        state["running"] = False
+        for it in state["items"]:
+            if it["status"] in ("pending", "running"):
+                it["status"] = "cancelled"
+        _batch_store(state)
+    return {"ok": True, "cancelled": cancelled_any,
+            "message": "已终止当前任务" + ("，引擎将自动恢复" if cancelled_any else "")}
+
+
+@router.post("/generate/start")
+async def generate_start(payload: dict):
+    global _ORPHAN_SWEEP_DONE, _GEN_JOB
+    style = str(payload.get("style") or "").strip()
+    if not style:
+        raise HTTPException(status_code=400, detail="style is required")
+    # check-and-set 原子化：先占位再放线程，防止并发请求双双通过检查（TOCTOU）
+    with _GEN_LOCK:
+        cur = _GEN_JOB
+        if cur and cur.get("status") == "running":
+            raise HTTPException(status_code=409, detail="已有生成任务在进行中")
+        _ORPHAN_SWEEP_DONE = True  # 已有真实任务登记，懒清理不再触发
+        _GEN_JOB = {"id": None, "status": "running", "queued": True}
+    try:
+        count = max(1, min(20, int(payload.get("count") or 1)))
+    except Exception:
+        count = 1
+
+    def _make_job(i: int, seed_val) -> dict:
+        rid = datetime.now().strftime("%Y%m%d_%H%M%S_") + os.urandom(2).hex()
+        params = {
+            k: payload.get(k)
+            for k in ("cfg_scale", "num_inference_steps",
+                      "abc_temperature", "abc_top_p", "abc_top_k",
+                      "semantic_temperature", "semantic_top_p", "semantic_top_k")
+            if payload.get(k) is not None
+        }
+        if seed_val is not None:
+            params["seed"] = seed_val
+        return {
+            "id": rid,
+            "status": "running",
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "style": style[:600],
+            "lyrics": str(payload.get("lyrics") or "")[:4000],
+            "cot": payload.get("cot", "full"),
+            "abc": str(payload.get("abc") or "")[:4000],
+            "model": payload.get("model", "yue2"),
+            "params": params,
+            "chain_index": i,
+            "chain_total": count,
+        }
+
+    # 连发 N 次：参数完全一致，仅种子不同（用户填了种子则依次 +1，否则完全随机）
+    base_seed = payload.get("seed")
+
+    def _chain_runner():
+        _CANCEL_EVENT.clear()
+        try:
+            # GPU 全局闸门：等批量/换声/训练任务释放后再开始（无超时，保证最终会执行）
+            with _GPU_SEM:
+                for i in range(1, count + 1):
+                    if _CANCEL_EVENT.is_set():
+                        break
+                    p = dict(payload)
+                    p.pop("count", None)
+                    if count > 1:
+                        if isinstance(base_seed, int) and base_seed >= 0:
+                            p["seed"] = base_seed + (i - 1)
+                        else:
+                            p["seed"] = secrets.randbelow(2**31)
+                    job = _make_job(i, p.get("seed") if isinstance(p.get("seed"), int) else None)
+                    _output_write_meta(job)
+                    _gen_set_job(job)
+                    _gen_run(job, p)
+                    # 单首失败不中断连发，继续下一首
+            # 保留最后一个任务的最终状态（done/error），供页面刷新后恢复；下次 start 时会被覆盖
+        finally:
+            # 占位 job 未被真实任务替换（取消/异常）时清掉，避免轮询端永远显示"排队中"
+            j = _gen_get_job()
+            if j and j.get("id") is None:
+                _gen_set_job(None)
+    threading.Thread(target=_chain_runner, daemon=True).start()
+    return {"ok": True, "count": count, "job": _make_job(1, base_seed if isinstance(base_seed, int) else None)}
+
+
+@router.get("/generate/current")
+def generate_current():
+    """前端刷新后靠这个接口恢复“生成中”状态；也返回最近一条结果。"""
+    job = _gen_get_job()
+    if job is None:
+        # 服务重启过：扫描 output/ 里遗留的 running 状态，标记为中断。
+        # 仅启动后首次调用生效（_STARTUP_EPOCH 之后落盘的 running 是排队中的正常任务，
+        # 不能改判，否则前端常态轮询会把运行中的换声/批量任务误标为"中断"）。
+        global _ORPHAN_SWEEP_DONE
+        if not _ORPHAN_SWEEP_DONE and OUTPUT_DIR.is_dir():
+            _ORPHAN_SWEEP_DONE = True
+            for p in sorted(OUTPUT_DIR.glob("*.json")):
+                try:
+                    m = json.loads(p.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if m.get("status") == "running":
+                    m["status"] = "error"
+                    m["error"] = "服务重启，任务中断"
+                    p.write_text(json.dumps(m, ensure_ascii=False, indent=2), encoding="utf-8")
+        latest = None
+        if OUTPUT_DIR.is_dir():
+            metas = [m for m in (_output_read_meta(p.stem) for p in OUTPUT_DIR.glob("*.json")) if m]
+            metas.sort(key=lambda m: m.get("ts", ""), reverse=True)
+            latest = metas[0] if metas else None
+        return {"job": None, "latest": latest}
+    return {"job": job}
+
+
+@router.get("/generate/list")
+def generate_list():
+    items = []
+    if OUTPUT_DIR.is_dir():
+        for p in sorted(OUTPUT_DIR.glob("*.json"), reverse=True):
+            m = _output_read_meta(p.stem)
+            if m:
+                items.append(m)
+    return {"items": items[:60]}
+
+
+@router.get("/generate/audio/{rid}")
+def generate_audio(rid: str):
+    rid = os.path.basename(rid)
+    fp = _output_wav_path(rid)
+    if not fp.is_file():
+        raise HTTPException(status_code=404, detail="audio not found")
+    return Response(content=fp.read_bytes(), media_type="audio/wav")
+
+
+@router.delete("/generate/{rid}")
+def generate_delete(rid: str):
+    rid = os.path.basename(rid)
+    job = _gen_get_job()
+    if job and job.get("id") == rid and job.get("status") == "running":
+        raise HTTPException(status_code=409, detail="任务进行中，不能删除")
+    removed = False
+    for p in (_output_wav_path(rid), _output_meta_path(rid)):
+        if p.is_file():
+            p.unlink()
+            removed = True
+    if not removed:
+        raise HTTPException(status_code=404, detail="not found")
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
+# 批量生成队列：顺序执行，单个失败不影响后续；任务与结果全部落盘
+# --------------------------------------------------------------------------- #
+_BATCH_STATE = ROOT / "data" / "batch_state.json"
+
+
+def _batch_read() -> dict:
+    try:
+        return json.loads(_BATCH_STATE.read_text(encoding="utf-8"))
+    except Exception:
+        return {"items": [], "running": False, "current": None}
+
+
+def _batch_write(state: dict) -> None:
+    _BATCH_STATE.parent.mkdir(parents=True, exist_ok=True)
+    _BATCH_STATE.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+_BATCH_LOCK = threading.Lock()
+_BATCH_WORKER: threading.Thread | None = None
+
+
+def _batch_snapshot() -> dict:
+    with _BATCH_LOCK:
+        return _batch_read()
+
+
+def _batch_store(state: dict) -> None:
+    with _BATCH_LOCK:
+        _batch_write(state)
+
+
+def _batch_run_worker() -> None:
+    """批量队列工作线程：逐个执行 pending 任务；失败记录后继续下一个。"""
+    _CANCEL_EVENT.clear()
+    while True:
+        state = _batch_snapshot()
+        if not state.get("running") or _CANCEL_EVENT.is_set():
+            return
+        nxt = next((it for it in state["items"] if it["status"] == "pending"), None)
+        if nxt is None:
+            state["running"] = False
+            state["current"] = None
+            _batch_store(state)
+            return
+        nxt["status"] = "running"
+        nxt["started_ts"] = datetime.now().isoformat(timespec="seconds")
+        state["current"] = nxt["id"]
+        _batch_store(state)
+
+        payload = dict(nxt["payload"])
+        rid = nxt["id"]
+        job = {
+            "id": rid,
+            "status": "running",
+            "ts": nxt["started_ts"],
+            "style": payload.get("style", "")[:600],
+            "lyrics": str(payload.get("lyrics") or "")[:4000],
+            "cot": payload.get("cot", "full"),
+            "abc": str(payload.get("abc") or "")[:4000],
+            "model": payload.get("model", "yue2"),
+            "params": {
+                k: payload.get(k)
+                for k in ("seed", "cfg_scale", "num_inference_steps",
+                          "abc_temperature", "abc_top_p", "abc_top_k",
+                          "semantic_temperature", "semantic_top_p", "semantic_top_k")
+                if payload.get(k) is not None
+            },
+            "batch": True,
+            "batch_name": nxt.get("name", ""),
+        }
+        _output_write_meta(job)
+        _gen_set_job(job)
+        with _GPU_SEM:  # 与单首生成/换声/训练互斥，防止并发打满显存
+            if _CANCEL_EVENT.is_set():
+                break
+            _gen_run(job, payload)
+        if _CANCEL_EVENT.is_set():
+            break
+        # _gen_run 已把 job 状态更新为 done/error 并写 output meta
+        final = _output_read_meta(rid) or job
+        # 锁内最小化更新：只改当前条目与 current，不整体回写，避免覆盖 stop 的并发标记
+        with _BATCH_LOCK:
+            state = _batch_read()
+            it = next((x for x in state["items"] if x["id"] == rid), None)
+            if it is not None and state.get("current") == rid and it.get("status") != "cancelled":
+                it["status"] = "done" if final.get("status") == "done" else "error"
+                it["sec"] = final.get("sec")
+                it["error"] = final.get("error", "")
+                it["bytes"] = final.get("bytes")
+            state["current"] = None
+            _batch_write(state)
+
+
+def _batch_ensure_worker() -> None:
+    global _BATCH_WORKER
+    if _BATCH_WORKER is None or not _BATCH_WORKER.is_alive():
+        _BATCH_WORKER = threading.Thread(target=_batch_run_worker, daemon=True)
+        _BATCH_WORKER.start()
+
+
+@router.post("/batch/start")
+def batch_start(payload: dict):
+    """payload: {name?: str, tasks: [{name?, lyrics, style, cot, ...}, ...]}"""
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        raise HTTPException(status_code=400, detail="tasks is required (non-empty list)")
+    state = _batch_snapshot()
+    # 已有任务在进行中（批量在跑或单首生成占用 GPU）时，新任务追加到队尾排队，不插队
+    appending = bool(state.get("items"))
+    qname = str(payload.get("name") or "").strip() or datetime.now().strftime("%m%d-%H%M")
+    items = []
+    for i, t in enumerate(tasks, 1):
+        style = str(t.get("style") or "").strip()
+        lyrics = str(t.get("lyrics") or "").strip()
+        if not style or not lyrics:
+            raise HTTPException(status_code=400,
+                                detail=f"第 {i} 个任务缺少 style 或 lyrics")
+        rid = datetime.now().strftime("%Y%m%d_%H%M%S_") + os.urandom(2).hex()
+        items.append({
+            "id": rid,
+            "name": str(t.get("name") or f"{qname} #{i}")[:100],
+            "status": "pending",
+            "payload": {
+                "lyrics": lyrics[:4000], "style": style[:600],
+                "cot": t.get("cot", "off"), "abc": str(t.get("abc") or "")[:4000],
+                "model": t.get("model", "yue2"),
+                "seed": t.get("seed"), "cfg_scale": t.get("cfg_scale"),
+                "num_inference_steps": t.get("num_inference_steps"),
+                "abc_temperature": t.get("abc_temperature"),
+                "abc_top_p": t.get("abc_top_p"), "abc_top_k": t.get("abc_top_k"),
+                "semantic_temperature": t.get("semantic_temperature"),
+                "semantic_top_p": t.get("semantic_top_p"),
+                "semantic_top_k": t.get("semantic_top_k"),
+            },
+        })
+    if appending:
+        # 排队模式：追加到现有批量队列尾部，沿用其队列名
+        with _BATCH_LOCK:
+            state = _batch_read()
+            state["items"].extend(items)
+            if not state.get("running"):
+                state["running"] = True
+            if not state.get("name"):
+                state["name"] = qname
+            _batch_write(state)
+    else:
+        state = {"items": items, "running": True, "current": None, "name": qname}
+        _batch_store(state)
+    _batch_ensure_worker()
+    total = len(_batch_snapshot()["items"])
+    msg = (f"已加入队列（排在第 {total - len(items) + 1}~{total} 位，当前任务完成后依次执行）"
+           if appending else f"已开始批量任务（共 {len(items)} 首）")
+    return {"ok": True, "queued": appending, "name": state.get("name") or qname,
+            "count": len(items), "total": total, "items": items, "message": msg}
+
+
+@router.get("/batch/status")
+def batch_status():
+    state = _batch_snapshot()
+    if not state.get("running"):
+        # 服务重启或工作线程死亡时，把遗留的 running 任务标记为中断
+        changed = False
+        for it in state["items"]:
+            if it["status"] == "running":
+                it["status"] = "error"
+                it["error"] = "服务重启，任务中断"
+                changed = True
+        if changed:
+            _batch_store(state)
+    done = sum(1 for it in state["items"] if it["status"] == "done")
+    err = sum(1 for it in state["items"] if it["status"] == "error")
+    return {
+        "running": bool(state.get("running")),
+        "name": state.get("name", ""),
+        "current": state.get("current"),
+        "total": len(state["items"]),
+        "done": done, "error": err,
+        "pending": sum(1 for it in state["items"] if it["status"] == "pending"),
+        "items": state["items"],
+    }
+
+
+@router.post("/batch/stop")
+def batch_stop():
+    """停止批量队列：当前正在跑的一首会算完，后续 pending 全部取消。"""
+    state = _batch_snapshot()
+    if not state.get("running"):
+        return {"ok": True, "message": "队列未在运行"}
+    state["running"] = False
+    for it in state["items"]:
+        if it["status"] == "pending":
+            it["status"] = "cancelled"
+    _batch_store(state)
+    return {"ok": True, "message": "已停止队列（当前歌曲会算完）"}
+
+
+@router.delete("/batch/{rid}")
+def batch_delete(rid: str):
+    rid = os.path.basename(rid)
+    state = _batch_snapshot()
+    if rid == state.get("current") and state.get("running"):
+        raise HTTPException(status_code=409, detail="该任务正在生成，不能删除")
+    state["items"] = [it for it in state["items"] if it["id"] != rid]
+    _batch_store(state)
+    for p in (_output_wav_path(rid), _output_meta_path(rid)):
+        if p.is_file():
+            p.unlink()
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
+# RVC 换声（音色转换）：进程调用 rvc/infer/cli.py，不污染网关进程
+# --------------------------------------------------------------------------- #
+RVC_DIR = ROOT / "rvc"
+RVC_PY = ROOT / "py312" / "python.exe"
+RVC_MODELS_DIR = RVC_DIR / "assets" / "weights"
+RVC_JOB_DIR = RVC_DIR / "jobs"
+_RVC_LOCK = threading.Lock()
+_RVC_JOBS: dict[str, dict] = {}  # rid -> {id,status,error,sec,model,...}
+
+
+def _rvc_models() -> list[str]:
+    if not RVC_MODELS_DIR.is_dir():
+        return []
+    return sorted(p.name for p in RVC_MODELS_DIR.glob("*.pth"))
+
+
+def _rvc_model_in_use(model: str) -> bool:
+    """该音色是否正被某个运行中的换声任务使用。"""
+    with _RVC_LOCK:
+        return any(
+            j.get("status") == "running" and j.get("model") == model
+            for j in _RVC_JOBS.values()
+        )
+
+
+@router.get("/rvc/models")
+def rvc_models():
+    items = []
+    if RVC_MODELS_DIR.is_dir():
+        for p in sorted(RVC_MODELS_DIR.glob("*.pth")):
+            items.append({
+                "name": p.name,
+                "size_mb": round(p.stat().st_size / 1e6, 1),
+                "mtime": datetime.fromtimestamp(p.stat().st_mtime).isoformat(timespec="seconds"),
+            })
+    return {"models": [i["name"] for i in items], "items": items}
+
+
+@router.delete("/rvc/models/{name}")
+def rvc_model_delete(name: str):
+    name = os.path.basename(name)
+    p = RVC_MODELS_DIR / name
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="音色模型不存在")
+    if _rvc_model_in_use(name):
+        raise HTTPException(status_code=409, detail="该音色正在被换声任务使用，不能删除")
+    p.unlink()
+    # 顺带清理同名索引文件
+    for idx in (RVC_DIR / "logs").glob(f"added_*_{p.stem}_v2.index"):
+        try:
+            idx.unlink()
+        except Exception:
+            pass
+    return {"ok": True}
+
+
+@router.post("/rvc/models/{name}/rename")
+def rvc_model_rename(name: str, payload: dict):
+    name = os.path.basename(name)
+    new = re.sub(r'[\\/:*?"<>|\s]+', "_", str(payload.get("name") or "").strip())[:40]
+    if not new:
+        raise HTTPException(status_code=400, detail="新名称不能为空")
+    new_name = new if new.lower().endswith(".pth") else new + ".pth"
+    p = RVC_MODELS_DIR / name
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="音色模型不存在")
+    if new_name == name:
+        return {"ok": True, "name": name}
+    if (RVC_MODELS_DIR / new_name).is_file():
+        raise HTTPException(status_code=409, detail=f"已存在同名音色：{new_name}")
+    if _rvc_model_in_use(name):
+        raise HTTPException(status_code=409, detail="该音色正在被换声任务使用，不能重命名")
+    p.rename(RVC_MODELS_DIR / new_name)
+    # 同步重命名索引文件（CLI 按 weights 里的模型 stem 找 added_*_<stem>_v2.index）
+    for idx in (RVC_DIR / "logs").glob(f"added_*_{p.stem}_v2.index"):
+        try:
+            idx.rename(idx.with_name(idx.name.replace(f"_{p.stem}_", f"_{Path(new_name).stem}_")))
+        except Exception:
+            pass
+    return {"ok": True, "name": new_name}
+
+
+def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
+                        model: str, pitch: int, f0_method: str,
+                        index_rate: float, protect: float, rms_mix_rate: float) -> None:
+    """换声推理 worker（上传入口与历史转发入口共用）。"""
+    started = time.time()
+    with _RVC_LOCK:
+        _RVC_JOBS[rid] = {**_RVC_JOBS.get(rid, job), "status": "running"}
+    try:
+        out_name = "converted.wav"
+        cmd = [
+            str(RVC_PY), str(RVC_DIR / "infer" / "cli.py"),
+            "--model", model,
+            "--input", str(src), "--output", str(in_dir / out_name),
+            "--pitch", str(int(pitch)), "--f0-method", f0_method,
+            "--index-rate", str(index_rate), "--protect", str(protect),
+            "--rms-mix-rate", str(rms_mix_rate), "--overwrite",
+        ]
+        env = {**os.environ,
+               "PYTHONPATH": str(RVC_DIR),
+               "weight_root": str(RVC_MODELS_DIR),
+               "index_root": str(RVC_DIR / "logs"),
+               "rmvpe_root": str(RVC_DIR / "assets" / "rmvpe"),
+               "outside_index_root": str(RVC_DIR / "assets" / "indices"),
+               "OPENBLAS_NUM_THREADS": "1",
+               # 与常驻 CUDA 的 audiocpp 引擎共存时，CUDA Graph 捕获会在
+               # torch.cuda.synchronize 处死锁（实测 GTX 1660S + 双 CUDA 进程）。
+               # 关闭图加速走 eager 推理，功能不变：295s 音频全程约 19s。
+               "RVC_CUDA_GRAPH": "0"}
+        with _GPU_SEM:  # 与生成/批量/训练互斥，防止并发打满显存
+            proc = subprocess.run(
+                cmd, cwd=str(RVC_DIR), env=env, capture_output=True, timeout=1800,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        out_path = in_dir / out_name
+        if proc.returncode != 0 or not out_path.is_file():
+            tail = (proc.stderr or proc.stdout or b"")[-500:].decode("utf-8", "replace")
+            raise RuntimeError(f"RVC 推理失败：{tail}")
+        # 落盘到 output/（历史页可回放），meta 记录全部参数
+        wav = _output_wav_path(rid)
+        wav.write_bytes(out_path.read_bytes())
+        meta = {
+            **job, "status": "done", "sec": round(time.time() - started, 1),
+            "bytes": wav.stat().st_size, "file": wav.name, "kind": "rvc",
+            "style": f"RVC 换声 · {model}", "lyrics": f"源音频：{job['src_name']}",
+            "cot": "rvc", "params": {"pitch": pitch, "f0_method": f0_method,
+                                      "index_rate": index_rate, "protect": protect,
+                                      "rms_mix_rate": rms_mix_rate},
+        }
+        _output_write_meta(meta)
+        with _RVC_LOCK:
+            _RVC_JOBS[rid] = {**_RVC_JOBS[rid], "status": "done",
+                              "sec": meta["sec"], "bytes": meta["bytes"]}
+        _win_toast("🎵 换声完成：" + model, f"耗时 {meta['sec']} 秒，已保存到 output/")
+    except Exception as e:
+        with _RVC_LOCK:
+            _RVC_JOBS[rid] = {**_RVC_JOBS.get(rid, job),
+                              "status": "error", "error": str(e)[:500],
+                              "sec": round(time.time() - started, 1)}
+        _win_toast("✕ 换声失败：" + model, str(e)[:120])
+
+
+@router.post("/rvc/convert")
+async def rvc_convert(
+    file: UploadFile,
+    model: str = Form(...),
+    pitch: int = Form(0),
+    f0_method: str = Form("rmvpe"),
+    index_rate: float = Form(0.75),
+    protect: float = Form(0.33),
+    rms_mix_rate: float = Form(1.0),
+):
+    """上传音频 + 选音色模型 → 后台转换 → 结果落盘 output/（与生成结果同处可回放）。"""
+    if not RVC_PY.is_file():
+        raise HTTPException(status_code=500, detail="rvc python 环境缺失（py312/python.exe）")
+    models = _rvc_models()
+    if model not in models:
+        raise HTTPException(status_code=400, detail=f"未知音色模型：{model}（可用：{models}）")
+    ext = Path(file.filename or "in.wav").suffix.lower()
+    if ext not in (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".wma"):
+        ext = ".wav"
+    rid = datetime.now().strftime("%Y%m%d_%H%M%S_") + os.urandom(2).hex()
+    in_dir = RVC_JOB_DIR / rid
+    in_dir.mkdir(parents=True, exist_ok=True)
+    src = in_dir / f"src{ext}"
+    data = await file.read()  # 上限 200MB，防超大文件吃光内存
+    if not data:
+        raise HTTPException(status_code=400, detail="上传音频为空")
+    if len(data) > 200 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="音频超过 200MB 上限（5 分钟 wav 约 50MB，请先压缩或转 mp3/flac）")
+    await asyncio.to_thread(src.write_bytes, data)  # 大文件写盘放线程池，避免阻塞事件循环
+    # 读取源音频时长，供前端估算换声进度（读失败则按 40k 双声道 wav 粗略折算）
+    try:
+        import soundfile as sf
+        src_duration = round(float(sf.info(str(src)).duration), 1)
+    except Exception:
+        src_duration = round(src.stat().st_size / 160_000, 1)
+
+    job = {
+        "id": rid, "status": "running", "ts": datetime.now().isoformat(timespec="seconds"),
+        "model": model, "pitch": pitch, "f0_method": f0_method,
+        "index_rate": index_rate, "protect": protect, "rms_mix_rate": rms_mix_rate,
+        "src_name": (file.filename or "")[:120],
+        "src_size": src.stat().st_size, "src_duration": src_duration,
+    }
+    with _RVC_LOCK:
+        _RVC_JOBS[rid] = job
+
+    threading.Thread(
+        target=_rvc_convert_worker,
+        args=(rid, job, src, in_dir, model, pitch, f0_method, index_rate, protect, rms_mix_rate),
+        daemon=True,
+    ).start()
+    return {"ok": True, "id": rid, "job": job}
+
+
+@router.get("/rvc/status/{rid}")
+def rvc_status(rid: str):
+    rid = os.path.basename(rid)
+    with _RVC_LOCK:
+        job = _RVC_JOBS.get(rid)
+    if job is None:
+        raise HTTPException(status_code=404, detail="任务不存在或服务已重启")
+    return job
+
+
+@router.get("/rvc/active")
+def rvc_active():
+    """进行中的换声任务（页面刷新后恢复进度条用；服务重启则列表为空）。"""
+    with _RVC_LOCK:
+        jobs = [j for j in _RVC_JOBS.values() if j.get("status") == "running"]
+    return {"items": sorted(jobs, key=lambda x: x.get("ts", ""), reverse=True)}
+
+
+@router.get("/rvc/audio/{rid}")
+def rvc_audio(rid: str):
+    rid = os.path.basename(rid)
+    wav = _output_wav_path(rid)
+    if not wav.is_file():
+        raise HTTPException(status_code=404, detail="结果不存在")
+    return FileResponse(str(wav), media_type="audio/wav", filename=wav.name)
+
+
+# --------------------------------------------------------------------------- #
+# 音色制作（RVC 训练流水线）：上传样本 → 预处理 → F0/特征 → 训练 → 索引 → 导出
+# --------------------------------------------------------------------------- #
+RVC_TRAIN_DIR = RVC_DIR / "trains"
+RVC_TRAIN_LOCK = threading.Lock()
+RVC_TRAIN_JOBS: dict[str, dict] = {}
+_RVC_TRAIN_WORKER: threading.Thread | None = None
+
+
+def _rvc_train_read(rid: str) -> dict:
+    try:
+        return json.loads((RVC_TRAIN_DIR / rid / "job.json").read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+_EPOCH_RE = re.compile(r"====>\s*轮次：(\d+)")
+
+
+def _rvc_train_epoch(name: str, fallback_total: int = 0) -> tuple[int, int]:
+    """从训练日志解析当前轮次。返回 (当前轮, 总轮数)；读不到返回 (0, 0)。
+    总轮数优先用任务提交时的 epochs（logs config 里是底模采样配置，不可用）。"""
+    log = RVC_DIR / "logs" / name / "train.log"
+    try:
+        txt = log.read_text(encoding="utf-8", errors="replace")
+        ms = _EPOCH_RE.findall(txt)
+        if not ms:
+            return 0, 0
+        return int(ms[-1]), int(fallback_total or 0)
+    except Exception:
+        return 0, 0
+
+
+def _rvc_train_write(rid: str, job: dict) -> None:
+    d = RVC_TRAIN_DIR / rid
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "job.json").write_text(
+        json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def _rvc_run_step(cmd: list[str], job: dict, step: str) -> None:
+    """执行一个训练流水线步骤；失败抛异常，日志写进 job.log_tail。"""
+    job["step"] = step
+    job["status"] = "running"
+    _rvc_train_write(job["id"], job)
+    env = {**os.environ,
+           "PYTHONPATH": str(RVC_DIR),
+           "weight_root": str(RVC_MODELS_DIR),
+           "index_root": str(RVC_DIR / "logs"),
+           "rmvpe_root": str(RVC_DIR / "assets" / "rmvpe"),
+           "outside_index_root": str(RVC_DIR / "assets" / "indices"),
+           "OPENBLAS_NUM_THREADS": "1",
+           # 同上：CUDA Graph 与常驻 audiocpp 引擎冲突会死锁，训练进程一并关闭
+           "RVC_CUDA_GRAPH": "0"}
+    proc = subprocess.run(
+       [cmd[0], "-P", *cmd[1:]], cwd=str(RVC_DIR), env=env, capture_output=True, timeout=21600,
+       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+   )
+    tail = ((proc.stderr or b"") + (proc.stdout or b""))[-600:].decode("utf-8", "replace")
+    job["log_tail"] = tail[-400:]
+    _rvc_train_write(job["id"], job)
+    if proc.returncode != 0:
+        raise RuntimeError(f"步骤 {step} 失败（exit {proc.returncode}）：{tail[-300:]}")
+
+
+def _rvc_latest_export(name: str) -> Path | None:
+    cands = sorted(RVC_MODELS_DIR.glob(f"{name}*.pth"), key=lambda p: p.stat().st_mtime)
+    return cands[-1] if cands else None
+
+
+def _rvc_train_worker(rid: str, name: str, epochs: int) -> None:
+    job = _rvc_train_read(rid)
+    started = time.time()
+    exp_logs = RVC_DIR / "logs" / name
+    try:
+        n_p = max(1, (os.cpu_count() or 4) // 2)
+        ds = RVC_TRAIN_DIR / rid / "dataset"
+        exp_logs.mkdir(parents=True, exist_ok=True)  # 预处理会往 logs/<name>/ 写日志
+        # GPU 全局闸门：整条训练流水线与生成/批量/换声互斥（防 6GB 显存双进程 OOM）
+        _GPU_SEM.acquire()
+        # 1) 预处理切片（40k、3.7s/片）
+        _rvc_run_step([str(RVC_PY), str(RVC_TRAIN_DIR.parent / "train" / "preprocess.py"),
+                       str(ds), "40000", str(n_p), str(exp_logs), "False", "3.7"], job, "预处理切片")
+        # 2) F0 提取（rmvpe, cuda）
+        _rvc_run_step([str(RVC_PY), str(RVC_DIR / "train" / "dataset" / "extract_f0.py"),
+                       "cuda", "1", "0", "0", str(exp_logs), "False"], job, "F0 提取")
+        # 3) Hubert 特征（v2 → 768 维）
+        _rvc_run_step([str(RVC_PY), str(RVC_DIR / "train" / "dataset" / "extract_hubert_feature.py"),
+                       "cuda", "1", "0", str(exp_logs), "v2", "False"], job, "音色特征提取")
+        # 3.5) 生成 filelist.txt + config.json（webui 在启动训练前做同样的事）
+        gt_dir = exp_logs / "0_gt_wavs"
+        feats_dir = exp_logs / "3_feature768"
+        pairs = []
+        for wav in sorted(gt_dir.glob("*.wav")):
+            base = wav.stem
+            feat = feats_dir / f"{base}.npy"
+            f0 = exp_logs / "2a_f0" / f"{base}.wav.npy"
+            f0nsf = exp_logs / "2b-f0nsf" / f"{base}.wav.npy"
+            if feat.is_file() and f0.is_file() and f0nsf.is_file():
+                pairs.append((wav.resolve().as_posix(), feat.resolve().as_posix(),
+                              f0.resolve().as_posix(), f0nsf.resolve().as_posix()))
+        if not pairs:
+            raise RuntimeError("预处理/特征提取后没有可用样本（检查音频是否为有效人声、ffmpeg 是否正常）")
+        mute = (RVC_DIR / "logs" / "mute").resolve()
+        # 每行 5 列：wav|feature|f0|f0nsf|speaker_id（data_utils 按 record[:5] 解包）
+        lines = ["|".join([*p, "0"]) for p in pairs]
+        mute_line = "|".join([
+            (mute / "0_gt_wavs" / "mute40k.wav").as_posix(),
+            (mute / "3_feature768" / "mute.npy").as_posix(),
+            (mute / "2a_f0" / "mute.wav.npy").as_posix(),
+            (mute / "2b-f0nsf" / "mute.wav.npy").as_posix(),
+            "0",
+        ])
+        lines += [mute_line, mute_line]  # webui 同样把静音行重复两遍
+        (exp_logs / "filelist.txt").write_text("\n".join(lines) + "\n", encoding="utf8")
+        cfg = json.loads((RVC_DIR / "configs" / "v1" / "40k.json").read_text(encoding="utf-8"))
+        cfg.pop("speaker_info", None)
+        (exp_logs / "config.json").write_text(
+            json.dumps(cfg, ensure_ascii=False, indent=4), encoding="utf-8"
+        )
+        job["samples_used"] = len(pairs)
+        _rvc_train_write(rid, job)
+        # 4) 训练（40k v2 f0，从 pretrained_v2 底模热启；-sw 1 每 save 轮自动导出小模型到 weights）
+        _rvc_run_step([str(RVC_PY), str(RVC_DIR / "train" / "train.py"),
+                       "-e", name, "-sr", "40k", "-f0", "1", "-bs", "4",
+                       "-te", str(epochs), "-se", str(max(5, epochs // 4)),
+                       "-pg", "assets/pretrained_v2/f0G40k.pth", "-pd", "assets/pretrained_v2/f0D40k.pth",
+                       "-l", "1", "-c", "0", "-sw", "1", "-v", "v2"], job, "训练中")
+        # 5) 音色索引
+        _rvc_run_step([str(RVC_PY), str(RVC_DIR / "train" / "train_index.py"),
+                       name, "v2", str(RVC_DIR / "assets" / "indices"), str(n_p)], job, "音色索引")
+        # 6) 确认导出产物
+        exported = _rvc_latest_export(name)
+        if exported is None:
+            raise RuntimeError("训练完成但未找到导出的 pth（检查训练日志）")
+        idx_files = list((RVC_DIR / "logs" / name).glob("added_*.index"))
+        job.update(
+            status="done", step="完成",
+            model=exported.name,
+            index=idx_files[0].name if idx_files else "",
+            sec=round(time.time() - started, 1),
+        )
+        _rvc_train_write(rid, job)
+        # 落盘到 output/：历史页可查看（kind=train，无音频，点击可"去使用"）
+        _output_write_meta({
+            "id": rid, "ts": job.get("ts"), "status": "done", "kind": "train",
+            "voice_name": name, "model": exported.name, "index": job.get("index", ""),
+            "epochs": epochs, "samples_used": job.get("samples_used"),
+            "sec": job.get("sec"), "bytes": 0,
+            "style": f"音色制作 · {name}", "lyrics": f"训练 {epochs} 轮 · {job.get('samples_used', '?')} 个样本",
+            "cot": "train", "abc": "", "params": {},
+        })
+        _win_toast("🎵 音色制作完成：" + name, f"模型 {exported.name} 已可使用，耗时 {round((time.time()-started)/60)} 分钟")
+    except Exception as e:
+        job.update(status="error", step=job.get("step", ""), error=str(e)[:500],
+                   sec=round(time.time() - started, 1))
+        _rvc_train_write(rid, job)
+        _output_write_meta({
+            "id": rid, "ts": job.get("ts"), "status": "error", "kind": "train",
+            "voice_name": name, "epochs": epochs,
+            "samples_used": job.get("samples_used"),
+            "sec": job.get("sec"), "bytes": 0, "error": str(e)[:500],
+            "style": f"音色制作 · {name}", "lyrics": f"训练 {epochs} 轮",
+            "cot": "train", "abc": "", "params": {},
+        })
+        _win_toast("✕ 音色制作失败：" + name, str(e)[:120])
+    finally:
+        _GPU_SEM.release()  # 与上方 acquire() 配对，异常路径也必须释放闸门
+        with RVC_TRAIN_LOCK:
+            RVC_TRAIN_JOBS[rid] = job
+
+
+@router.post("/rvc/train")
+async def rvc_train(
+    files: list[UploadFile],
+    name: str = Form(...),
+    epochs: int = Form(100),
+):
+    """上传若干干声样本 → 创建音色制作任务（独占运行，与换声/生成共用 GPU）。"""
+    global _RVC_TRAIN_WORKER
+    name = re.sub(r'[\\/:*?"<>|\s]+', "_", name.strip())[:40] or "voice"
+    if RVC_MODELS_DIR.joinpath(f"{name}.pth").is_file() or any(RVC_MODELS_DIR.glob(f"{name}*.pth")):
+        raise HTTPException(status_code=409, detail=f"音色名已存在：{name}")
+    # 在训互斥：已有制作任务排队/运行中时拒绝，防双进程 CUDA OOM 与 logs/<name> 互写
+    if _RVC_TRAIN_WORKER is not None and _RVC_TRAIN_WORKER.is_alive():
+        with RVC_TRAIN_LOCK:
+            busy = any(j.get("status") in ("running", "pending")
+                       for j in RVC_TRAIN_JOBS.values())
+        if busy:
+            raise HTTPException(status_code=409, detail="已有音色制作任务在进行中，请等待完成后再提交")
+    rid = datetime.now().strftime("%Y%m%d_%H%M%S_") + os.urandom(2).hex()
+    ds = RVC_TRAIN_DIR / rid / "dataset"
+    ds.mkdir(parents=True, exist_ok=True)
+    total = 0
+    for i, f in enumerate(files):
+        ext = Path(f.filename or "s.wav").suffix.lower() or ".wav"
+        if ext not in (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".wma"):
+            ext = ".wav"
+        data = await f.read()
+        if not data:
+            continue  # 跳过空文件
+        if len(data) > 200 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail=f"第 {i+1} 个文件超过 200MB 上限，请先剪辑或压缩")
+        p = ds / f"sample_{i:03d}{ext}"
+        await asyncio.to_thread(p.write_bytes, data)  # 大文件写盘放线程池，避免阻塞事件循环
+        total += len(data)
+    if total < 300_000:
+        raise HTTPException(status_code=400, detail="样本太少（建议 3-10 分钟干净干声）")
+    job = {
+        "id": rid, "name": name, "status": "pending", "step": "排队中",
+        "epochs": epochs, "ts": datetime.now().isoformat(timespec="seconds"),
+        "samples": len(files),
+    }
+    _rvc_train_write(rid, job)
+    with RVC_TRAIN_LOCK:
+        RVC_TRAIN_JOBS[rid] = job
+    _RVC_TRAIN_WORKER = threading.Thread(target=_rvc_train_worker, args=(rid, name, epochs), daemon=True)
+    _RVC_TRAIN_WORKER.start()
+    return {"ok": True, "id": rid, "name": name, "job": job}
+
+
+@router.get("/rvc/train/status/{rid}")
+def rvc_train_status(rid: str):
+    rid = os.path.basename(rid)
+    job = _rvc_train_read(rid)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if job.get("status") == "running" and job.get("step") == "训练中":
+        cur, total = _rvc_train_epoch(job.get("name", ""), int(job.get("epochs") or 0))
+        if cur:
+            job["epoch"] = cur
+            job["epochs_total"] = total or job.get("epochs", 0)
+    return job
+
+
+@router.get("/rvc/train/active")
+def rvc_train_active():
+    """进行中/排队的音色制作任务（页面刷新后恢复进度条用）。"""
+    out = []
+    if RVC_TRAIN_DIR.is_dir():
+        for d in sorted(RVC_TRAIN_DIR.iterdir(), reverse=True):
+            job = _rvc_train_read(d.name)
+            if job.get("status") in ("running", "pending"):
+                if job.get("status") == "running" and job.get("step") == "训练中":
+                    cur, total = _rvc_train_epoch(job.get("name", ""), int(job.get("epochs") or 0))
+                    if cur:
+                        job["epoch"] = cur
+                        job["epochs_total"] = total or job.get("epochs", 0)
+                out.append(job)
+    return {"items": out}
+
+
+@router.delete("/rvc/train/{rid}")
+def rvc_train_delete(rid: str):
+    rid = os.path.basename(rid)
+    job = _rvc_train_read(rid)
+    if job.get("status") in ("running", "pending"):
+        raise HTTPException(status_code=409, detail="任务进行中，不能删除")
+    shutil.rmtree(RVC_TRAIN_DIR / rid, ignore_errors=True)
+    return {"ok": True}
+
+
+@router.post("/rvc/convert/{rid}")
+async def rvc_convert_by_rid(rid: str, payload: dict):
+    """把 output/ 里已生成的歌曲直接送入换声（历史页一键转发，无需重新上传）。"""
+    rid = os.path.basename(rid)
+    src_wav = _output_wav_path(rid)
+    if not src_wav.is_file():
+        raise HTTPException(status_code=404, detail="源音频不存在")
+    meta_path = _output_meta_path(rid)
+    meta = {}
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    if meta.get("kind") == "rvc":
+        raise HTTPException(status_code=400, detail="换声结果不能再送换声（请选择生成或上传的音频）")
+    model = str(payload.get("model") or "").strip()
+    models = _rvc_models()
+    if model not in models:
+        raise HTTPException(status_code=400, detail=f"未知音色模型：{model}（可用：{models}）")
+    rid2 = datetime.now().strftime("%Y%m%d_%H%M%S_") + os.urandom(2).hex()
+    in_dir = RVC_JOB_DIR / rid2
+    in_dir.mkdir(parents=True, exist_ok=True)
+    src = in_dir / "src.wav"
+    shutil.copyfile(src_wav, src)
+    try:
+        import soundfile as sf
+        src_duration = round(float(sf.info(str(src)).duration), 1)
+    except Exception:
+        src_duration = round(src.stat().st_size / 160_000, 1)
+    job = {
+        "id": rid2, "status": "running", "ts": datetime.now().isoformat(timespec="seconds"),
+        "model": model, "pitch": int(payload.get("pitch") or 0),
+        "f0_method": str(payload.get("f0_method") or "rmvpe"),
+        "index_rate": float(payload.get("index_rate") or 0.75),
+        "protect": float(payload.get("protect") or 0.33),
+        "rms_mix_rate": float(payload.get("rms_mix_rate") or 1.0),
+        "src_name": f"历史歌曲 {rid}", "src_size": src.stat().st_size,
+        "src_duration": src_duration, "src_rid": rid,
+    }
+    with _RVC_LOCK:
+        _RVC_JOBS[rid2] = job
+    threading.Thread(target=_rvc_convert_worker,
+                     args=(rid2, job, src, in_dir, model,
+                           int(payload.get("pitch") or 0),
+                           str(payload.get("f0_method") or "rmvpe"),
+                           float(payload.get("index_rate") or 0.75),
+                           float(payload.get("protect") or 0.33),
+                           float(payload.get("rms_mix_rate") or 1.0)),
+                     daemon=True).start()
+    return {"ok": True, "id": rid2, "job": job}
+
+
+# --------------------------------------------------------------------------- #
+# 音色库（参考音频 + 参考文本）
+# --------------------------------------------------------------------------- #
+@router.get("/voices")
+def list_voices():
+    return {"voices": voices.list_voices()}
+
+
+@router.post("/voices")
+def save_voice(
+    name: str = Form(...),
+    reference_text: str = Form(""),
+    audio: UploadFile = File(...),
+):
+    data = audio.file.read()
+    suffix = Path(audio.filename or "prompt.wav").suffix.lower() or ".wav"
+    item = voices.save_voice(name, reference_text, data, suffix)
+    return {"ok": True, "voice": item}
+
+
+@router.delete("/voices/{voice_id}")
+def delete_voice(voice_id: str):
+    voices.delete_voice(voice_id)
+    return {"ok": True}
+
+
+@router.post("/voices/transcribe")
+async def transcribe_voice(audio: UploadFile = File(...)):
+    """上传参考音频 -> 自动识别歌词/文本（ASR），用于翻唱工作流。"""
+    data = await audio.read()
+    text = asr.recognize_wav_bytes(data, audio.filename or "prompt.wav")
+    return {"ok": True, "text": text}
+
+
+@router.post("/voices/denoise")
+async def denoise_voice(audio: UploadFile = File(...)):
+    """上传参考音频 -> 降噪后返回增强音频。"""
+    data = await audio.read()
+    out = denoise.denoise_wav_bytes(data, audio.filename or "ref.wav")
+    return Response(
+        content=out,
+        media_type="audio/wav",
+        headers={"Content-Disposition": 'attachment; filename="enh.wav"'},
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 模板管理（前后端均可使用；此处提供服务端持久化到本地 templates.json）
+# --------------------------------------------------------------------------- #
+_TEMPLATES_FILE = ROOT / "templates.json"
+
+
+def _load_templates() -> list[dict]:
+    if not _TEMPLATES_FILE.exists():
+        return []
+    try:
+        data = json.loads(_TEMPLATES_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
+@router.get("/templates")
+def list_templates():
+    return {"templates": _load_templates()}
+
+
+@router.post("/templates")
+def save_template(payload: dict):
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    tpl = {
+        "id": voices._SAFE.sub("-", name) + "-" + str(int(time.time() * 1000)),
+        "name": name[:60],
+        "created_at": datetime.now().isoformat(),
+    }
+    # 全量参数白名单，便于模板一键回填
+    for key in ("style", "lyrics", "cot", "abc", "seed", "cfg", "steps",
+                "gender", "abc_temperature", "abc_top_p", "abc_top_k",
+                "semantic_temperature", "semantic_top_p", "semantic_top_k"):
+        if key in payload and payload[key] is not None:
+            val = payload[key]
+            tpl[key] = str(val)[:4000] if isinstance(val, str) else val
+    items = _load_templates()
+    items.insert(0, tpl)
+    _TEMPLATES_FILE.write_text(
+        json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return {"ok": True, "template": tpl}
+
+
+@router.delete("/templates/{template_id}")
+def delete_template(template_id: str):
+    items = _load_templates()
+    kept = [t for t in items if t.get("id") != template_id]
+    if len(kept) == len(items):
+        raise HTTPException(status_code=404, detail="template not found")
+    _TEMPLATES_FILE.write_text(
+        json.dumps(kept, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return {"ok": True}
+
+
+# 将扩展路由挂载到编译网关
+app.include_router(router)
+
+# AI 工作台（dsh 内核桥接）
+from ai_router import router as _ai_router
+app.include_router(_ai_router)
+
+
+# --------------------------------------------------------------------------- #
+# 启动时孤儿任务自愈：任何跨重启仍为 running 的落盘任务统一标记为中断，
+# 免得历史页/进行中区永远挂着假任务（生成任务在 /generate/current 有懒清理，
+# 这里是启动时的一次性兜底，覆盖换声/训练等所有 kind）。
+# --------------------------------------------------------------------------- #
+def _orphan_cleanup_on_startup() -> None:
+    # 1) output/ 元数据（生成/批量/换声/训练的归档记录）
+    if OUTPUT_DIR.is_dir():
+        for p in OUTPUT_DIR.glob("*.json"):
+            try:
+                m = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if m.get("status") == "running":
+                m["status"] = "error"
+                m["error"] = "服务重启，任务中断"
+                try:
+                    p.write_text(json.dumps(m, ensure_ascii=False, indent=2),
+                                 encoding="utf-8")
+                except Exception:
+                    pass
+    # 2) 音色训练 job.json（训练 worker 随进程终止，日志停在最后一轮）
+    if RVC_TRAIN_DIR.is_dir():
+        for d in RVC_TRAIN_DIR.iterdir():
+            jp = d / "job.json"
+            if not jp.is_file():
+                continue
+            try:
+                job = json.loads(jp.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if job.get("status") in ("running", "pending"):
+                job["status"] = "error"
+                job["error"] = "服务重启，任务中断"
+                if job.get("step") == "训练中":
+                    job["step"] = "已中断"
+                try:
+                    jp.write_text(json.dumps(job, ensure_ascii=False, indent=2),
+                                  encoding="utf-8")
+                except Exception:
+                    pass
+
+
+_orphan_cleanup_on_startup()
+
+# --------------------------------------------------------------------------- #
+# 覆盖根路径：编译网关自带的 / 带硬编码 403 访问门槛（作者残留），
+# 这里改为直接返回新版静态页面，让用户能以根路径正常访问。
+# --------------------------------------------------------------------------- #
+def _serve_index():
+    idx = ROOT / "static" / "index.html"
+    if idx.is_file():
+        content = idx.read_bytes()
+    else:
+        content = ("<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                   "<title>音乐工作台</title></head><body>"
+                   "<h1>index.html 缺失</h1>"
+                   "<p>请确认 static/index.html 存在。</p></body></html>").encode("utf-8")
+    return Response(content=content, media_type="text/html; charset=utf-8")
+
+
+_INDEX_ROUTE = APIRouter()
+
+
+@_INDEX_ROUTE.get("/", include_in_schema=False)
+def _index_root():
+    return _serve_index()
+
+
+# 将根路由插到路由表最前面，覆盖编译网关自带的 / 处理器
+app.include_router(_INDEX_ROUTE)
+# include_router 追加在末尾，因此此刻最后一个 "/" 路由就是我们自己的
+_mine_root = next(
+    (r for r in reversed(app.routes)
+     if getattr(r, "path", None) == "/" and type(r).__name__ == "APIRoute"),
+    None,
+)
+if _mine_root is not None:
+    # 删除所有 "/" 路由（含编译网关自带、带硬编码 403 门槛的那条），
+    # 再把我们自己的这条放回最前面，确保根路径命中新版页面。
+    app.routes[:] = [r for r in app.routes
+                     if getattr(r, "path", None) != "/" or r is _mine_root]
+    app.routes.remove(_mine_root)
+    app.routes.insert(0, _mine_root)
+
+if __name__ == "__main__":
+    uvicorn.run(
+        app,
+        host=settings.app_host,
+        port=settings.app_port,
+        reload=False,
+    )

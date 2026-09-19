@@ -1,0 +1,12 @@
+- insert:
+    - name: "@deepseek-ai/dsh-mcp-client"
+      path: "@deepseek-ai/dsh-mcp-client"
+      config:
+        transport: "stdio"
+        serverName: "yue2lab"
+        command: "E:/AI/10AIMusic/Yue/yuE-2/yuE-2/py312/python.exe"
+        args:
+          - "E:/AI/10AIMusic/Yue/yuE-2/yuE-2/mcp_server.py"
+        cwd: "E:/AI/10AIMusic/Yue/yuE-2/yuE-2"
+        toolCallTimeoutMs: 600000
+        failOnStartupError: false

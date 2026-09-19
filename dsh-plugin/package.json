@@ -1,0 +1,34 @@
+{
+  "name": "yue2-lab-plugin",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "音乐工作台 dsh 一体化插件：创作/批量/换声/历史/音色/模型，原生侧栏 + 主面板融合",
+  "main": "src/ui-panel.mjs",
+  "exports": {
+    ".": "./src/ui-panel.mjs",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-modules",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-layout"
+      ],
+      "platform": "web"
+    }
+  },
+  "files": [
+    "src/ui-panel.mjs",
+    "src/index.mjs",
+    "src/tools.mjs",
+    "src/bridge.mjs",
+    "src/runner.mjs",
+    "lib/client.js"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*"
+  }
+}

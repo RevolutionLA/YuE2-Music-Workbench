@@ -1,0 +1,2237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>音乐工作台 · YuE2</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3.5' fill='%23007aff'/%3E%3Cpath d='M11.2 3 6.8 4v5.6a1.9 1.9 0 1 0 .9 1.6V6.1l3.5-.8v2.9a1.9 1.9 0 1 0 .9 1.6V3z' fill='%23fff'/%3E%3C/svg%3E" />
+<style>
+  /* ============ 设计基调：苹果风格 · 浅色 / 系统字体 / 蓝色强调 / 柔和分层 ============ */
+  :root {
+    color-scheme: light;
+    --bg: #f5f5f7;
+    --bg-2: #ffffff;
+    --panel: #ffffff;
+    --panel-2: #f5f5f7;
+    --line: #e5e5ea;
+    --line-soft: #ebebf0;
+    --text: #1d1d1f;
+    --muted: #6e6e73;
+    --dim: #aeaeb2;
+    --acc: #007aff;
+    --acc-dim: #0051d5;
+    --acc-soft: rgba(0,122,255,.10);
+    --ok: #34c759;
+    --err: #ff3b30;
+    --warn: #ff9500;
+    --shadow: 0 2px 12px rgba(0,0,0,.06);
+    --shadow-lg: 0 8px 24px rgba(0,0,0,.10);
+    --mono: "SF Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  /* ============ 深色模式：仅覆盖颜色变量 ============ */
+  html[data-theme="dark"] {
+    --bg: #1c1c1e;
+    --bg-2: #2c2c2e;
+    --panel: #2c2c2e;
+    --panel-2: #3a3a3c;
+    --line: #48484a;
+    --line-soft: #3a3a3c;
+    --text: #f2f2f7;
+    --muted: #aeaeb2;
+    --dim: #7c7c80;
+    --acc: #0a84ff;
+    --acc-dim: #409cff;
+    --acc-soft: rgba(10,132,255,.16);
+    --shadow: 0 2px 12px rgba(0,0,0,.35);
+    --shadow-lg: 0 8px 24px rgba(0,0,0,.45);
+  }
+  html[data-theme="dark"] .tab:hover { background: rgba(255,255,255,.06); }
+  html[data-theme="dark"] .tab .badge { background: rgba(255,255,255,.08); }
+  html[data-theme="dark"] .chip:hover { border-color: #5a5a5e; background: #48484a; }
+  html[data-theme="dark"] .ghost:hover:not(:disabled) { background: #48484a; }
+  html[data-theme="dark"] .hist-item:hover,
+  html[data-theme="dark"] .tpl-card:hover { background: #48484a; }
+  html[data-theme="dark"] .dock { background: rgba(28,28,30,.82); }
+  html[data-theme="dark"] .toast { background: rgba(58,58,60,.95); }
+  html[data-theme="dark"] .spinner { border-color: rgba(255,255,255,.2); border-top-color: currentColor; }
+  html[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #55555a; }
+
+  /* ============ 高级感细节：按压反馈 / 微动效 / 层次 ============ */
+  .primary, .ghost, .danger, .chip, .icon-btn, .tab, .theme-btn { -webkit-tap-highlight-color: transparent; }
+  .primary:active:not(:disabled) { transform: scale(.97); }
+  .ghost:active:not(:disabled), .danger:active:not(:disabled) { transform: scale(.97); }
+  .chip:active { transform: scale(.95); }
+  .primary, .ghost, .danger, .chip { will-change: transform; }
+
+  textarea, input, select { transition: border-color .18s ease, box-shadow .18s ease, background .18s ease; }
+  .hist-item, .tpl-card { transition: background .18s ease, transform .18s ease; }
+  .hist-item:hover, .tpl-card:hover { transform: translateY(-1px); }
+
+  .card-sec-gap { }
+  main { animation: pagein .25s ease; }
+  @keyframes pagein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  .panel-tab { animation: pagein .22s ease; }
+
+  ::selection { background: var(--acc-soft); }
+  .sec { letter-spacing: .01em; }
+  .brand-name { letter-spacing: .02em; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font: 13px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+  a { color: inherit; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #d1d1d6; border-radius: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  /* ============ 侧栏 ============ */
+  body { display: flex; min-height: 100vh; }
+  .side { width: 210px; flex-shrink: 0; border-right: 1px solid var(--line); display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; padding: 16px 12px 14px; background: var(--bg); }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 0 4px; }
+  .mark { width: 32px; height: 32px; background: var(--acc); color: #fff; display: grid; place-items: center; border-radius: 8px; flex-shrink: 0; box-shadow: var(--shadow); }
+  .mark svg { width: 17px; height: 17px; }
+  .brand-name { font: 600 14px/1.2 var(--sans); color: var(--text); }
+  .brand-sub { font: 10.5px/1.4 var(--sans); color: var(--dim); margin-top: 2px; }
+  .side nav { display: flex; flex-direction: column; gap: 3px; margin-top: 22px; }
+  .side-foot { margin-top: auto; border-top: 1px solid var(--line); padding-top: 14px; display: flex; flex-direction: column; gap: 4px; }
+  .foot-row { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 30px; padding: 4px 10px; border: 0; border-radius: 9px; background: none; font: 12px var(--sans); color: var(--muted); text-align: left; transition: background .15s, color .15s; box-sizing: border-box; }
+  .foot-row svg { width: 13px; height: 13px; flex-shrink: 0; }
+  .foot-row .fr-label { flex: 1; }
+  .foot-row .fr-value { font: 10.5px var(--mono); color: var(--dim); max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button.foot-row { cursor: pointer; }
+  button.foot-row:hover { background: rgba(0,0,0,.05); color: var(--text); }
+  html[data-theme="dark"] button.foot-row:hover { background: rgba(255,255,255,.07); }
+  .foot-row .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex-shrink: 0; margin-left: auto; }
+  .foot-row.ok .dot { background: var(--ok); }
+  .foot-row.err .dot { background: var(--err); }
+  .foot-row.loading .dot { animation: pulse 1.2s infinite; }
+  .foot-row .mode-pill { font: 10px var(--mono); padding: 2px 8px; border-radius: 99px; background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); margin-left: auto; }
+  .foot-row .mode-pill:hover { background: var(--ok); color: #fff; border-color: var(--ok); }
+  .theme-btn { display: none; }
+  .theme-btn .ico-moon { display: none; }
+  html[data-theme="dark"] .theme-btn:hover { background: rgba(255,255,255,.07); }
+  html[data-theme="dark"] .theme-btn .ico-sun { display: none; }
+  html[data-theme="dark"] .theme-btn .ico-moon { display: block; }
+
+  /* 导航项沿用 .tab / data-tab 契约 */
+  .tab { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; color: var(--muted); font: 13px var(--sans); cursor: pointer; border: 0; background: none; text-align: left; width: 100%; }
+  .tab svg { width: 15px; height: 15px; flex-shrink: 0; }
+  .tab:hover { color: var(--text); background: rgba(0,0,0,.04); }
+  .tab.active { color: var(--acc); background: var(--acc-soft); font-weight: 600; }
+  .tab.active svg { color: var(--acc); }
+  .tab .badge { margin-left: auto; font: 10px var(--mono); color: var(--muted); background: rgba(0,0,0,.05); border-radius: 99px; padding: 1px 7px; min-width: 22px; text-align: center; }
+
+  .health { display: flex; align-items: center; gap: 7px; font: 11px var(--sans); color: var(--muted); }
+  .health .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex-shrink: 0; }
+  .health.ok .dot { background: var(--ok); }
+  .health.err .dot { background: var(--err); }
+  .health.loading .dot { animation: pulse 1.2s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+
+  /* ============ 主区 ============ */
+  main { flex: 1; min-width: 0; padding: 24px 28px 104px; }
+  .panel-tab { display: block; }
+  .grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: 20px; max-width: 1240px; }
+  @media (max-width: 960px) { .grid { grid-template-columns: 1fr; } }
+
+  .sec { font: 600 13px var(--sans); color: var(--text); padding-bottom: 0; margin: 0 0 10px; display: flex; align-items: center; gap: 7px; }
+  .sec svg { width: 15px; height: 15px; color: var(--acc); }
+  .sec + .sec, section .sec:not(:first-child) { margin-top: 22px; }
+
+  /* 白色卡片容器：苹果风格的柔和分层 */
+  .grid > div, .head-row + .row-list { }
+  .grid > div { background: var(--panel); border-radius: var(--radius); box-shadow: var(--shadow); padding: 18px 20px; }
+  .panel-tab > .row-list { background: var(--panel); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px 16px; }
+
+  label, .lbl { display: block; font: 12px var(--sans); color: var(--muted); margin: 12px 0 5px; }
+  textarea, input, select {
+    width: 100%; background: var(--bg-2); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 11px; font: 13px var(--sans); outline: none; transition: border-color .15s, box-shadow .15s;
+  }
+  textarea:focus, input:focus, select:focus { border-color: var(--acc); box-shadow: 0 0 0 3px var(--acc-soft); }
+  textarea { min-height: 84px; resize: vertical; line-height: 1.55; }
+  #lyrics { min-height: 240px; }
+  textarea.abc { min-height: 64px; font: 12px var(--mono); }
+  select { cursor: pointer; }
+  input[type="file"] { font: 11px var(--sans); color: var(--muted); padding: 5px 6px; }
+  input[type="number"] { font: 12.5px var(--mono); }
+
+  .frow { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .pgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  @media (max-width: 620px) { .frow, .pgrid { grid-template-columns: 1fr; } }
+
+  /* 风格 / 歌词预设：胶囊标签 */
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 8px 0 2px; }
+  .chip { border: 1px solid var(--line); background: var(--panel-2); color: var(--text); border-radius: 99px; padding: 4px 12px; cursor: pointer; font: 12px var(--sans); transition: all .15s; }
+  .chip:hover { border-color: #d1d1d6; background: #ececf0; }
+  .chip.active { border-color: transparent; background: var(--acc-soft); color: var(--acc); font-weight: 600; }
+
+  /* 按钮 */
+  .actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; align-items: center; }
+  button { font-family: var(--sans); }
+  .primary, .ghost, .danger {
+    display: inline-flex; align-items: center; gap: 6px; border-radius: 8px; padding: 7px 15px;
+    cursor: pointer; font-size: 13px; font-weight: 500; border: 1px solid transparent; transition: filter .15s, background .15s, border-color .15s;
+  }
+  .primary { background: var(--acc); color: #fff; font-weight: 600; box-shadow: var(--shadow); }
+  .primary:hover:not(:disabled) { filter: brightness(1.06); }
+  .ghost { background: var(--panel-2); color: var(--text); border-color: var(--line); }
+  .ghost:hover:not(:disabled) { background: #ececf0; }
+  .danger { background: transparent; color: var(--err); border-color: rgba(255,59,48,.35); }
+  .danger:hover:not(:disabled) { background: rgba(255,59,48,.08); }
+  .primary svg, .ghost svg, .danger svg { width: 13px; height: 13px; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .icon-btn { display: inline-grid; place-items: center; width: 26px; height: 26px; padding: 0; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; color: var(--muted); cursor: pointer; }
+  .icon-btn svg { width: 12px; height: 12px; }
+  .icon-btn:hover { color: var(--text); border-color: #d1d1d6; }
+  .icon-btn.del:hover { color: var(--err); border-color: rgba(255,59,48,.4); }
+
+  /* 状态 / 进度 */
+  .status { font: 12px var(--sans); color: var(--muted); min-height: 17px; margin-top: 12px; line-height: 1.55; white-space: pre-wrap; }
+  /* AI 工作台（内嵌 dsh 原生界面） */
+  .ai-frame-wrap { position: relative; height: calc(100vh - 190px); min-height: 480px; border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); background: var(--panel); }
+  .ai-frame-wrap iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .ai-frame-wrap .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+  .ai-layout { display: flex; gap: 14px; align-items: stretch; }
+  .ai-sessions { width: 180px; flex-shrink: 0; background: var(--panel); border-radius: var(--radius); box-shadow: var(--shadow); padding: 10px; align-self: flex-start; max-height: 60vh; overflow-y: auto; }
+  .ai-sess-title { font: 11px var(--sans); color: var(--dim); margin-bottom: 6px; }
+  .ai-sess-item { position: relative; padding: 7px 24px 7px 9px; border-radius: 8px; cursor: pointer; }
+  .ai-sess-item:hover { background: rgba(127,127,127,.1); }
+  .ai-sess-item.active { background: rgba(108,123,255,.14); }
+  .ai-sess-name { font: 12px var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ai-sess-sub { font: 10px var(--sans); color: var(--dim); }
+  .ai-sess-del { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); border: 0; background: none; color: var(--dim); cursor: pointer; font-size: 11px; opacity: 0; }
+  .ai-sess-item:hover .ai-sess-del { opacity: 1; }
+  .ai-main { flex: 1; min-width: 0; display: flex; flex-direction: column; max-width: 820px; margin: 0 auto; width: 100%; }
+  .ai-chat { flex: 1; display: flex; flex-direction: column; gap: 18px; max-height: 56vh; overflow-y: auto; padding: 16px 12px 12px; scroll-behavior: smooth; }
+  .ai-msg { display: flex; gap: 10px; max-width: 100%; }
+  .ai-msg.ai-user { flex-direction: row-reverse; }
+  .ai-avatar { width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font: 13px var(--sans); margin-top: 2px; }
+  .ai-bot .ai-avatar { background: linear-gradient(135deg, #6c7bff, #9b6cff); color: #fff; }
+  .ai-user .ai-avatar { background: rgba(127,127,127,.18); color: var(--muted); }
+  .ai-col { min-width: 0; max-width: 86%; display: flex; flex-direction: column; }
+  .ai-user .ai-col { align-items: flex-end; }
+  .ai-who { font: 10.5px var(--sans); color: var(--dim); margin-bottom: 4px; padding: 0 4px; }
+  .ai-body { font: 13.5px var(--sans); line-height: 1.7; padding: 10px 14px; border-radius: 14px; background: var(--panel); box-shadow: var(--shadow); word-break: break-word; }
+  .ai-user .ai-body { background: linear-gradient(135deg, #6c7bff, #7d8cff); color: #fff; border-bottom-right-radius: 4px; }
+  .ai-bot .ai-body { border-top-left-radius: 4px; }
+  .ai-body h1, .ai-body h2, .ai-body h3 { font-size: 13.5px; margin: 8px 0 4px; }
+  .ai-body ul, .ai-body ol { margin: 4px 0; padding-left: 20px; }
+  .ai-body table { border-collapse: collapse; margin: 6px 0; font-size: 12px; }
+  .ai-body th, .ai-body td { border: 1px solid var(--line-soft, rgba(127,127,127,.3)); padding: 3px 8px; }
+  .ai-code { font: 11.5px ui-monospace, Consolas, monospace; background: rgba(127,127,127,.12); border-radius: 8px; padding: 8px 10px; margin: 6px 0; overflow-x: auto; white-space: pre-wrap; }
+  .ai-body code { font: 12px ui-monospace, Consolas, monospace; background: rgba(127,127,127,.14); border-radius: 4px; padding: 1px 5px; }
+  .ai-body pre code { background: none; padding: 0; }
+  .ai-code-bar { display: flex; justify-content: space-between; align-items: center; font: 10.5px var(--sans); color: var(--dim); margin-top: 8px; }
+  .ai-code-copy { border: 0; background: rgba(127,127,127,.14); color: var(--muted); border-radius: 6px; padding: 2px 8px; cursor: pointer; font-size: 10.5px; }
+  .ai-code-copy:hover { background: rgba(127,127,127,.24); }
+  .ai-inputwrap { position: sticky; bottom: 0; background: linear-gradient(transparent, var(--bg, #f5f5f7) 40%); padding: 14px 0 6px; }
+  .ai-inputrow { display: flex; gap: 8px; align-items: flex-end; background: var(--panel); border-radius: 14px; box-shadow: 0 4px 18px rgba(0,0,0,.10); padding: 10px 12px; border: 1px solid rgba(127,127,127,.12); }
+  .ai-inputrow textarea { flex: 1; resize: none; min-height: 40px; border: 0; background: none; box-shadow: none; font: 13.5px var(--sans); }
+  .ai-inputrow textarea:focus { outline: none; }
+  .ai-inputrow .primary { border-radius: 10px; padding: 8px 18px; }
+  .status.err { color: var(--err); }
+  .status.ok { color: var(--ok); }
+  .progress { height: 4px; background: var(--line-soft); border-radius: 99px; margin-top: 10px; display: none; overflow: hidden; }
+  .progress.show { display: block; }
+  .progress > div { height: 100%; width: 0%; background: var(--acc); border-radius: 99px; transition: width .3s; }
+  .timer { color: var(--acc); font-weight: 600; }
+
+  details { margin-top: 12px; }
+  summary { cursor: pointer; color: var(--muted); font: 12px var(--sans); user-select: none; }
+  summary:hover { color: var(--text); }
+  details[open] summary { color: var(--acc); }
+
+  .hint { font: 11.5px/1.7 var(--sans); color: var(--muted); margin-top: 14px; background: var(--panel-2); border-radius: 8px; padding: 9px 12px; }
+  .hint b { color: var(--text); font-weight: 600; }
+  .hint-xs { font: 10.5px var(--sans); color: var(--dim); margin-top: 4px; min-height: 14px; }
+
+  /* 列表行（历史 / 音色 / 模板） */
+  .row-list { display: flex; flex-direction: column; gap: 7px; }
+  .empty { color: var(--dim); font: 12px var(--sans); padding: 28px 0; text-align: center; background: var(--panel-2); border-radius: 10px; }
+
+  .hist-item { display: flex; gap: 12px; align-items: center; padding: 10px 14px; border-radius: 10px; background: var(--panel-2); cursor: pointer; transition: background .15s; }
+  .hist-item:hover { background: #ececf0; }
+  .hist-item .h-body { flex: 1; min-width: 0; }
+  .hist-item .h-title { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hist-item .h-sub { font: 11px var(--mono); color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hist-item .h-time { font: 10.5px var(--sans); color: var(--dim); white-space: nowrap; }
+  .hist-item .h-actions { display: flex; gap: 6px; }
+
+  .voice-card { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 10px; background: var(--panel-2); }
+  .voice-card .v-name { font-weight: 600; font-size: 13px; }
+  .voice-card .v-text { color: var(--muted); font-size: 12px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .voice-card .v-meta { font: 10.5px var(--mono); color: var(--dim); }
+  .voice-card .v-actions { display: flex; gap: 6px; margin-top: 2px; }
+  .voice-card .v-actions button { padding: 4px 10px; font-size: 12px; }
+  .voice-card .preview { height: 30px; margin-top: 2px; }
+
+  .tpl-card { display: flex; flex-direction: column; gap: 5px; padding: 12px 14px; border-radius: 10px; background: var(--panel-2); cursor: pointer; transition: background .15s; }
+  .tpl-card:hover { background: #ececf0; }
+  .tpl-card .t-name { font-weight: 600; font-size: 13px; }
+  .tpl-card .t-prev { font: 11px var(--mono); color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .tpl-card .t-actions { display: flex; gap: 6px; margin-top: 4px; }
+  .tpl-card .t-actions button { padding: 4px 10px; font-size: 12px; }
+
+  .head-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; max-width: 1240px; }
+  .head-row .sec { margin: 0; padding-bottom: 0; }
+
+  audio { width: 100%; }
+  .muted { color: var(--muted); }
+  .flex { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1; min-width: 0; }
+  .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .spinner { width: 12px; height: 12px; border: 1.5px solid rgba(0,0,0,.15); border-top-color: currentColor; border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* 底部播放坞（常驻，毛玻璃） */
+  .dock { position: fixed; left: 210px; right: 0; bottom: 0; z-index: 40; background: rgba(255,255,255,.85); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border-top: 1px solid var(--line); display: flex; gap: 14px; align-items: center; padding: 9px 28px; }
+  .dock .dock-file { display: flex; flex-direction: column; gap: 2px; width: 230px; flex-shrink: 0; }
+  .dock .dock-name { font: 10.5px var(--sans); color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 230px; }
+  .dock audio { flex: 1; min-width: 160px; height: 32px; }
+  .dock .ghost { padding: 5px 12px; font-size: 12px; }
+
+  /* 右下角提示 */
+  .toast-wrap { position: fixed; right: 16px; bottom: 64px; display: flex; flex-direction: column; gap: 6px; z-index: 60; align-items: flex-end; pointer-events: none; }
+  .toast { background: rgba(255,255,255,.92); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); border-radius: 10px; padding: 8px 14px; font: 12px var(--sans); color: var(--text); box-shadow: var(--shadow-lg); animation: fadein .18s ease; max-width: 420px; pointer-events: auto; }
+  .toast.ok { border-left: 3px solid var(--ok); }
+  .toast.err { border-left: 3px solid var(--err); }
+  @keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* 常驻完成通知（点 X 才消失） */
+  .sticky-wrap { position: fixed; left: 50%; transform: translateX(-50%); top: 14px; z-index: 70; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
+  .sticky-notify { display: flex; align-items: center; gap: 12px; background: rgba(255,255,255,.95); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); border-radius: 12px; padding: 10px 14px; box-shadow: var(--shadow-lg); max-width: 560px; pointer-events: auto; animation: fadein .2s ease; border-left: 3px solid var(--muted); }
+  .sticky-notify.ok { border-left-color: var(--ok); }
+  .sticky-notify.err { border-left-color: var(--err); }
+  .sticky-notify .sn-title { font: 600 13px var(--sans); color: var(--text); }
+  .sticky-notify .sn-text { font: 12px var(--sans); color: var(--muted); margin-top: 1px; }
+  .sticky-notify .sn-x { border: 0; background: var(--panel-2); color: var(--muted); width: 24px; height: 24px; border-radius: 50%; cursor: pointer; font-size: 11px; flex-shrink: 0; display: grid; place-items: center; }
+  .sticky-notify .sn-x:hover { background: #ececf0; color: var(--text); }
+  html[data-theme="dark"] .sticky-notify { background: rgba(58,58,60,.95); }
+  html[data-theme="dark"] .sticky-notify .sn-x { background: #48484a; }
+
+  @media (max-width: 860px) {
+    body { display: block; }
+    .side { position: static; width: auto; height: auto; flex-direction: row; align-items: center; gap: 10px; padding: 10px 16px; border-right: 0; border-bottom: 1px solid var(--line); }
+    .side nav { flex-direction: row; margin: 0 0 0 auto; }
+    .side-foot { margin: 0; border: 0; padding: 0; }
+    .brand-sub { display: none; }
+    main { padding: 16px; }
+    .dock { left: 0; padding: 8px 16px; }
+    .dock .dock-file { width: 150px; }
+  }
+  /* dsh 内嵌模式：隐藏本页侧栏（功能由 dsh 侧栏提供），主区占满 */
+  html.embed .side { display: none !important; }
+  html.embed .dock { left: 0; }
+</style>
+</head>
+<body>
+
+<aside class="side">
+  <div class="brand">
+    <div class="mark"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 1.5 6 2.7v7.1a2.4 2.4 0 1 0 1.2 2.1V5.4l4.3-1v3.4a2.4 2.4 0 1 0 1.2 2.1V1.5z"/></svg></div>
+    <div>
+      <div class="brand-name">音乐工作台</div>
+      <div class="brand-sub">YuE2 · 本地音乐生成</div>
+    </div>
+  </div>
+  <nav>
+    <button class="tab active" data-tab="compose"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 12.7V3.6l7-1.6v9.1"/><circle cx="4.2" cy="12.7" r="1.8"/><circle cx="11.2" cy="11.1" r="1.8"/></svg>创作</button>
+    <button class="tab" data-tab="batch"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="5.2" height="5.2" rx="1.2"/><rect x="8.8" y="2" width="5.2" height="5.2" rx="1.2"/><rect x="2" y="8.8" width="5.2" height="5.2" rx="1.2"/><path d="M11.4 9v4.6M9.1 11.3h4.6"/></svg>批量<span class="badge" id="batchCount">0</span></button>
+    <button class="tab" data-tab="ailab"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l1.7 3.5 3.8.5-2.8 2.7.7 3.8L8 10.5l-3.4 1.8.7-3.8L2.5 5.8l3.8-.5z"/></svg>AI 工作台</button>
+    <button class="tab" data-tab="rvc"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 10V6a5 5 0 0 1 10 0v4"/><rect x="2" y="9.5" width="3" height="4.5" rx="1.2"/><rect x="11" y="9.5" width="3" height="4.5" rx="1.2"/></svg>换声</button>
+    <button class="tab" data-tab="voice"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="6" y="1.8" width="4" height="7.2" rx="2"/><path d="M3.8 7.6a4.2 4.2 0 0 0 8.4 0M8 11.8v2.4"/></svg>音色库<span class="badge" id="voiceCount">0</span></button>
+    <button class="tab" data-tab="templates"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.4c0-.6.4-1 1-1h3l1.5 1.5H13c.6 0 1 .4 1 1v6.1c0 .6-.4 1-1 1H3c-.6 0-1-.4-1-1z"/></svg>模板</button>
+    <button class="tab" data-tab="history"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.3 2.3"/></svg>历史<span class="badge" id="histCount">0</span></button>
+  </nav>
+  <div class="side-foot">
+    <div class="foot-row loading" id="health">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 14S2.5 10.5 2.5 6.6C2.5 4.4 4.2 3 6 3c1 0 1.7.5 2 1 .3-.5 1-1 2-1 1.8 0 3.5 1.4 3.5 3.6C13.5 10.5 8 14 8 14z"/></svg>
+      <span class="fr-label" id="healthText">正在连接…</span>
+      <span class="dot"></span>
+    </div>
+    <div class="foot-row" id="modeRow" style="display:none;">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5.5 6.5h5M5.5 9.5h3"/></svg>
+      <span class="fr-label" id="modeText">引擎模式</span>
+      <button id="modeBtn" class="mode-pill" title="切换引擎模式">切GPU</button>
+    </div>
+    <button class="foot-row" id="themeBtn" title="切换明暗模式">
+      <svg class="ico-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="3.2"/><path d="M8 1.5v1.8M8 12.7v1.8M1.5 8h1.8M12.7 8h1.8M3.4 3.4l1.3 1.3M11.3 11.3l1.3 1.3M12.6 3.4l-1.3 1.3M4.7 11.3l-1.3 1.3"/></svg>
+      <svg class="ico-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13.5 9.7A5.8 5.8 0 0 1 6.3 2.5a5.8 5.8 0 1 0 7.2 7.2z"/></svg>
+      <span class="fr-label" id="themeLabel">深色模式</span>
+      <span class="fr-value">点击切换</span>
+    </button>
+  </div>
+</aside>
+
+<main>
+  <!-- ============ 创作 ============ -->
+  <section class="panel-tab" id="tab-compose">
+    <div class="grid">
+
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4h12M2 8h8M2 12h10"/></svg>风格</div>
+        <div class="chips" id="styleChips"></div>
+        <div class="frow">
+          <div>
+            <label for="gender">歌手</label>
+            <select id="gender">
+              <option value="clear female vocal" selected>女声</option>
+              <option value="clear male vocal">男声</option>
+            </select>
+          </div>
+          <div>
+            <label for="modelSel">模型</label>
+            <select id="modelSel" class="model-select"></select>
+            <div class="hint-xs" id="modelHint"></div>
+          </div>
+        </div>
+        <label for="style">Style / 曲风描述（英文效果最佳）</label>
+        <textarea id="style">English, warm piano pop, expressive female voice, acoustic piano, rounded bass and light drums, lyrical memorable melody, unhurried phrasing, 88 BPM</textarea>
+
+        <div class="sec" style="margin-top:20px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10v9H3zM6 6.5h4M6 9h5"/></svg>歌词</div>
+        <div class="chips" id="lyricChips"></div>
+        <label for="lyrics">Lyrics / 歌词（建议带 [Verse] [Chorus] 分段）</label>
+        <textarea id="lyrics">[Verse]
+Neon fades along the lane
+Footsteps keep the time of rain
+Fold the night and leave it here
+Morning has a sky to clear
+
+[Chorus]
+Let the day come into view
+Every road begins with you
+Hold a little room for light
+We will sing beyond the night</textarea>
+      </div>
+
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 5h3l1.5-2h3L11 5h3v8H2zM8 10.2a1.8 1.8 0 1 0 0-3.6 1.8 1.8 0 0 0 0 3.6z"/></svg>参数</div>
+        <div class="pgrid">
+          <div><label for="cot">规划 CoT</label>
+            <select id="cot">
+              <option value="full" selected>full · 旋律+和弦</option>
+              <option value="melody">melody · 只旋律</option>
+              <option value="off">off · 直接生成</option>
+            </select>
+          </div>
+          <div><label for="seed">Seed（-1 随机）</label><input id="seed" type="number" value="-1" /></div>
+          <div><label for="steps">NAR Steps</label><input id="steps" type="number" value="32" min="1" /></div>
+          <div><label for="cfg">CFG Scale</label><input id="cfg" type="number" step="0.01" value="1.0" min="0" max="20" /></div>
+          <div><label for="genCount">生成次数</label><input id="genCount" type="number" value="1" min="1" max="20" /></div>
+          <div><label for="model">Model ID</label><input id="model" value="yue2" /></div>
+        </div>
+
+        <label for="abc">ABC 乐谱（可选，cot=melody/full 时生效；可从参考歌曲自动提取）</label>
+        <textarea id="abc" class="abc" placeholder="X:1&#10;M:4/4&#10;K:C&#10;V:Vocal&#10;C2 D2 E2 F2 |"></textarea>
+        <div class="actions" style="margin-top:6px;">
+          <button class="ghost" id="extractAbc">🎸 从参考歌曲提取乐谱</button>
+          <input type="file" id="abcAudio" accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" style="display:none;">
+          <span class="status" id="abcStatus" style="padding:0;"></span>
+        </div>
+        <div id="scoreList" style="margin-top:8px;"></div>
+
+        <details>
+          <summary>高级采样参数</summary>
+          <div class="pgrid" style="margin-top:10px;">
+            <div><label>ABC temp</label><input id="abc_temperature" type="number" step="0.05" placeholder="0.7"></div>
+            <div><label>ABC top_p</label><input id="abc_top_p" type="number" step="0.05" placeholder="0.9"></div>
+            <div><label>ABC top_k</label><input id="abc_top_k" type="number" placeholder="30"></div>
+            <div><label>Sem temp</label><input id="semantic_temperature" type="number" step="0.05" placeholder="1.0"></div>
+            <div><label>Sem top_p</label><input id="semantic_top_p" type="number" step="0.05" placeholder="0.95"></div>
+            <div><label>Sem top_k</label><input id="semantic_top_k" type="number" placeholder="100"></div>
+          </div>
+        </details>
+
+        <div class="actions">
+          <button class="primary" id="go">生成歌曲</button>
+          <button class="danger" id="stopGen" style="display:none">终止任务</button>
+          <button class="ghost" id="randSeed">随机种子</button>
+        </div>
+        <div class="progress" id="progress"><div id="progressBar"></div></div>
+        <div class="status" id="status">填写风格和歌词后点击生成。本机完整歌曲约需 4-8 分钟。</div>
+
+        <div class="hint">
+          <b>seed -1</b> 随机，固定数字可复现<br>
+          <b>full</b> 先写带和弦 ABC 再合成，适合改编<br>
+          <b>melody</b> 只规划旋律，伴奏自由，适合翻唱<br>
+          <b>off</b> 跳过符号规划，速度更快<br>
+          <b>6GB 显存</b> 推荐 Q4_K_M；失败时减小 Steps 或缩短歌词
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ 音色库 ============ -->
+  <section class="panel-tab" id="tab-voice" style="display:none;">
+    <div class="grid">
+
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="6" y="1.8" width="4" height="7.2" rx="2"/><path d="M3.8 7.6a4.2 4.2 0 0 0 8.4 0M8 11.8v2.4"/></svg>本地音色库</div>
+        <div class="row-list" id="voiceGrid">
+          <div class="empty">暂无保存的音色。</div>
+        </div>
+      </div>
+
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 3v10M3 8h10"/></svg>新增音色</div>
+        <label for="vName">音色名称</label>
+        <input id="vName" placeholder="例如：粤语主播 / 叶奈法" />
+        <label for="vRefText">参考文本（音频里说的话）</label>
+        <textarea id="vRefText" placeholder="音频里说的内容…"></textarea>
+        <label for="vAudio">参考音频文件</label>
+        <input id="vAudio" type="file" accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a,.webm" />
+        <div class="actions">
+          <button class="primary" id="vSave">保存音色</button>
+          <button class="ghost" id="vTranscribe">识别为歌词</button>
+          <button class="ghost" id="vDenoise" disabled title="需先选择音频">降噪增强</button>
+        </div>
+        <div class="status" id="vStatus">上传一段人声参考，可保存到音色库；或识别为歌词做翻唱。</div>
+        <audio id="vPreview" controls preload="metadata" style="margin-top:10px; display:none;"></audio>
+        <div class="hint">翻唱工作流：上传参考音频 → 识别为歌词 → 填入创作页 → cot 选 melody 生成。<b>产出为同旋律新编曲，不保留原歌手音色</b>（YuE2 官方路线）。</div>
+      </div>
+
+    </div>
+
+    <div style="margin-top:18px;">
+      <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 10V6a5 5 0 0 1 10 0v4"/><rect x="2" y="9.5" width="3" height="4.5" rx="1.2"/><rect x="11" y="9.5" width="3" height="4.5" rx="1.2"/></svg>RVC 音色模型（换声用，制作入口在「换声」页）</div>
+      <div class="row-list" id="rvcModelList">
+        <div class="empty">暂无音色模型。</div>
+      </div>
+      <div class="hint" style="margin-top:8px;">重命名后索引文件保留；删除会同时清理对应的音色索引。正在被换声任务使用的音色不能删除或重命名。</div>
+    </div>
+  </section>
+
+  <!-- ============ 历史 ============ -->
+  <section class="panel-tab" id="tab-history" style="display:none;">
+    <div class="head-row">
+      <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.3 2.3"/></svg>生成历史（服务端保留最近 1000 条，含音频）</div>
+      <div class="flex">
+        <button class="ghost" id="histRefresh" style="padding:4px 12px; font-size:12px;">刷新</button>
+        <button class="danger" id="histClear" style="padding:4px 12px; font-size:12px;">清空</button>
+      </div>
+    </div>
+    <div class="sec" id="histActiveSec" style="display:none; margin-top:14px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.3 2.3"/></svg>进行中的任务</div>
+    <div class="row-list" id="histActiveList" style="max-width:1240px; display:none;"></div>
+    <div class="sec" style="margin-top:14px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 8.5l3.5 3.5L14 3.5"/></svg>已完成</div>
+    <div class="row-list" id="histList" style="max-width:1240px;">
+      <div class="empty">暂无历史记录。生成歌曲后会自动保存，点击行回填参数。</div>
+    </div>
+  </section>
+
+  <!-- ============ 批量生成 ============ -->
+  <section class="panel-tab" id="tab-batch" style="display:none;">
+    <div class="grid">
+
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="5.2" height="5.2" rx="1.2"/><rect x="8.8" y="2" width="5.2" height="5.2" rx="1.2"/><rect x="2" y="8.8" width="5.2" height="5.2" rx="1.2"/><path d="M11.4 9v4.6M9.1 11.3h4.6"/></svg>批量任务（顺序生成，失败自动跳过继续）</div>
+        <label for="bName">队列名称</label>
+        <input id="bName" placeholder="例如：今晚挂机" />
+        <label for="bStyle">Style / 曲风描述（英文效果最佳）</label>
+        <textarea id="bStyle" style="min-height:64px;" placeholder="English, warm piano pop, acoustic piano, light drums, 88 BPM"></textarea>
+        <div class="pgrid" style="margin-top:10px;">
+          <div><label for="bGender">歌手</label>
+            <select id="bGender">
+              <option value="clear female vocal" selected>女声</option>
+              <option value="clear male vocal">男声</option>
+            </select>
+          </div>
+          <div><label for="bCot">规划 CoT</label>
+            <select id="bCot">
+              <option value="full" selected>full · 旋律+和弦</option>
+              <option value="melody">melody · 只旋律</option>
+              <option value="off">off · 直接生成</option>
+            </select>
+          </div>
+          <div><label for="bSeed">Seed（-1 随机）</label><input id="bSeed" type="number" value="-1" /></div>
+          <div><label for="bSteps">NAR Steps</label><input id="bSteps" type="number" value="32" min="1" /></div>
+          <div><label for="bCfg">CFG Scale</label><input id="bCfg" type="number" step="0.01" value="1.0" min="0" max="20" /></div>
+          <div><label for="bModel">Model ID</label><input id="bModel" value="yue2" /></div>
+        </div>
+        <label for="bAbc" style="margin-top:10px;">ABC 乐谱（可选，cot=melody/full 时生效）</label>
+        <textarea id="bAbc" class="abc" style="min-height:56px;" placeholder="X:1&#10;M:4/4&#10;K:C&#10;V:Vocal&#10;C2 D2 E2 F2 |"></textarea>
+        <details style="margin-top:10px;">
+          <summary>高级采样参数</summary>
+          <div class="pgrid" style="margin-top:10px;">
+            <div><label>ABC temp</label><input id="bAbcTemperature" type="number" step="0.05" placeholder="0.7"></div>
+            <div><label>ABC top_p</label><input id="bAbcTopP" type="number" step="0.05" placeholder="0.9"></div>
+            <div><label>ABC top_k</label><input id="bAbcTopK" type="number" placeholder="30"></div>
+            <div><label>Sem temp</label><input id="bSemTemperature" type="number" step="0.05" placeholder="1.0"></div>
+            <div><label>Sem top_p</label><input id="bSemTopP" type="number" step="0.05" placeholder="0.95"></div>
+            <div><label>Sem top_k</label><input id="bSemTopK" type="number" placeholder="100"></div>
+          </div>
+        </details>
+        <label for="bLyrics" style="margin-top:10px;">任务歌词（多个任务之间用一行 --- 分隔）</label>
+        <textarea id="bLyrics" style="min-height:130px;" placeholder="[Verse]&#10;歌词内容…&#10;---&#10;[Verse]&#10;第二首歌词…"></textarea>
+        <div class="hint-xs">队列中每首任务使用上方相同参数与各自不同的随机种子（Seed 填 -1 时；填具体值则依次递增）。</div>
+        <div class="actions">
+          <button class="ghost" id="bFromCompose">从创作页导入当前歌词</button>
+          <button class="primary" id="bStart">加入队列并开始</button>
+          <button class="danger" id="bStop">停止队列</button>
+        </div>
+        <div class="status" id="bStatus">队列中的任务会一件一件自动生成；单个失败不影响后续。生成期间可以离开电脑。</div>
+      </div>
+
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 8.5l3.5 3.5L14 3.5"/></svg>队列进度</div>
+        <div class="b-progress-row" id="bSummary" style="font:12px var(--sans); color:var(--muted); margin-bottom:10px;">当前没有批量任务。</div>
+        <div class="row-list" id="bList">
+          <div class="empty">队列为空。在左侧添加任务后点击「加入队列并开始」。</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ AI 工作台 ============ -->
+  <section class="panel-tab" id="tab-ailab" style="display:none;">
+    <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l1.7 3.5 3.8.5-2.8 2.7.7 3.8L8 10.5l-3.4 1.8.7-3.8L2.5 5.8l3.8-.5z"/></svg>AI 音乐制作人
+      <button class="ghost" id="aiReload" style="margin-left:auto;">↻ 重新加载</button>
+    </div>
+    <div class="ai-frame-wrap">
+      <iframe id="aiFrame" title="DeepSeek Harness AI 工作台" allow="clipboard-write; clipboard-read" style="display:none;"></iframe>
+      <div class="empty" id="aiFrameLoading">AI 工作台加载中（首次需启动 dsh 内核，约 10-30 秒）…</div>
+      <div class="empty" id="aiFrameError" style="display:none;">加载失败：点击「↻ 重新加载」重试，或查看 dsh-plugin/_dsh_web.log。</div>
+    </div>
+  </section>
+
+  <!-- ============ 换声（RVC） ============ -->
+  <section class="panel-tab" id="tab-rvc" style="display:none;">
+    <div class="grid">
+
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 10V6a5 5 0 0 1 10 0v4"/><rect x="2" y="9.5" width="3" height="4.5" rx="1.2"/><rect x="11" y="9.5" width="3" height="4.5" rx="1.2"/></svg>音频换声（RVC 音色转换）</div>
+        <label for="rvcFile">选择音频文件（wav / mp3 / flac / m4a…，如生成历史里的歌曲）</label>
+        <input id="rvcFile" type="file" accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" />
+        <div class="pgrid" style="margin-top:10px;">
+          <div><label for="rvcModel">音色模型</label><select id="rvcModel"></select></div>
+          <div><label for="rvcPitch">变调（半音，男转女 +12 / 女转男 -12）</label><input id="rvcPitch" type="number" value="0" min="-24" max="24" /></div>
+          <div><label for="rvcF0">变调算法</label>
+            <select id="rvcF0">
+              <option value="rmvpe" selected>rmvpe · 精准（推荐）</option>
+              <option value="pm">pm · 快速</option>
+            </select>
+          </div>
+          <div><label for="rvcIndexRate">音色检索强度</label><input id="rvcIndexRate" type="number" step="0.05" value="0.75" min="0" max="1" /></div>
+          <div><label for="rvcProtect"> protects（防气声，0.33 默认）</label><input id="rvcProtect" type="number" step="0.01" value="0.33" min="0" max="0.5" /></div>
+        </div>
+        <div class="actions">
+          <button class="primary" id="rvcGo">开始换声</button>
+        </div>
+        <div class="progress" id="rvcProgress"><div id="rvcProgressBar"></div></div>
+        <div class="status" id="rvcStatus">选择文件与音色后点击「开始换声」。转换在服务端进行，可离开页面。</div>
+      </div>
+
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 8.5l3.5 3.5L14 3.5"/></svg>转换结果</div>
+        <div class="row-list" id="rvcList">
+          <div class="empty">暂无换声任务。结果也会出现在「历史」页（标注 RVC 换声）。</div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="grid" style="margin-top:18px;">
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5" r="2.6"/><path d="M2.8 13.5c.6-2.8 2.7-4.3 5.2-4.3s4.6 1.5 5.2 4.3"/></svg>音色制作（用干声样本训练新音色）</div>
+        <label for="rvcTrainName">音色名称（英文/拼音，训练完成后出现在上方音色下拉框）</label>
+        <input id="rvcTrainName" placeholder="例如：myvoice" />
+        <label for="rvcTrainFiles" style="margin-top:10px;">干声样本（可多选，建议 3-10 分钟干净人声、无伴奏无混响）</label>
+        <input id="rvcTrainFiles" type="file" multiple accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" />
+        <div class="hint-xs">🎤 怎么录音：手机自带的录音机即可（m4a 能直接用）——安静房间、离麦 20-30cm 正常说话/唱歌，录 3 段以上每段 1-2 分钟；不要加伴奏、混响、变声特效。手机录的先传到电脑再选文件。质量差会导致音色发闷或跑调。</div>
+        <div class="pgrid" style="margin-top:10px;">
+          <div><label for="rvcTrainEpochs">训练轮数（100 轮约 20-60 分钟，样本少用 100-200）</label><input id="rvcTrainEpochs" type="number" value="100" min="20" max="1000" /></div>
+        </div>
+        <div class="actions">
+          <button class="primary" id="rvcTrainGo">开始制作音色</button>
+        </div>
+        <div class="status" id="rvcTrainStatus">训练在服务端进行（占用 GPU，期间不要同时生成歌曲）。完成后新音色自动出现在换声页的音色下拉框。</div>
+        <div class="progress" id="rvcTrainProgress"><div id="rvcTrainProgressBar"></div></div>
+      </div>
+
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 8.5l3.5 3.5L14 3.5"/></svg>制作进度</div>
+        <div class="row-list" id="rvcTrainList">
+          <div class="empty">暂无音色制作任务。</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 模板 ============ -->
+  <section class="panel-tab" id="tab-templates" style="display:none;">
+    <div class="grid">
+
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.4c0-.6.4-1 1-1h3l1.5 1.5H13c.6 0 1 .4 1 1v6.1c0 .6-.4 1-1 1H3c-.6 0-1-.4-1-1z"/></svg>我的模板</div>
+        <div class="row-list" id="tplList">
+          <div class="empty">暂无模板。</div>
+        </div>
+      </div>
+
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M5.5 2v8.2M5.5 2l-2 2M5.5 2l2 2M10.5 14V5.8M10.5 14l-2-2M10.5 14l2-2"/></svg>导入 / 导出</div>
+        <label for="tplName">模板名称</label>
+        <input id="tplName" placeholder="例如：我的民谣风" />
+        <div class="actions">
+          <button class="primary" id="tplSave">保存当前输入为模板</button>
+          <button class="ghost" id="tplExport">导出文件</button>
+          <button class="ghost" id="tplImport">从文件导入</button>
+          <button class="ghost" id="tplCopy">复制 JSON</button>
+        </div>
+        <label for="tplBox" style="margin-top:14px;">JSON 内容</label>
+        <textarea id="tplBox" placeholder="导出/导入的 JSON 内容会显示在这里，可复制分享。" style="font:12px var(--mono);"></textarea>
+        <div class="status" id="tplStatus"></div>
+      </div>
+
+    </div>
+  </section>
+</main>
+
+<!-- ============ 底部播放坞 ============ -->
+<div class="dock">
+  <div class="dock-file">
+    <input id="audioFile" type="file" accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a" />
+    <span class="dock-name" id="audioName">可载入本地音频，或等生成完成后在此播放</span>
+  </div>
+  <audio id="player" controls preload="metadata"></audio>
+  <button class="ghost" id="download" disabled>下载 WAV</button>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+<div class="sticky-wrap" id="stickyWrap"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const $$ = (sel) => document.querySelectorAll(sel);
+
+// ---------- 反代前缀自适配（经 dsh :3081/lab 访问时生效；7863 直访零影响） ----------
+const LAB_BASE = location.pathname.startsWith("/lab") ? "/lab" : "";
+if (LAB_BASE) {
+  // 1) fetch/XHR 补前缀
+  const _fetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    if (typeof input === "string" && input.startsWith("/") && !input.startsWith("//")) {
+      input = LAB_BASE + input;
+    }
+    return _fetch(input, init);
+  };
+  const _open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (m, u, ...a) {
+    if (typeof u === "string" && u.startsWith("/") && !u.startsWith("//")) u = LAB_BASE + u;
+    return _open.call(this, m, u, ...a);
+  };
+  // 2) 历史播放坞等媒体的绝对地址补前缀
+  new MutationObserver((muts) => {
+    for (const m of muts) for (const n of m.addedNodes) {
+      if (n.nodeType !== 1) continue;
+      for (const el of [n, ...n.querySelectorAll("audio[src^='/'],source[src^='/'],img[src^='/'],a[href^='/']")]) {
+        for (const attr of ["src", "href"]) {
+          const v = el.getAttribute && el.getAttribute(attr);
+          if (v && v.startsWith("/") && !v.startsWith("//")) el.setAttribute(attr, LAB_BASE + v);
+        }
+      }
+    }
+  }).observe(document.documentElement, { childList: true, subtree: true });
+}
+
+// ---------- helpers ----------
+function toast(msg, type="") {
+  const t = document.createElement("div");
+  t.className = "toast " + type;
+  t.textContent = msg;
+  $("toastWrap").appendChild(t);
+  setTimeout(() => { t.style.opacity = "0"; t.style.transition = "opacity .3s"; setTimeout(() => t.remove(), 320); }, 3600);
+}
+function numOrNull(id) {
+  const v = $(id).value.trim();
+  if (!v) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+function styleWithGender(raw) {
+  const gender = $("gender").value;
+  let style = (raw || "").replace(/,?\s*(expressive\s+)?(clear\s+)?(female|male)\s+(vocal|voice)/gi, "");
+  style = style.replace(/,?\s*(女声|男声)/g, "");
+  style = style.replace(/,\s*,/g, ",").replace(/^,\s*|,+\s*$/g, "").trim();
+  return style ? (style + ", " + gender) : gender;
+}
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+function timeAgo(ts) {
+  if (!ts) return "";
+  const diff = Date.now() - new Date(ts).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return "刚刚";
+  if (m < 60) return m + " 分钟前";
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + " 小时前";
+  return Math.floor(h / 24) + " 天前";
+}
+function fmtBytes(n) {
+  if (n == null) return "";
+  if (n < 1024*1024) return (n/1024).toFixed(1) + " KB";
+  return (n/1024/1024).toFixed(2) + " MB";
+}
+async function jfetch(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) {
+    let detail = await r.text();
+    try { detail = JSON.parse(detail).detail || detail; } catch {}
+    throw new Error(String(detail).slice(0, 300));
+  }
+  return r;
+}
+
+// ---------- state ----------
+let lastBlob = null, lastUrl = null;
+let curTab = "compose";
+let currentModels = [];
+
+// ---------- theme（明暗模式，localStorage 持久化）----------
+const THEME_KEY = "la_theme";
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  $("themeLabel").textContent = t === "dark" ? "浅色" : "深色";
+  try { localStorage.setItem(THEME_KEY, t); } catch {}
+}
+applyTheme((() => {
+  try { return localStorage.getItem(THEME_KEY) || "light"; } catch { return "light"; }
+})());
+$("themeBtn").onclick = () => {
+  applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+};
+
+// ---------- tabs ----------
+// 点击页签：同步 hash（供 dsh 侧栏/刷新恢复），相同 hash 重复点击也能再次切换
+$$(".tab").forEach(t => t.onclick = () => {
+  const target = "#" + t.dataset.tab;
+  if (location.hash === target) switchTab(t.dataset.tab);  // hashchange 不触发，手动切
+  else location.hash = target;
+});
+function switchTab(name) {
+  curTab = name;
+  $$(".tab").forEach(x => x.classList.toggle("active", x.dataset.tab === name));
+  $$(".panel-tab").forEach(p => p.style.display = p.id === "tab-" + name ? "" : "none");
+}
+
+// ---------- presets ----------
+const fallbackStyles = [
+  { id: "piano_pop", name: "温暖钢琴流行", style: $("style").value },
+  { id: "c_pop", name: "华语流行", style: "Chinese, contemporary C-pop, clear female vocal, clean electric guitar, tight drums, warm bass, radio mix, 96 BPM" },
+  { id: "folk", name: "民谣弹唱", style: "Chinese, acoustic folk, intimate male vocal, fingerstyle guitar, light shaker, close-mic demo, 82 BPM" },
+  { id: "rock", name: "流行摇滚", style: "English, pop rock, bright guitars, clean drums, warm vocal, live-band energy, 118 BPM" },
+];
+const fallbackLyrics = [
+  { id: "city_lights", name: "City Lights", lyrics: $("lyrics").value },
+  { id: "last_train", name: "末班车", lyrics: "[Verse]\n站台灯还亮着最后一排\n夜风把票根吹到鞋边\n你说下个夏天还会回来\n我把这句话叠进衣袋\n\n[Chorus]\n末班车带走未说完的话\n城市在雨里慢慢长大\n如果黎明会把路点亮\n我们就在下一站相见吧" },
+];
+function renderChips(el, items, key, target) {
+  el.innerHTML = "";
+  items.forEach((item, i) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "chip" + (i === 0 ? " active" : ""); b.textContent = item.name;
+    b.onclick = () => { [...el.children].forEach(c => c.classList.remove("active")); b.classList.add("active"); $(target).value = item[key]; };
+    el.appendChild(b);
+  });
+}
+async function loadPresets() {
+  renderChips($("styleChips"), fallbackStyles, "style", "style");
+  renderChips($("lyricChips"), fallbackLyrics, "lyrics", "lyrics");
+  try {
+    const r = await fetch("/api/presets");
+    const j = await r.json();
+    if (Array.isArray(j.styles) && j.styles.length) renderChips($("styleChips"), j.styles, "style", "style");
+    if (Array.isArray(j.lyrics) && j.lyrics.length) renderChips($("lyricChips"), j.lyrics, "lyrics", "lyrics");
+  } catch {}
+}
+
+// ---------- health & models ----------
+let engineMode = "cuda";
+async function refreshHealth() {
+  try {
+    const r = await fetch("/api/health");
+    const j = await r.json();
+    const h = $("health");
+    // /api/health 返回 {gateway:"ok", audiocpp:{status,backend}, models:{...}}
+    const be = j.audiocpp || {};
+    if (r.ok && (j.gateway === "ok" || be.status === "ok")) {
+      h.className = "foot-row ok";
+      const mode = (be.backend || "").toUpperCase();
+      $("healthText").textContent = "引擎就绪 · " + (j.models?.yue2 || "yue2") + (mode ? " · " + mode : "");
+    } else {
+      h.className = "foot-row err";
+      $("healthText").textContent = "引擎未就绪";
+    }
+  } catch {
+    $("health").className = "foot-row err";
+    $("healthText").textContent = "网关未连通";
+  }
+  refreshEngineMode();
+}
+async function refreshEngineMode() {
+  try {
+    const j = await (await fetch("/api/backend/mode")).json();
+    engineMode = j.mode || "cuda";
+    $("modeRow").style.display = "";
+    $("modeText").textContent = engineMode === "cpu"
+      ? "CPU 模式 · 慢 5-10 倍"
+      : (j.vram_ok === false
+          ? "GPU 模式 · 显存不足(" + Math.round((j.vram_free_mb||0)/1024) + "GB空闲)"
+          : "GPU 模式 · 显存 " + (j.vram_free_mb ? (j.vram_free_mb/1024).toFixed(1) + "GB 空闲" : "状态未知"));
+    $("modeBtn").textContent = engineMode === "cpu" ? "切GPU" : "切CPU";
+    $("modeBtn").title = engineMode === "cpu"
+      ? "切回 GPU（CUDA）模式，速度快"
+      : "显存不足时切换 CPU 兜底（慢但能出结果）";
+  } catch { $("modeRow").style.display = "none"; }
+}
+$("modeBtn").onclick = async () => {
+  const target = engineMode === "cpu" ? "cuda" : "cpu";
+  if (target === "cpu" && !confirm("切到 CPU 模式？生成会慢 5-10 倍，但显存不足也能出结果。")) return;
+  $("modeBtn").disabled = true;
+  try {
+    const r = await jfetch("/api/backend/mode", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ mode: target }) });
+    const j = await r.json();
+    toast(j.message || "已切换", "ok");
+    $("status").className = "status ok"; $("status").textContent = j.message || "引擎模式已切换";
+    refreshEngineMode();
+    setTimeout(refreshHealth, 4000);
+  } catch (e) { toast("切换失败：" + e.message, "err"); }
+  finally { $("modeBtn").disabled = false; }
+};
+async function loadModels() {
+  try {
+    const r = await fetch("/api/models/list");
+    const j = await r.json();
+    currentModels = Array.isArray(j.models) ? j.models : [];
+    const sel = $("modelSel");
+    sel.innerHTML = "";
+    if (!currentModels.length) {
+      const o = document.createElement("option"); o.value = ""; o.textContent = "未检测到模型"; sel.appendChild(o); return;
+    }
+    currentModels.forEach(m => {
+      const o = document.createElement("option");
+      o.value = m.path; o.textContent = m.quant + " · " + m.size_gb + " GB";
+      sel.appendChild(o);
+    });
+    // 6GB 显存默认选 Q4 系（Q8/Q4 峰值差异见 modelHint）
+    const q4 = currentModels.find(m => /q4/i.test(m.path)) || currentModels[0];
+    if (q4) sel.value = q4.path;
+    try {
+      const cur = await (await fetch("/api/models/current")).json();
+      if (cur.path && currentModels.some(m => m.path === cur.path)) sel.value = cur.path;
+    } catch {}
+    updateModelHint();
+    sel.disabled = false;
+  } catch {}
+}
+function updateModelHint() {
+  const m = currentModels.find(x => x.path === $("modelSel").value);
+  const el = $("modelHint");
+  if (!m) { el.textContent = ""; return; }
+  el.textContent = /q4/i.test(m.path)
+    ? "6GB 显存推荐；长歌词峰值会升高"
+    : "高精度；6GB 卡显存吃紧，可能加载失败";
+}
+$("modelSel").onchange = async () => {
+  const path = $("modelSel").value;
+  if (!path) return;
+  const old = $("modelSel").dataset.last;
+  if (old === path) return;
+  $("modelSel").dataset.last = path;
+  const m = currentModels.find(x => x.path === path);
+  if (!m) return;
+  $("modelSel").disabled = true;
+  $("status").className = "status"; $("status").textContent = "正在切换到 " + m.quant + " 并重启音频引擎…（模型较大时需 1-2 分钟）";
+  try {
+    const r = await jfetch("/api/models/switch", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ path, vae: m.vae }) });
+    const j = await r.json();
+    toast("已切换到 " + m.quant, "ok");
+    $("status").className = "status ok"; $("status").textContent = j.message || "模型已切换";
+    updateModelHint();
+    setTimeout(refreshHealth, 4000);
+  } catch (err) {
+    $("status").className = "status err"; $("status").textContent = "模型切换失败：" + err.message;
+    $("modelSel").dataset.last = "";
+  } finally { $("modelSel").disabled = false; }
+};
+
+// ---------- audio player ----------
+function loadAudio(blob, name) {
+  lastBlob = blob;
+  if (lastUrl) URL.revokeObjectURL(lastUrl);
+  lastUrl = URL.createObjectURL(blob);
+  const p = $("player"); p.pause(); p.src = lastUrl; p.load();
+  if (name) $("audioName").textContent = name;
+  $("download").disabled = false;
+}
+$("audioFile").onchange = () => {
+  const f = $("audioFile").files && $("audioFile").files[0];
+  if (f) loadAudio(f, f.name);
+};
+$("download").onclick = () => {
+  if (!lastUrl) return;
+  let name = ($("audioName").textContent || "").trim();
+  const a = document.createElement("a");
+  a.href = lastUrl;
+  if (name && /\.(wav|mp3|flac|ogg|m4a)$/i.test(name)) {
+    a.download = name.replace(/[\\/:*?"<>|]+/g, "_");
+  } else {
+    a.download = "yue2-" + new Date().toISOString().slice(0,19).replace(/[:T]/g,"") + ".wav";
+  }
+  a.click();
+};
+
+// ---------- generation（服务端托管 + 轮询，刷新页面不丢任务）----------
+function setGenerating(on) {
+  $("go").disabled = on;
+  $("go").innerHTML = on ? '<span class="spinner"></span> 生成中…' : "生成歌曲";
+  $("stopGen").style.display = on ? "" : "none";
+}
+
+// ---------- 用户主动终止当前生成/连发任务（网关不停，引擎下次生成自动重启） ----------
+$("stopGen").onclick = async () => {
+  if (!confirm("确定终止当前任务？正在生成的这首会被丢弃（不保存），连发/批量队列后续任务全部取消。")) return;
+  $("stopGen").disabled = true;
+  try {
+    const r = await fetch("/api/generate/stop", { method: "POST" });
+    const j = await r.json();
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    setGenerating(false);
+    $("progress").classList.remove("show");
+    $("status").className = "status err";
+    $("status").textContent = j.message || "任务已终止。";
+    toast(j.message || "任务已终止", "ok");
+    renderHistory();
+    renderBatch();
+  } catch (err) {
+    toast("终止失败：" + err.message, "err");
+  } finally {
+    $("stopGen").disabled = false;
+  }
+};
+
+// 进度估算：基于本机 13 次实测拟合（1660S + Q4，GPU 模式，2026-09-14/15 批次）：
+//   off/4步/41词→34~172s · off/8步/29词→203s · full/32步/72字→288~354s · full/32步/287字→1155~2218s
+// 关键结论：同配置波动可达 ±50%（受显存挤占影响），故用中位数公式 + 区间显示。
+// 模型：t = (110 + 1.5×加权字符数) × f_cot × f_steps
+//   加权字符数 u = 中文字×2.4 + 其他字符；f_cot: full 1.0 / melody 0.72 / off 0.55
+//   f_steps = 0.42 + 0.58×steps/32
+function estimateTotalSec(job) {
+  const s = (job.lyrics || "").replace(/\s/g, "");
+  let units = 0;
+  for (const ch of s) units += /[\u3400-\u4dbf\u4e00-\u9fff]/.test(ch) ? 2.4 : 1;
+  const fCot = job.cot === "melody" ? 0.72 : job.cot === "off" ? 0.55 : 1.0;
+  const steps = (job.params && job.params.num_inference_steps) || 32;
+  const t = (110 + 1.5 * units) * fCot * (0.42 + 0.58 * steps / 32);
+  return Math.min(21600, Math.max(60, t));
+}
+
+let pollTimer = null;
+
+function renderJobProgress(job) {
+  const chain = { index: job.chain_index || 1, total: job.chain_total || 1 };
+  const t0 = new Date(job.ts).getTime() || Date.now();
+  const elapsed = (Date.now() - t0) / 1000;
+  const total = estimateTotalSec(job);
+  const ratio = Math.min(1, elapsed / total);
+  // 前段稍快、尾段放缓的缓动曲线，视觉上更接近真实节奏
+  const pct = Math.min(97, 4 + 93 * Math.pow(ratio, 0.9));
+  $("progressBar").style.width = pct.toFixed(1) + "%";
+  const eta = Math.max(0, total - elapsed);
+  const overtime = elapsed > total * 1.5;  // 实测同配置波动±50%，1.5倍内都属正常
+  const pre = chain && chain.total > 1 ? `第 ${chain.index || job.chain_index || 1}/${chain.total} 首 · ` : "";
+  const etaStr = eta > 90 ? Math.round(eta / 60) + " 分钟" : Math.round(eta) + " 秒";
+  $("status").innerHTML = pre + (overtime
+    ? "仍在生成（耗时超过预估区间，受显存挤占影响属正常）… "
+    : (job.cpu_fallback ? "CPU 模式生成中（较慢，请耐心等待）… " : "服务端生成中（刷新页面不会丢失任务）… "))
+    + "<span class='timer'>" + Math.floor(elapsed/60) + "分" + Math.round(elapsed%60) + "秒</span>"
+    + (overtime ? "" : " · 预计还需 " + etaStr);
+}
+
+// ---------- 完成通知：浏览器通知(requireInteraction) + 页内常驻横幅(带X) ----------
+function stickyNotify(title, body, isOk) {
+  // 页内常驻横幅：点 X 才消失
+  const banner = document.createElement("div");
+  banner.className = "sticky-notify " + (isOk ? "ok" : "err");
+  banner.innerHTML = `
+    <div class="sn-body"><div class="sn-title">${escapeHtml(title)}</div><div class="sn-text">${escapeHtml(body)}</div></div>
+    <button class="sn-x" title="关闭">✕</button>`;
+  banner.querySelector(".sn-x").onclick = () => banner.remove();
+  $("stickyWrap").appendChild(banner);
+  // 浏览器原生通知（后台标签页也可见），常驻直到用户点掉
+  try {
+    if ("Notification" in window) {
+      if (Notification.permission === "granted") {
+        const n = new Notification(title, { body, requireInteraction: true, tag: "yue2-gen" });
+        n.onclick = () => { window.focus(); n.close(); };
+      } else if (Notification.permission === "default") {
+        Notification.requestPermission();
+      }
+    }
+  } catch {}
+}
+
+function applyFinishedJob(job) {
+  const name = (job.style || "").split(",")[0] || job.id;
+  if (job.status === "done") {
+    $("progressBar").style.width = "100%";
+    $("status").className = "status ok";
+    $("status").innerHTML = "生成完成 · " + fmtBytes(job.bytes) + " · seed="
+      + escapeHtml(String(job.seed_actual ?? "")) + " · <span class='timer'>" + (job.sec || "?") + "s</span>";
+    fetch("/api/generate/audio/" + job.id).then(r => r.ok ? r.blob() : null).then(b => {
+      if (b) loadAudio(b, job.id + ".wav");
+    });
+    toast("歌曲生成完成，已保存到 output/", "ok");
+    stickyNotify("🎵 生成完成：" + name, "已保存到 output/，可在历史页回放。" + (job.batch ? "批量队列将继续下一首。" : ""), true);
+    renderHistory();
+    if (job.batch) renderBatch();
+  } else {
+    $("status").className = "status err";
+    let msg = "生成失败：" + (job.error || "未知错误");
+    if (/memory|alloc|oom/i.test(msg)) msg = "显存不足（6GB 卡建议 Q4_K_M + 缩短歌词/减小 Steps）\n" + msg;
+    $("status").textContent = msg;
+    toast("生成失败", "err");
+    stickyNotify("✕ 生成失败：" + name, (job.batch ? "批量队列将自动继续下一首。" : "") + "点击本条回创作页查看。", false);
+  }
+  setGenerating(false);
+  setTimeout(() => $("progress").classList.remove("show"), 1500);
+}
+
+function pollJob() {
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = setTimeout(async () => {
+    try {
+      const j = await (await fetch("/api/generate/current")).json();
+      const job = j.job;
+      if (job && job.status === "running") {
+        renderJobProgress(job);
+        pollJob();
+        return;
+      }
+      if (job && (job.status === "done" || job.status === "error")) {
+        applyFinishedJob(job);
+        return;
+      }
+      // 兜底：服务端已无任务记录但页面仍在生成中——以服务端为准结束状态
+      if (!job) {
+        setGenerating(false);
+        $("progress").classList.remove("show");
+        $("status").className = "status err";
+        $("status").textContent = "任务已结束（服务端未保留运行记录，详见历史页最近一条，可能是生成失败）。";
+      }
+    } catch {}
+  }, 2000);
+}
+
+async function resumeRunningJob() {
+  try {
+    const j = await (await fetch("/api/generate/current")).json();
+    const job = j.job;
+    if (job && job.status === "running") {
+      // 刷新后把运行中任务的创作参数回填到表单，与页面所见一致
+      $("style").value = job.style || "";
+      $("lyrics").value = job.lyrics || "";
+      $("cot").value = job.cot || "full";
+      $("abc").value = job.abc || "";
+      // 从 style 中反解歌手性别（提交时 styleWithGender 会把性别拼进 style 尾部）
+      const gm = (job.style || "").match(/clear\s+(female|male)\s+vocal/i);
+      if (gm) $("gender").value = "clear " + gm[1].toLowerCase() + " vocal";
+      const p = job.params || {};
+      if (p.seed !== undefined && p.seed !== null) $("seed").value = p.seed;
+      if (p.cfg_scale !== undefined && p.cfg_scale !== null) $("cfg").value = p.cfg_scale;
+      if (p.num_inference_steps) $("steps").value = p.num_inference_steps;
+      setGenerating(true);
+      $("progress").classList.add("show");
+      renderJobProgress(job);
+      pollJob();
+      return true;
+    }
+    if (!job && j.latest && j.latest.status === "done") {
+      // 页面刷新后恢复最近一次成果（不自动播放，仅提示）
+      $("status").className = "status ok";
+      $("status").textContent = "上次生成已完成（" + j.latest.id + "），可在历史页回放。";
+    }
+  } catch {}
+  return false;
+}
+
+$("go").onclick = async () => {
+  const lyrics = $("lyrics").value.trim();
+  const style = styleWithGender($("style").value.trim());
+  if (!lyrics || !$("style").value.trim()) {
+    $("status").className = "status err"; $("status").textContent = "请填写风格和歌词后再生成。"; return;
+  }
+  const genCount = Math.max(1, Math.min(20, numOrNull("genCount") || 1));
+  const payload = {
+    lyrics, style,
+    cot: $("cot").value,
+    abc: $("abc").value,
+    model: $("model").value || "yue2",
+    count: genCount,
+    seed: numOrNull("seed"), cfg_scale: numOrNull("cfg"), num_inference_steps: numOrNull("steps"),
+    abc_temperature: numOrNull("abc_temperature"), abc_top_p: numOrNull("abc_top_p"), abc_top_k: numOrNull("abc_top_k"),
+    semantic_temperature: numOrNull("semantic_temperature"), semantic_top_p: numOrNull("semantic_top_p"), semantic_top_k: numOrNull("semantic_top_k"),
+  };
+  setGenerating(true); $("download").disabled = true;
+  $("progress").classList.add("show"); $("progressBar").style.width = "6%";
+  $("status").className = "status";
+  $("status").textContent = genCount > 1 ? `已提交 ${genCount} 首连发任务到服务端…` : "任务已提交到服务端…";
+  try {
+    const r = await fetch("/api/generate/start", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+    if (!r.ok) {
+      const d = await r.text();
+      throw new Error(r.status === 409 ? "已有生成任务在进行中（刷新页面可恢复进度）" : d.slice(0, 300));
+    }
+    pollJob();
+  } catch (err) {
+    $("status").className = "status err"; $("status").textContent = "提交失败：" + err.message;
+    setGenerating(false);
+    $("progress").classList.remove("show");
+  }
+};
+$("randSeed").onclick = () => { $("seed").value = String(Math.floor(Math.random() * 2147483647)); };
+
+// ---------- 从参考歌曲提取乐谱（SheetSage2：音频 → ABC，填入创作页直接改词翻唱） ----------
+// 异步任务模式：提交后立即拿 job_id，轮询取结果（真实歌曲转谱常超 1 分钟，
+// 长请求会被 dsh 反代超时掐断，故不用同步等待）。
+$("extractAbc").onclick = () => $("abcAudio").click();
+$("abcAudio").onchange = async () => {
+  const file = $("abcAudio").files[0];
+  if (!file) return;
+  const form = new FormData();
+  form.append("audio", file);
+  $("extractAbc").disabled = true;
+  $("abcStatus").textContent = "正在上传并提交转谱任务…";
+  try {
+    const r = await fetch("/api/score", { method: "POST", body: form });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const msg = j.detail || j.error || (typeof j === "string" ? j : JSON.stringify(j));
+      throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    }
+    const jobId = j.job_id;
+    if (!jobId) throw new Error("网关未返回任务 ID");
+    // 轮询结果（每 3 秒，最长 20 分钟）
+    $("abcStatus").textContent = "转谱进行中（首次需加载模型，请耐心等待）…";
+    const deadline = Date.now() + 20 * 60 * 1000;
+    while (Date.now() < deadline) {
+      await new Promise((res) => setTimeout(res, 3000));
+      const rr = await fetch("/api/score/result?job_id=" + encodeURIComponent(jobId));
+      const rj = await rr.json().catch(() => ({}));
+      if (!rr.ok) throw new Error(rj.detail || "查询任务失败");
+      if (!rj.done) continue;
+      if (rj.error) throw new Error(rj.error);
+      if (!rj.abc) throw new Error("没有得到乐谱");
+      $("abc").value = rj.abc;
+              if ($("cot").value === "off") $("cot").value = "full";
+              $("abcStatus").textContent = "✓ 乐谱已保存，可改词后生成（下方列表可随时复用）";
+              $("abcStatus").style.color = "var(--ok, #34c759)";
+              $("extractAbc").disabled = false;
+              $("abcAudio").value = "";
+              stickyNotify("乐谱提取完成", "已从参考歌曲提取 ABC 乐谱，可直接改词生成。", true);
+              loadScoreList();
+              return;
+    }
+    throw new Error("转谱超时（超过 20 分钟）");
+  } catch (err) {
+    $("abcStatus").textContent = "提取失败: " + err.message;
+    $("abcStatus").style.color = "var(--err, #ff3b30)";
+    $("extractAbc").disabled = false;
+    $("abcAudio").value = "";
+  }
+};
+
+// ---------- 乐谱历史（服务端持久化 data/scores/，刷新/重启不丢，可复用回填） ----------
+async function loadScoreList() {
+  const el = $("scoreList");
+  try {
+    const list = await (await fetch("/api/scores")).json();
+    if (!list.length) { el.innerHTML = ""; return; }
+    el.innerHTML = '<div style="font-size:12px;color:var(--text2,#888);margin:2px 0 4px;">已保存乐谱（点击回填，✕ 删除）</div>';
+    list.forEach((s) => {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:8px;padding:4px 8px;margin:2px 0;border-radius:8px;font-size:12px;cursor:pointer;background:rgba(127,127,127,.06);";
+      const label = document.createElement("span");
+      label.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+      label.textContent = (s.time || "") + " · " + (s.abc_preview || "").replace(/\s+/g, " ").slice(0, 40);
+      label.title = "点击回填到乐谱框";
+      label.onclick = async () => {
+        try {
+          const rec = await (await fetch("/api/scores/" + encodeURIComponent(s.id))).json();
+          $("abc").value = rec.abc || "";
+          if ($("cot").value === "off") $("cot").value = "full";
+          $("abcStatus").textContent = "✓ 已回填历史乐谱 " + s.id;
+          $("abcStatus").style.color = "var(--ok, #34c759)";
+        } catch (e) { $("abcStatus").textContent = "回填失败: " + e.message; }
+      };
+      const del = document.createElement("button");
+      del.className = "ghost";
+      del.textContent = "✕";
+      del.title = "删除该乐谱";
+      del.style.cssText = "padding:0 8px;font-size:12px;";
+      del.onclick = async (ev) => {
+        ev.stopPropagation();
+        await fetch("/api/scores/" + encodeURIComponent(s.id), { method: "DELETE" });
+        loadScoreList();
+      };
+      row.appendChild(label); row.appendChild(del);
+      el.appendChild(row);
+    });
+  } catch (e) { el.innerHTML = ""; }
+}
+loadScoreList(); // 页面加载即展示历史（刷新后乐谱不丢）
+
+// ---------- batch（批量生成队列）----------
+let batchPoll = null;
+
+async function renderBatch() {
+  try {
+    const j = await (await fetch("/api/batch/status")).json();
+    const items = j.items || [];
+    const active = items.filter(x => x.status !== "cancelled").length;
+    $("batchCount").textContent = j.running ? (j.pending + (j.current ? 1 : 0)) : active;
+    $("bSummary").textContent = j.running
+      ? `进行中：${j.done + j.error + 1}/${j.total} 完成（成功 ${j.done} · 失败 ${j.error}）· 当前：${items.find(x=>x.id===j.current)?.name || "…"}`
+      : (j.total ? `已结束：共 ${j.total} 首，成功 ${j.done} · 失败 ${j.error}` : "当前没有批量任务。");
+    const el = $("bList");
+    if (!items.length) { el.innerHTML = '<div class="empty">队列为空。在左侧添加任务后点击「加入队列并开始」。</div>'; }
+    else {
+      el.innerHTML = "";
+      const icon = { pending: "⏳", running: "🎵", done: "✓", error: "✕", cancelled: "—" };
+      items.forEach(it => {
+        const d = document.createElement("div");
+        d.className = "hist-item";
+        d.innerHTML = `
+          <div class="h-body">
+            <div class="h-title">${escapeHtml(it.name)} · ${icon[it.status] || ""} ${it.status === "done" ? "完成" : it.status === "error" ? "失败" : it.status === "running" ? "生成中" : it.status === "cancelled" ? "已取消" : "等待"}</div>
+            <div class="h-sub truncate">${escapeHtml((it.payload?.lyrics || "").split("\n").filter(s=>s.trim()&&!s.startsWith("["))[0] || "")}</div>
+          </div>
+          ${it.status === "done" ? '<button class="ghost" data-play>播放</button>' : ''}
+          ${it.status === "error" ? `<span class="h-time" title="${escapeHtml(it.error || "")}">失败</span>` : ''}
+          ${(it.status === "pending" || it.status === "cancelled") ? '<button class="icon-btn del" data-del title="移除">✕</button>' : ''}`;
+        const pb = d.querySelector("[data-play]");
+        if (pb) pb.onclick = async (e) => {
+          e.stopPropagation();
+          const rr = await fetch("/api/generate/audio/" + it.id);
+          if (rr.ok) { loadAudio(await rr.blob(), it.id + ".wav"); }
+          else toast("音频文件缺失", "err");
+        };
+        // 点击任务条目：把该任务的曲风/歌词/参数回填到左侧表单，便于浏览和修改
+        d.title = "点击回填该任务参数到左侧表单";
+        d.onclick = () => {
+          const p = it.payload || {};
+          $("bStyle").value = p.style || "";
+          const gm = (p.style || "").match(/clear\s+(female|male)\s+vocal/i);
+          if (gm) $("bGender").value = "clear " + gm[1].toLowerCase() + " vocal";
+          $("bCot").value = p.cot || "full";
+          $("bAbc").value = p.abc || "";
+          $("bModel").value = p.model || "yue2";
+          const pp = p.params || p || {};
+          $("bSeed").value = pp.seed ?? -1;
+          $("bCfg").value = pp.cfg_scale ?? 1.0;
+          $("bSteps").value = pp.num_inference_steps ?? 32;
+          if (pp.abc_temperature !== undefined && pp.abc_temperature !== null) $("bAbcTemperature").value = pp.abc_temperature;
+          if (pp.abc_top_p !== undefined && pp.abc_top_p !== null) $("bAbcTopP").value = pp.abc_top_p;
+          if (pp.abc_top_k !== undefined && pp.abc_top_k !== null) $("bAbcTopK").value = pp.abc_top_k;
+          if (pp.semantic_temperature !== undefined && pp.semantic_temperature !== null) $("bSemTemperature").value = pp.semantic_temperature;
+          if (pp.semantic_top_p !== undefined && pp.semantic_top_p !== null) $("bSemTopP").value = pp.semantic_top_p;
+          if (pp.semantic_top_k !== undefined && pp.semantic_top_k !== null) $("bSemTopK").value = pp.semantic_top_k;
+          $("bLyrics").value = p.lyrics || "";
+          toast(`已回填「${it.name}」的参数（${it.status === "done" ? "注意：已完成的任务修改后需重新提交才会生效" : "可修改后重新提交"}）`, "ok");
+        };
+        const del = d.querySelector("[data-del]");
+        if (del) del.onclick = async (e) => {
+          e.stopPropagation();
+          const rr = await fetch("/api/batch/" + it.id, { method: "DELETE" });
+          if (rr.ok) renderBatch(); else toast(rr.status === 409 ? "任务进行中，不能删除" : "删除失败", "err");
+        };
+        el.appendChild(d);
+      });
+    }
+    // 队列运行期间持续轮询；结束时通知一次
+    if (j.running) {
+      if (!batchPoll) batchPoll = setInterval(renderBatch, 5000);
+    } else if (batchPoll) {
+      clearInterval(batchPoll); batchPoll = null;
+    }
+  } catch {}
+}
+
+$("bFromCompose").onclick = () => {
+  const cur = $("lyrics").value.trim();
+  const existing = $("bLyrics").value.trim();
+  $("bLyrics").value = existing ? existing + "\n---\n" + cur : cur;
+  if (!$("style").value.trim()) return;
+  toast("已从创作页导入当前歌词", "ok");
+};
+$("bStart").onclick = async () => {
+  const raw = $("bLyrics").value.trim();
+  if (!raw) { $("bStatus").className = "status err"; $("bStatus").textContent = "请先填写歌词（多个任务用 --- 分行）。"; return; }
+  const chunks = raw.split(/\n\s*---\s*\n/).map(s => s.trim()).filter(Boolean);
+  if (!chunks.length) { $("bStatus").className = "status err"; $("bStatus").textContent = "未解析到任何任务。"; return; }
+  // 批量页内嵌参数表单：本页独立可编辑，不依赖创作页
+  const bStyleRaw = $("bStyle").value.trim();
+  if (!bStyleRaw) { $("bStatus").className = "status err"; $("bStatus").textContent = "请先填写曲风描述（Style）。"; return; }
+  const style = bStyleRaw.replace(/,?\s*(expressive\s+)?(clear\s+)?(female|male)\s+(vocal|voice)/gi, "")
+    .replace(/,\s*,/g, ",").replace(/^,\s*|,+\s*$/g, "").trim();
+  const gender = $("bGender").value;
+  const fullStyle = style ? (style + ", " + gender) : gender;
+  const bBase = {
+    style: fullStyle,
+    cot: $("bCot").value, abc: $("bAbc").value, model: $("bModel").value || "yue2",
+    seed: numOrNull("bSeed"), cfg_scale: numOrNull("bCfg"), num_inference_steps: numOrNull("bSteps"),
+    abc_temperature: numOrNull("bAbcTemperature"), abc_top_p: numOrNull("bAbcTopP"), abc_top_k: numOrNull("bAbcTopK"),
+    semantic_temperature: numOrNull("bSemTemperature"), semantic_top_p: numOrNull("bSemTopP"), semantic_top_k: numOrNull("bSemTopK"),
+  };
+  const tasks = chunks.map((lyr, i) => ({
+    name: $("bName").value.trim() ? $("bName").value.trim() + " #" + (i+1) : "任务 " + (i+1),
+    lyrics: lyr, ...bBase,
+  }));
+  $("bStart").disabled = true;
+  try {
+    const r = await jfetch("/api/batch/start", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ name: $("bName").value.trim(), tasks }) });
+    const j = await r.json();
+    $("bStatus").className = "status ok";
+    $("bStatus").textContent = j.queued
+      ? `当前有任务进行中，已排队：${j.message}。完成后可在此页与历史页查看。`
+      : `已加入 ${j.count} 个任务并开始顺序生成。期间可离开电脑，完成后可在此页与历史页查看。`;
+    renderBatch();
+  } catch (e) {
+    $("bStatus").className = "status err"; $("bStatus").textContent = "启动失败：" + e.message;
+  } finally { $("bStart").disabled = false; }
+};
+$("bStop").onclick = async () => {
+  if (!confirm("停止批量队列？未开始的任务将取消，当前正在生成的一首会算完。")) return;
+  const r = await fetch("/api/batch/stop", { method: "POST" });
+  const j = await r.json();
+  toast(j.message || "已停止", "ok");
+  renderBatch();
+};
+
+// ---------- history（output/ 自动落盘，含 style/歌词/参数）----------
+// ---------- history：进行中任务（生成/换声/音色训练） ----------
+const _KIND_LABEL = { generate: "🎵 生成", rvc: "🎙 换声", train: "🎨 音色制作" };
+
+function renderHistoryActive() {
+  fetch("/api/history/active").then(r => r.ok ? r.json() : { items: [] }).then(d => {
+    const items = (d.items || []).filter(j => j.id);
+    const sec = $("histActiveSec"), el = $("histActiveList");
+    if (!sec || !el) return;
+    if (!items.length) { sec.style.display = "none"; el.style.display = "none"; el.innerHTML = ""; return; }
+    sec.style.display = ""; el.style.display = "";
+    el.innerHTML = "";
+    items.forEach(j => {
+      const kind = j.kind || (j.step !== undefined ? "train" : (j.model && j.src_duration !== undefined ? "rvc" : "generate"));
+      const d = document.createElement("div");
+      d.className = "hist-item";
+      let title = "", sub = "", pct = null;
+      if (kind === "train") {
+        title = `${_KIND_LABEL.train} · ${j.name || ""}`;
+        const total = j.epochs_total || j.epochs || 0;
+        sub = j.step === "训练中" && j.epoch && total
+          ? `训练轮次 ${j.epoch}/${total}（${Math.round(j.epoch / total * 100)}%）`
+          : (j.step || "排队中") + ` · ${j.samples || "?"} 个样本`;
+        if (j.step === "训练中" && j.epoch && total) pct = Math.round(j.epoch / total * 100);
+      } else if (kind === "rvc") {
+        title = `${_KIND_LABEL.rvc} · ${(j.model || "").replace(/\.pth$/i, "")}`;
+        sub = `源音频 ${Math.round(j.src_duration || 0)}s · 转换中`;
+      } else {
+        title = `${_KIND_LABEL.generate} · ${((j.style || "").split(",")[0] || "未命名").slice(0, 30)}`;
+        sub = `cot:${j.cot || "full"} · ${j.params?.num_inference_steps || "?"} 步 · 生成中`;
+      }
+      d.innerHTML = `
+        <div class="h-body">
+          <div class="h-title">${escapeHtml(title)}</div>
+          <div class="h-sub">${escapeHtml(sub)} · <span style="color:var(--acc);">⏳ 进行中</span></div>
+          ${pct !== null ? `<div class="progress show" style="margin-top:6px;"><div style="width:${Math.min(100, pct)}%;"></div></div>` : ""}
+        </div>
+        <div class="h-time">${timeAgo(j.ts)}</div>`;
+      d.onclick = () => { switchTab(kind === "train" || kind === "rvc" ? "rvc" : "compose"); };
+      el.appendChild(d);
+    });
+  }).catch(() => {});
+}
+
+async function renderHistory() {
+  renderHistoryActive();
+  try {
+    const r = await fetch("/api/generate/list");
+    const j = await r.json();
+    const list = Array.isArray(j.items) ? j.items : [];
+    $("histCount").textContent = list.length;
+    const el = $("histList");
+    if (!list.length) { el.innerHTML = '<div class="empty">暂无历史记录。生成歌曲后会自动保存（含音频与参数）。</div>'; return; }
+    el.innerHTML = "";
+    list.forEach(h => {
+      const d = document.createElement("div");
+      d.className = "hist-item";
+      const title = (h.style || "").split(",")[0] || "未命名";
+      const size = h.bytes ? " · " + fmtBytes(h.bytes) : "";
+      const isTrain = h.kind === "train";
+      const isRvc = h.kind === "rvc";
+      const st = h.status === "done" ? "" : (h.status === "error" ? " · ❌ 失败" : h.status === "cancelled" ? " · ⏹ 已终止" : " · ⏳ 进行中");
+      const kindTag = isTrain ? " · 🎨 音色" : isRvc ? " · 🎙 换声" : "";
+      d.innerHTML = `
+        <div class="h-body">
+          <div class="h-title">${escapeHtml(title)}${kindTag}${st}</div>
+          <div class="h-sub">cot:${escapeHtml(h.cot || "full")} · seed:${escapeHtml(String(h.seed_actual ?? (h.params||{}).seed ?? ""))}${size}${h.sec ? " · " + h.sec + "s" : ""}</div>
+          <div class="h-sub truncate">${escapeHtml((h.lyrics||"").slice(0,60))}</div>
+          ${h.status === "error" && h.error ? `<div class="h-sub" style="color:#d33; cursor:pointer;" data-err title="点击展开/收起">⚠ ${escapeHtml(String(h.error).slice(0, 120))}${String(h.error).length > 120 ? " …（点击查看全部）" : ""}</div>` : ""}
+        </div>
+        <div class="h-time">${timeAgo(h.ts)}</div>
+        <div class="h-actions">
+          ${h.status === "done" && !isTrain ? '<button class="ghost" data-play>▶ 播放</button><button class="ghost" data-dl>⬇ 下载</button>' : ''}
+          ${h.status === "done" && isTrain ? '<button class="ghost" data-use>去使用</button>' : ''}
+          ${h.status === "done" && !isTrain && !isRvc ? '<button class="ghost" data-rvc>送去换声</button>' : ''}
+          ${h.status !== "done" && !isTrain ? '<button class="ghost" data-restore>回填</button>' : ''}
+          <button class="danger" data-del>删除</button>
+        </div>`;
+      // 回填：style/歌词/参数 + 从 style 反解歌手性别（与刷新恢复共用一套逻辑）
+      const restore = () => {
+        $("style").value = h.style || ""; $("lyrics").value = h.lyrics || ""; $("cot").value = h.cot || "full"; $("abc").value = h.abc || "";
+        const gm = (h.style || "").match(/clear\s+(female|male)\s+vocal/i);
+        if (gm) $("gender").value = "clear " + gm[1].toLowerCase() + " vocal";
+        const p = h.params || {};
+        if (p.seed !== undefined && p.seed !== null) $("seed").value = p.seed;
+        if (p.cfg_scale !== undefined && p.cfg_scale !== null) $("cfg").value = p.cfg_scale;
+        if (p.num_inference_steps) $("steps").value = p.num_inference_steps;
+        switchTab("compose");
+      };
+      // 播放 + 回填二合一：整条记录可点；失败/进行中的记录点击仅回填参数
+      const playAndRestore = async () => {
+        if (h.status !== "done") { restore(); toast("已回填该次生成参数", "ok"); return; }
+        const rr = await fetch("/api/generate/audio/" + h.id);
+        if (rr.ok) {
+          loadAudio(await rr.blob(), h.id + ".wav");
+          restore();
+          toast("已回填参数并开始播放", "ok");
+        }
+        else { toast("音频文件缺失，仅回填参数", "err"); restore(); }
+      };
+      d.onclick = playAndRestore;
+      // 错误详情：点击展开/收起完整错误信息（不触发行点击的回填）
+      const errLine = d.querySelector("[data-err]");
+      if (errLine) errLine.onclick = (e) => {
+        e.stopPropagation();
+        const full = String(h.error || "");
+        if (errLine.dataset.open === "1") {
+          errLine.dataset.open = "0";
+          errLine.textContent = `⚠ ${full.slice(0, 120)}${full.length > 120 ? " …（点击查看全部）" : ""}`;
+        } else {
+          errLine.dataset.open = "1";
+          errLine.textContent = "⚠ " + full;
+        }
+      };
+      const pb = d.querySelector("[data-play]");
+      if (pb) pb.onclick = (e) => { e.stopPropagation(); playAndRestore(); };
+      // 直接下载该条 WAV
+      const dl = d.querySelector("[data-dl]");
+      if (dl) dl.onclick = async (e) => {
+        e.stopPropagation();
+        try {
+          const rr = await fetch("/api/generate/audio/" + h.id);
+          if (!rr.ok) { toast("音频文件缺失", "err"); return; }
+          const blob = await rr.blob();
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = (h.id) + ".wav";
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+          toast("已开始下载", "ok");
+        } catch (err) { toast("下载失败：" + err.message, "err"); }
+      };
+      const rb = d.querySelector("[data-restore]");
+      if (rb) rb.onclick = (e) => { e.stopPropagation(); restore(); toast("已回填该次生成参数", "ok"); };
+      // 音色制作完成：跳到换声页并选中该音色
+      const ub = d.querySelector("[data-use]");
+      if (ub) ub.onclick = async (e) => {
+        e.stopPropagation();
+        await renderRvc();
+        const sel = $("rvcModel");
+        const want = h.model || ((h.voice_name || "") + ".pth");
+        if (sel && [...sel.options].some(o => o.value === want)) sel.value = want;
+        switchTab("rvc");
+        toast("已选中音色：" + want.replace(/\.pth$/i, ""), "ok");
+      };
+      // 一键送去换声：选音色后服务端直接从 output/ 取该歌曲转换，无需手动上传
+      const rv = d.querySelector("[data-rvc]");
+      if (rv) rv.onclick = async (e) => {
+        e.stopPropagation();
+        let models = [];
+        try { models = (await (await fetch("/api/rvc/models")).json()).models || []; } catch {}
+        if (!models.length) { toast("没有可用音色，请先到「换声」页制作", "err"); return; }
+        const name = prompt(`将这首歌送去换声。\n可用音色：\n${models.map(m => "· " + m.replace(/\.pth$/i, "")).join("\n")}\n\n输入音色名（默认第一个）：`, models[0].replace(/\.pth$/i, ""));
+        if (name === null) return;
+        const model = models.includes(name.trim() + ".pth") ? name.trim() + ".pth" : models.includes(name.trim()) ? name.trim() : models[0];
+        const pitch = Number(prompt("变调半音（男转女 +12 / 女转男 -12 / 不变 0）：", "0")) || 0;
+        rv.disabled = true; rv.textContent = "提交中…";
+        try {
+          const r = await fetch(`/api/rvc/convert/${h.id}`, {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ model, pitch }),
+          });
+          const j = await r.json();
+          if (!r.ok) throw new Error(j.detail || "提交失败");
+          toast(`已送入换声（${model.replace(/\.pth$/i, "")}），去「换声」页看进度`, "ok");
+          switchTab("rvc");
+        } catch (err) { toast(err.message, "err"); }
+        finally { rv.disabled = false; rv.textContent = "送去换声"; }
+      };
+      d.querySelector("[data-del]").onclick = async (e) => {
+        e.stopPropagation();
+        const rr = await fetch("/api/generate/" + h.id, { method: "DELETE" });
+        if (rr.ok) { toast("已删除", "ok"); renderHistory(); }
+        else toast(rr.status === 409 ? "任务进行中，不能删除" : "删除失败", "err");
+      };
+      el.appendChild(d);
+    });
+  } catch { $("histList").innerHTML = '<div class="empty">后端未连接。</div>'; }
+}
+$("histRefresh").onclick = () => { renderHistory(); renderVoices(); toast("已刷新", "ok"); };
+$("histClear").onclick = async () => {
+  if (!confirm("清空历史只保留记录列表清理，需逐条删除；确定清空所有已完成的记录（不含进行中任务）？")) return;
+  const j = await (await fetch("/api/generate/list")).json();
+  for (const h of (j.items || [])) {
+    if (h.status !== "running") await fetch("/api/generate/" + h.id, { method: "DELETE" });
+  }
+  renderHistory();
+};
+
+// ---------- voice library ----------
+async function renderVoices() {
+  try {
+    const r = await fetch("/api/voices");
+    const j = await r.json();
+    const list = Array.isArray(j.voices) ? j.voices : [];
+    $("voiceCount").textContent = list.length;
+    const el = $("voiceGrid");
+    if (!list.length) { el.innerHTML = '<div class="empty">暂无保存的音色。</div>'; return; }
+    el.innerHTML = "";
+    list.forEach(v => {
+      const c = document.createElement("div");
+      c.className = "voice-card";
+      const vurl = "/api/voices/" + v.id + "/audio";
+      c.innerHTML = `
+        <div class="v-name">${escapeHtml(v.name)}</div>
+        <div class="v-text">${escapeHtml(v.reference_text || "（无参考文本）")}</div>
+        <div class="v-meta">${escapeHtml(v.filename||"")}</div>
+        <audio class="preview" controls preload="none" src="${vurl}"></audio>
+        <div class="v-actions">
+          <button class="ghost" data-use>使用</button>
+          <button class="ghost" data-trans>转歌词</button>
+          <button class="danger" data-del>删除</button>
+        </div>`;
+      c.querySelector("[data-use]").onclick = () => {
+        if (v.reference_text) { $("lyrics").value = v.reference_text; $("lyrics").focus(); }
+        $("cot").value = "melody";
+        switchTab("compose");
+        toast("已填入参考文本，cot 已设为 melody", "ok");
+      };
+      c.querySelector("[data-trans]").onclick = async (e) => {
+        e.stopPropagation();
+        const btn = e.currentTarget; btn.disabled = true;
+        try {
+          const resp = await fetch(vurl); const blob = await resp.blob();
+          const fd = new FormData(); fd.append("audio", blob, v.filename || "ref.wav");
+          const rr = await fetch("/api/voices/transcribe", { method: "POST", body: fd });
+          const jj = await rr.json();
+          if (rr.ok && jj.text) { $("lyrics").value = jj.text; $("cot").value = "melody"; switchTab("compose"); toast("已识别歌词并填入", "ok"); }
+          else throw new Error(jj.detail || "识别失败");
+        } catch (err) { toast("识别失败：" + err.message, "err"); }
+        finally { btn.disabled = false; }
+      };
+      c.querySelector("[data-del]").onclick = async (e) => {
+        e.stopPropagation();
+        if (!confirm("删除该音色？")) return;
+        const rr = await fetch("/api/voices/" + v.id, { method: "DELETE" });
+        if (rr.ok) { toast("已删除", "ok"); renderVoices(); }
+      };
+      el.appendChild(c);
+    });
+  } catch { $("voiceGrid").innerHTML = '<div class="empty">后端未连接。</div>'; }
+}
+$("vAudio").onchange = () => {
+  const f = $("vAudio").files && $("vAudio").files[0];
+  if (f) { $("vDenoise").disabled = false; $("vPreview").src = URL.createObjectURL(f); $("vPreview").style.display = "block"; }
+};
+$("vSave").onclick = async () => {
+  const name = $("vName").value.trim();
+  const ref = $("vRefText").value.trim();
+  const f = $("vAudio").files && $("vAudio").files[0];
+  if (!name || !f) { $("vStatus").className = "status err"; $("vStatus").textContent = "请填写名称并选择音频文件。"; return; }
+  const fd = new FormData(); fd.append("name", name); fd.append("reference_text", ref); fd.append("audio", f);
+  $("vSave").disabled = true; $("vStatus").className = "status"; $("vStatus").textContent = "保存中…";
+  try {
+    const r = await fetch("/api/voices", { method: "POST", body: fd });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || "保存失败");
+    $("vStatus").className = "status ok"; $("vStatus").textContent = "已保存音色：" + name;
+    $("vName").value = ""; $("vRefText").value = ""; $("vAudio").value = ""; $("vPreview").style.display = "none"; $("vDenoise").disabled = true;
+    renderVoices();
+  } catch (e) { $("vStatus").className = "status err"; $("vStatus").textContent = "保存失败：" + e.message; }
+  finally { $("vSave").disabled = false; }
+};
+$("vTranscribe").onclick = async () => {
+  const f = $("vAudio").files && $("vAudio").files[0];
+  if (!f) { $("vStatus").className = "status err"; $("vStatus").textContent = "请先选择音频文件。"; return; }
+  const fd = new FormData(); fd.append("audio", f);
+  $("vTranscribe").disabled = true; $("vStatus").className = "status"; $("vStatus").textContent = "识别音频中…";
+  try {
+    const r = await fetch("/api/voices/transcribe", { method: "POST", body: fd });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || "识别失败");
+    if (j.text) { $("vRefText").value = j.text; $("lyrics").value = j.text; $("cot").value = "melody"; toast("已识别为歌词并填入", "ok"); $("vStatus").className = "status ok"; $("vStatus").textContent = "识别成功，已填入参考文本与歌词。"; }
+    else { $("vStatus").className = "status err"; $("vStatus").textContent = "未能识别到文字。"; }
+  } catch (e) { $("vStatus").className = "status err"; $("vStatus").textContent = "识别失败：" + e.message; }
+  finally { $("vTranscribe").disabled = false; }
+};
+$("vDenoise").onclick = async () => {
+  const f = $("vAudio").files && $("vAudio").files[0];
+  if (!f) return;
+  const fd = new FormData(); fd.append("audio", f);
+  $("vDenoise").disabled = true; $("vStatus").className = "status"; $("vStatus").textContent = "降噪中…";
+  try {
+    const r = await fetch("/api/voices/denoise", { method: "POST", body: fd });
+    if (!r.ok) { const j = await r.json().catch(()=>null); throw new Error(j?.detail || "降噪失败"); }
+    const blob = await r.blob();
+    $("vPreview").src = URL.createObjectURL(blob); $("vPreview").style.display = "block";
+    $("vStatus").className = "status ok"; $("vStatus").textContent = "降噪完成，已可试听。";
+  } catch (e) { $("vStatus").className = "status err"; $("vStatus").textContent = "降噪失败：" + e.message; }
+  finally { $("vDenoise").disabled = false; }
+};
+
+// ---------- templates（服务端持久化）----------
+async function loadTpls() {
+  try { return (await (await fetch("/api/templates")).json()).templates || []; }
+  catch { return []; }
+}
+function currentConfig() {
+  return {
+    style: $("style").value, lyrics: $("lyrics").value, cot: $("cot").value, abc: $("abc").value,
+    seed: $("seed").value, cfg: $("cfg").value, steps: $("steps").value, gender: $("gender").value,
+    abc_temperature: $("abc_temperature").value, abc_top_p: $("abc_top_p").value, abc_top_k: $("abc_top_k").value,
+    semantic_temperature: $("semantic_temperature").value, semantic_top_p: $("semantic_top_p").value, semantic_top_k: $("semantic_top_k").value,
+  };
+}
+function applyConfig(c) {
+  if (c.style) $("style").value = c.style;
+  if (c.lyrics) $("lyrics").value = c.lyrics;
+  if (c.cot) $("cot").value = c.cot;
+  if (c.abc) $("abc").value = c.abc;
+  if (c.gender) $("gender").value = c.gender;
+  if (c.seed !== undefined && c.seed !== null && c.seed !== "") $("seed").value = c.seed;
+  if (c.cfg !== undefined && c.cfg !== null && c.cfg !== "") $("cfg").value = c.cfg;
+  if (c.steps) $("steps").value = c.steps;
+  for (const k of ["abc_temperature","abc_top_p","abc_top_k","semantic_temperature","semantic_top_p","semantic_top_k"]) {
+    if (c[k] !== undefined && c[k] !== null && c[k] !== "") $(k).value = c[k];
+  }
+  switchTab("compose");
+}
+async function renderTemplates() {
+  const list = await loadTpls();
+  const el = $("tplList");
+  if (!list.length) { el.innerHTML = '<div class="empty">暂无模板。</div>'; return; }
+  el.innerHTML = "";
+  list.forEach(t => {
+    const c = document.createElement("div");
+    c.className = "tpl-card";
+    c.innerHTML = `
+      <div class="t-name">${escapeHtml(t.name)}</div>
+      <div class="t-prev">${escapeHtml((t.style||"").split(",")[0])} · ${escapeHtml((t.lyrics||"").split("\n")[0]||"")}</div>
+      <div class="t-actions">
+        <button class="ghost" data-load>载入</button>
+        <button class="ghost" data-export>导出</button>
+        <button class="danger" data-del>删除</button>
+      </div>`;
+    c.querySelector("[data-load]").onclick = (e) => { e.stopPropagation(); applyConfig(t); toast("已载入模板：" + t.name, "ok"); };
+    c.querySelector("[data-export]").onclick = (e) => { e.stopPropagation(); exportOne(t); };
+    c.querySelector("[data-del]").onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm("删除模板？")) return;
+      const rr = await fetch("/api/templates/" + t.id, { method: "DELETE" });
+      if (rr.ok) { toast("已删除", "ok"); renderTemplates(); }
+    };
+    c.onclick = () => { applyConfig(t); toast("已载入模板：" + t.name, "ok"); };
+    el.appendChild(c);
+  });
+}
+$("tplSave").onclick = async () => {
+  const name = $("tplName").value.trim();
+  if (!name) { $("tplStatus").className = "status err"; $("tplStatus").textContent = "请填写模板名称。"; return; }
+  const body = Object.assign({ name }, currentConfig());
+  $("tplSave").disabled = true;
+  try {
+    const r = await jfetch("/api/templates", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
+    const j = await r.json();
+    $("tplName").value = ""; renderTemplates();
+    $("tplStatus").className = "status ok"; $("tplStatus").textContent = "已保存模板：" + (j.template?.name || name);
+    toast("模板已保存", "ok");
+  } catch (e) { $("tplStatus").className = "status err"; $("tplStatus").textContent = "保存失败：" + e.message; }
+  finally { $("tplSave").disabled = false; }
+};
+$("tplCopy").onclick = async () => {
+  const json = JSON.stringify(currentConfig(), null, 2);
+  try { await navigator.clipboard.writeText(json); toast("已复制到剪贴板", "ok"); }
+  catch { $("tplBox").value = json; toast("已显示在下方，可手动复制", "ok"); }
+};
+$("tplExport").onclick = () => {
+  const json = JSON.stringify(currentConfig(), null, 2);
+  const blob = new Blob([json], { type: "application/json" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+  a.download = "yue2-export.json"; a.click();
+  $("tplStatus").className = "status ok"; $("tplStatus").textContent = "已导出为文件 yue2-export.json";
+};
+$("tplImport").onclick = () => {
+  const fileInput = document.createElement("input"); fileInput.type = "file"; fileInput.accept = ".json,application/json";
+  fileInput.onchange = () => {
+    const f = fileInput.files && fileInput.files[0]; if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      try {
+        const obj = JSON.parse(rd.result);
+        applyConfig(obj);
+        $("tplBox").value = rd.result;
+        $("tplStatus").className = "status ok"; $("tplStatus").textContent = "已导入配置";
+        toast("配置已导入", "ok");
+      } catch { $("tplStatus").className = "status err"; $("tplStatus").textContent = "文件格式无效，不是 JSON。"; }
+    };
+    rd.readAsText(f);
+  };
+  fileInput.click();
+};
+function exportOne(t) {
+  const blob = new Blob([JSON.stringify(t, null, 2)], { type: "application/json" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = (t.name||"template") + ".json"; a.click();
+}
+
+// ---------- rvc（换声）----------
+const rvcPolls = new Set();  // 每个任务独立轮询，互不影响
+
+async function renderRvc() {
+  try {
+    const mr = await fetch("/api/rvc/models");
+    if (mr.ok) {
+      const { models } = await mr.json();
+      const sel = $("rvcModel");
+      const cur = sel.value;
+      sel.innerHTML = (models || []).map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m.replace(/\.pth$/i, ""))}</option>`).join("");
+      if (cur && models.includes(cur)) sel.value = cur;
+    }
+  } catch {}
+}
+// 本会话内跟踪的换声任务（服务重启后仅丢失进行中的状态，落盘结果仍在历史页）
+const rvcJobs = [];
+
+function renderRvcList() {
+  const el = $("rvcList");
+  if (!rvcJobs.length) { el.innerHTML = '<div class="empty">暂无换声任务。结果也会出现在「历史」页（标注 RVC 换声）。</div>'; return; }
+  el.innerHTML = "";
+  rvcJobs.forEach(j => {
+    const d = document.createElement("div");
+    d.className = "hist-item";
+    const st = j.status === "done" ? "✓ 完成" : j.status === "error" ? "✕ 失败" : "🎵 转换中";
+    d.innerHTML = `
+      <div class="h-body">
+        <div class="h-title">${escapeHtml((j.model || "").replace(/\.pth$/i, ""))} · ${st}${j.sec ? " · " + j.sec + "s" : ""}</div>
+        <div class="h-sub truncate">${escapeHtml(j.src_name || j.srcName || "")}</div>
+        ${j.status === "error" ? `<div class="h-sub truncate" title="${escapeHtml(j.error || "")}">${escapeHtml((j.error || "").slice(0, 80))}</div>` : ""}
+      </div>
+      ${j.status === "done" ? '<button class="ghost" data-play>▶ 播放</button>' : ''}`;
+    const pb = d.querySelector("[data-play]");
+    if (pb) pb.onclick = async (e) => {
+      e.stopPropagation();
+      const rr = await fetch("/api/rvc/audio/" + j.id);
+      if (rr.ok) { loadAudio(await rr.blob(), j.id + ".wav"); }
+      else toast("结果文件缺失", "err");
+    };
+    el.appendChild(d);
+  });
+}
+
+// 页面加载/iframe 重载后恢复进行中的换声任务（进度条 + 轮询）
+async function restoreRvcActive() {
+  try {
+    const r = await fetch("/api/rvc/active");
+    if (!r.ok) return;
+    const d = await r.json();
+    (d.items || []).forEach(j => {
+      if (rvcJobs.some(x => x.id === j.id)) return;
+      rvcJobs.unshift(j);
+      pollRvc(j.id);
+    });
+    renderRvcList();
+  } catch {}
+}
+
+async function pollRvc(rid) {
+  try {
+    const r = await fetch("/api/rvc/status/" + rid);
+    if (r.ok) {
+      const j = await r.json();
+      const i = rvcJobs.findIndex(x => x.id === rid);
+      if (i >= 0) rvcJobs[i] = { ...rvcJobs[i], ...j };
+      renderRvcList();
+      if (j.status === "done") {
+        clearInterval(rvcPolls.get(rid)); rvcPolls.delete(rid);
+        $("rvcProgress").classList.remove("show");
+        $("rvcProgressBar").style.width = "100%";
+        $("rvcStatus").className = "status ok";
+        $("rvcStatus").textContent = `换声完成（${j.sec}s），已保存到 output/，历史页同步可见。`;
+        toast("换声完成", "ok");
+        renderHistory();
+        return;
+      }
+      if (j.status === "error") {
+        clearInterval(rvcPolls.get(rid)); rvcPolls.delete(rid);
+        $("rvcProgress").classList.remove("show");
+        $("rvcStatus").className = "status err";
+        $("rvcStatus").textContent = "换声失败：" + (j.error || "未知错误").slice(0, 160);
+        return;
+      }
+      // 进度估算：t ≈ 15s(模型加载) + 1.2×源音频时长（本机实测：30s音频 首次43.7s/缓存18.9s）
+      const dur = j.src_duration || (rvcJobs.find(x => x.id === rid) || {}).src_duration || 30;
+      const total = Math.max(20, 15 + 1.2 * dur);
+      const t0 = new Date(j.ts).getTime() || Date.now();
+      const elapsed = (Date.now() - t0) / 1000;
+      const ratio = Math.min(1, elapsed / total);
+      $("rvcProgress").classList.add("show");
+      $("rvcProgressBar").style.width = Math.min(97, 5 + 92 * ratio).toFixed(1) + "%";
+      const eta = Math.max(0, total - elapsed);
+      const etaStr = eta > 90 ? Math.round(eta / 60) + " 分钟" : Math.round(eta) + " 秒";
+      $("rvcStatus").textContent = `转换中（${j.model || ""}）… 已 ${Math.floor(elapsed/60)}分${Math.round(elapsed%60)}秒 · 预计还需 ${etaStr}（可离开页面）`;
+    }
+  } catch {}
+  if (!rvcPolls.has(rid)) {
+    const t = setInterval(() => pollRvc(rid), 5000);
+    rvcPolls.set(rid, t);
+  }
+}
+
+$("rvcGo").onclick = async () => {
+  const f = $("rvcFile").files && $("rvcFile").files[0];
+  if (!f) { $("rvcStatus").className = "status err"; $("rvcStatus").textContent = "请先选择音频文件。"; return; }
+  const model = $("rvcModel").value;
+  if (!model) { $("rvcStatus").className = "status err"; $("rvcStatus").textContent = "没有可用的音色模型（rvc/assets/weights 下需有 .pth）。"; return; }
+  const fd = new FormData();
+  fd.append("file", f);
+  fd.append("model", model);
+  fd.append("pitch", $("rvcPitch").value || "0");
+  fd.append("f0_method", $("rvcF0").value);
+  fd.append("index_rate", $("rvcIndexRate").value || "0.75");
+  fd.append("protect", $("rvcProtect").value || "0.33");
+  $("rvcGo").disabled = true;
+  $("rvcStatus").className = "status";
+  $("rvcStatus").textContent = "上传并提交转换…";
+  try {
+    const r = await fetch("/api/rvc/convert", { method: "POST", body: fd });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || "提交失败");
+    rvcJobs.unshift({ id: j.id, status: "running", model, src_name: f.name });
+    renderRvcList();
+    $("rvcStatus").textContent = "转换进行中（首次加载模型需 1-2 分钟），可离开页面。";
+    pollRvc(j.id);
+  } catch (e) {
+    $("rvcStatus").className = "status err";
+    $("rvcStatus").textContent = "提交失败：" + e.message;
+  } finally { $("rvcGo").disabled = false; }
+};
+
+// ---------- AI 工作台：内嵌 dsh 原生界面（点页签自动拉起内核）----------
+let aiFrameLoaded = false;
+
+function aiLoadFrame() {
+  const fr = $("aiFrame"), ld = $("aiFrameLoading"), er = $("aiFrameError");
+  if (!fr) return;
+  ld.style.display = "";
+  er.style.display = "none";
+  fr.style.display = "none";
+  // 网关返回 JSON {ok,url}（含 token；未运行时它会先自动拉起，最长 60s）
+  fetch("/api/ai/web")
+    .then(r => r.json())
+    .then(j => {
+      if (!j.ok || !j.url) throw new Error(j.detail || "启动失败");
+      fr.src = j.url;
+      fr.onload = () => {
+        fr.style.display = "";
+        ld.style.display = "none";
+        aiFrameLoaded = true;
+      };
+      setTimeout(() => {
+        if (!aiFrameLoaded) { er.style.display = ""; ld.style.display = "none"; }
+      }, 90000);
+    })
+    .catch(() => { er.style.display = ""; ld.style.display = "none"; });
+}
+
+// 首次切到 AI 页签时才加载（避免拖慢首屏）
+if ($("aiReload")) {
+  $("aiReload").onclick = () => { aiFrameLoaded = false; aiLoadFrame(); };
+}
+const _origSwitchTab = switchTab;
+switchTab = function (name) {
+  _origSwitchTab(name);
+  if (name === "ailab" && !aiFrameLoaded) aiLoadFrame();
+};
+
+// ---------- rvc 音色模型管理（音色库页）----------
+async function renderRvcModels() {
+  const el = $("rvcModelList");
+  if (!el) return;
+  try {
+    const r = await fetch("/api/rvc/models");
+    if (!r.ok) return;
+    const j = await r.json();
+    const items = j.items || [];
+    if (!items.length) { el.innerHTML = '<div class="empty">暂无音色模型。可在「换声」页用干声样本制作。</div>'; return; }
+    el.innerHTML = "";
+    items.forEach(m => {
+      const d = document.createElement("div");
+      d.className = "hist-item";
+      d.innerHTML = `
+        <div class="h-body">
+          <div class="h-title">${escapeHtml(m.name.replace(/\.pth$/i, ""))}</div>
+          <div class="h-sub">${m.size_mb} MB · ${escapeHtml((m.mtime || "").replace("T", " "))}</div>
+        </div>
+        <div class="h-actions">
+          <button class="ghost" data-rename>重命名</button>
+          <button class="danger" data-del>删除</button>
+        </div>`;
+      d.querySelector("[data-rename]").onclick = async (e) => {
+        e.stopPropagation();
+        const cur = m.name.replace(/\.pth$/i, "");
+        const name = prompt("新音色名称：", cur);
+        if (!name || name.trim() === cur) return;
+        const rr = await fetch(`/api/rvc/models/${encodeURIComponent(m.name)}/rename`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ name: name.trim() }),
+        });
+        const jj = await rr.json().catch(() => ({}));
+        if (rr.ok) { toast("已重命名为 " + jj.name, "ok"); renderRvcModels(); renderRvc(); }
+        else toast(jj.detail || "重命名失败", "err");
+      };
+      d.querySelector("[data-del]").onclick = async (e) => {
+        e.stopPropagation();
+        if (!confirm(`删除音色「${m.name}」？对应的音色索引也会清理，不可恢复。`)) return;
+        const rr = await fetch(`/api/rvc/models/${encodeURIComponent(m.name)}`, { method: "DELETE" });
+        const jj = await rr.json().catch(() => ({}));
+        if (rr.ok) { toast("已删除 " + m.name, "ok"); renderRvcModels(); renderRvc(); }
+        else toast(jj.detail || "删除失败", "err");
+      };
+      el.appendChild(d);
+    });
+  } catch {}
+}
+
+// ---------- rvc 音色制作 ----------
+const rvcTrainPolls = new Set();  // 每个任务独立轮询
+const rvcTrainJobs = [];
+
+function renderRvcTrainList() {
+  const el = $("rvcTrainList");
+  if (!rvcTrainJobs.length) { el.innerHTML = '<div class="empty">暂无音色制作任务。</div>'; return; }
+  el.innerHTML = "";
+  rvcTrainJobs.forEach(j => {
+    const d = document.createElement("div");
+    d.className = "hist-item";
+    const st = j.status === "done" ? "✓ 完成" : j.status === "error" ? "✕ 失败" : j.status === "pending" ? "⏳ 排队" : "🎵 " + (j.step || "进行中");
+    // 训练轮次：进行中且拿到轮次数据时，显示百分比 + 进度条 + 预计剩余时间
+    const total = j.epochs_total || j.epochs || 0;
+    const inTrain = j.status === "running" && j.step === "训练中" && j.epoch && total > 0;
+    const pct = inTrain ? Math.min(100, Math.round(j.epoch / total * 100)) : null;
+    let eta = "";
+    if (inTrain && j._per_epoch_last) {
+      const remain = Math.max(0, (total - j.epoch) * j._per_epoch_last);
+      eta = " · 剩余约 " + (remain > 90 ? Math.round(remain / 60) + " 分" : Math.round(remain) + " 秒");
+    }
+    // 有效日志行：取 log_tail 最后一条非空行（避免一直停在旧步骤的输出）
+    let liveLog = "";
+    if (j.status === "running" && j.log_tail) {
+      const lines = String(j.log_tail).split(/[\r\n]+/).filter(s => s.trim());
+      liveLog = (lines[lines.length - 1] || "").trim();
+    }
+    d.innerHTML = `
+      <div class="h-body">
+        <div class="h-title">${escapeHtml(j.name || "")} · ${st}${inTrain ? `（${j.epoch}/${total} · ${pct}%）` : ""}${j.sec && j.status !== "running" ? " · " + (j.sec > 90 ? Math.round(j.sec / 60) + "分" : j.sec + "s") : ""}</div>
+        <div class="h-sub truncate">${escapeHtml(`${j.samples || "?"} 个样本 · ${j.epochs || "?"} 轮`)}${j.model ? " · 产出 " + escapeHtml(j.model) : ""}${eta}</div>
+        ${pct !== null ? `<div class="progress show" style="margin-top:6px;"><div style="width:${pct}%;"></div></div>` : ""}
+        ${j.status === "error" ? `<div class="h-sub truncate" title="${escapeHtml(j.error || "")}">${escapeHtml((j.error || "").slice(0, 100))}</div>` : ""}
+        ${liveLog ? `<div class="h-sub truncate" style="color:var(--acc);" title="${escapeHtml(liveLog)}">${escapeHtml(liveLog)}</div>` : ""}
+      </div>
+      ${j.status === "done" ? '<button class="ghost" data-use>去使用</button>' : ''}`;
+    const ub = d.querySelector("[data-use]");
+    if (ub) ub.onclick = async (e) => {
+      e.stopPropagation();
+      await renderRvc();
+      const sel = $("rvcModel");
+      const want = j.model || (j.name + ".pth");
+      if ([...sel.options].some(o => o.value === want)) sel.value = want;
+      toast("已选中音色：" + want, "ok");
+    };
+    el.appendChild(d);
+  });
+}
+
+async function pollRvcTrain(rid) {
+  try {
+    const r = await fetch("/api/rvc/train/status/" + rid);
+    if (r.ok) {
+      const j = await r.json();
+      const i = rvcTrainJobs.findIndex(x => x.id === rid);
+      if (i >= 0) {
+        const prev = rvcTrainJobs[i];
+        // 记录轮次观测点：用于估算每轮耗时与剩余时间
+        if (j.epoch && (!prev.epoch_started_at || j.epoch !== prev.epoch)) {
+          if (prev.epoch && j.epoch > prev.epoch && prev.epoch_started_at) {
+            j._per_epoch = (Date.now() - prev.epoch_started_at) / (j.epoch - prev.epoch);
+          }
+          j.epoch_started_at = Date.now();
+          j.epoch_at_restore = j.epoch;
+        }
+        if (j._per_epoch) { j._per_epoch_last = j._per_epoch; }
+        rvcTrainJobs[i] = { ...prev, ...j };
+      }
+      renderRvcTrainList();
+      updateRvcTrainProgress(j);
+      if (j.status === "done") {
+        clearInterval(rvcTrainPolls.get(rid)); rvcTrainPolls.delete(rid);
+        $("rvcTrainStatus").className = "status ok";
+        $("rvcTrainStatus").textContent = `音色「${j.name}」制作完成（${Math.round(j.sec / 60)} 分钟），已出现在音色下拉框。`;
+        $("rvcTrainProgress").classList.remove("show");
+        toast("音色制作完成：" + j.name, "ok");
+        renderRvc();
+        return;
+      }
+      if (j.status === "error") {
+        clearInterval(rvcTrainPolls.get(rid)); rvcTrainPolls.delete(rid);
+        $("rvcTrainStatus").className = "status err";
+        $("rvcTrainStatus").textContent = "音色制作失败：" + (j.error || "").slice(0, 160);
+        $("rvcTrainProgress").classList.remove("show");
+        return;
+      }
+      $("rvcTrainStatus").textContent = `当前步骤：${j.step || "进行中"}…（可离开页面，完成会通知）`;
+    }
+  } catch {}
+  if (!rvcTrainPolls.has(rid)) {
+    const t = setInterval(() => pollRvcTrain(rid), 10000);
+    rvcTrainPolls.set(rid, t);
+  }
+}
+
+function updateRvcTrainProgress(j) {
+  const wrap = $("rvcTrainProgress"), bar = $("rvcTrainProgressBar");
+  if (!wrap || !bar) return;
+  if (j.status !== "running" && j.status !== "pending") { wrap.classList.remove("show"); return; }
+  wrap.classList.add("show");
+  const total = j.epochs_total || j.epochs || 0;
+  if (j.step === "训练中" && total > 0 && j.epoch) {
+    bar.style.width = Math.min(100, Math.round(j.epoch / total * 100)) + "%";
+  } else if (j.status === "pending") {
+    bar.style.width = "4%";
+  } else {
+    // 预处理/F0/特征/索引等无轮次步骤：走马灯式半程
+    bar.style.width = "50%";
+  }
+}
+
+// 页面加载/iframe 重载后恢复进行中的音色制作任务（进度条 + 轮询不断线）
+async function restoreRvcTrainActive() {
+  try {
+    const r = await fetch("/api/rvc/train/active");
+    if (!r.ok) return;
+    const d = await r.json();
+    (d.items || []).forEach(j => {
+      if (rvcTrainJobs.some(x => x.id === j.id)) return;
+      rvcTrainJobs.unshift(j);
+      pollRvcTrain(j.id);
+    });
+    renderRvcTrainList();
+  } catch {}
+}
+
+$("rvcTrainGo").onclick = async () => {
+  const name = $("rvcTrainName").value.trim();
+  const files = $("rvcTrainFiles").files;
+  if (!name) { $("rvcTrainStatus").className = "status err"; $("rvcTrainStatus").textContent = "请先填写音色名称。"; return; }
+  if (!files || !files.length) { $("rvcTrainStatus").className = "status err"; $("rvcTrainStatus").textContent = "请选择至少一个干声样本文件。"; return; }
+  const fd = new FormData();
+  for (const f of files) fd.append("files", f);
+  fd.append("name", name);
+  fd.append("epochs", $("rvcTrainEpochs").value || "100");
+  $("rvcTrainGo").disabled = true;
+  $("rvcTrainStatus").className = "status";
+  $("rvcTrainStatus").textContent = "上传样本并提交训练…";
+  try {
+    const r = await fetch("/api/rvc/train", { method: "POST", body: fd });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || "提交失败");
+    rvcTrainJobs.unshift({ id: j.id, name: j.name, status: "pending", step: "排队中", samples: files.length, epochs: $("rvcTrainEpochs").value });
+    renderRvcTrainList();
+    $("rvcTrainStatus").textContent = "已提交，训练排队中（独占 GPU，期间不要同时生成歌曲）。";
+    pollRvcTrain(j.id);
+  } catch (e) {
+    $("rvcTrainStatus").className = "status err";
+    $("rvcTrainStatus").textContent = "提交失败：" + e.message;
+  } finally { $("rvcTrainGo").disabled = false; }
+};
+
+// ---------- boot ----------
+// 创作页表单自动持久化：切 dsh 对话页再切回（iframe 重载）也不丢歌词/曲风/参数
+(function () {
+  const KEY = "yue2_compose_form";
+  // 恢复上次保存的表单（localStorage 里未过期的一份）
+  try {
+    const saved = localStorage.getItem(KEY);
+    if (saved) {
+      const c = JSON.parse(saved);
+      if (c && (c.style || c.lyrics)) applyConfig(c);
+    }
+  } catch (e) {}
+  // 自动保存：内容变化即写 localStorage（防抖 400ms），iframe 销毁前兜底再存一次
+  const save = () => {
+    try { localStorage.setItem(KEY, JSON.stringify(currentConfig())); } catch (e) {}
+  };
+  let timer = null;
+  document.addEventListener("input", (ev) => {
+    if (ev.target && ev.target.id && /^(style|lyrics|abc|cot|seed|cfg|steps|gender|abc_|semantic_|genCount|model)$/.test(ev.target.id)) {
+      clearTimeout(timer);
+      timer = setTimeout(save, 400);
+    }
+  });
+  document.addEventListener("change", (ev) => {
+    if (ev.target && ev.target.id && /^(cot|seed|steps|cfg|gender|genCount|model)$/.test(ev.target.id)) save();
+  });
+  window.addEventListener("beforeunload", save);
+})();
+
+// hash 直达页签（供 dsh 侧栏融合切换使用）：/lab/#rvc → 直开换声页
+const _hashTab = (location.hash || "").replace("#", "");
+// dsh 内嵌模式（?embed=1）：隐藏本页侧栏，功能由 dsh 侧栏提供
+if (new URLSearchParams(location.search).has("embed")) {
+  document.documentElement.classList.add("embed");
+}
+if (_hashTab && document.querySelector(`[data-tab="${_hashTab}"]`)) switchTab(_hashTab);
+// dsh 侧栏页签切换时只改 hash，不重载页面——监听后续变化
+window.addEventListener("hashchange", () => {
+  const t = (location.hash || "").replace("#", "");
+  if (t && document.querySelector(`[data-tab="${t}"]`)) switchTab(t);
+});
+
+resumeRunningJob();
+renderHistory();
+renderBatch();
+renderRvc();
+renderRvcModels();
+restoreRvcActive();
+restoreRvcTrainActive();
+renderTemplates();
+renderVoices();
+refreshHealth();
+loadPresets();
+loadModels();
+setInterval(refreshHealth, 15000);
+</script>
+</body>
+</html>
