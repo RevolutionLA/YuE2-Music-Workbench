@@ -72,8 +72,27 @@ def ai_web():
         except Exception:
             return False
 
+    def _kill_stale_listener() -> None:
+        """端口 3081 被占用但不响应（假死僵死进程）时击杀，否则新进程抢不到端口起不来。"""
+        try:
+            out = subprocess.run(
+                ["netstat", "-ano", "-p", "tcp"], capture_output=True, text=True, timeout=15,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+            for line in out.splitlines():
+                if "LISTENING" in line and line.split()[1].rstrip().endswith(":3081"):
+                    pid = int(line.split()[-1])
+                    if pid != os.getpid():
+                        subprocess.run(["taskkill", "/PID", str(pid), "/F", "/T"],
+                                       capture_output=True, timeout=15,
+                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                        _t.sleep(1)
+                        break
+        except Exception:
+            pass
+
     url = _read_token() if _alive() else None
     if not url:
+        _kill_stale_listener()  # 假死自愈兜底：watchdog 之外，拉起前再清一次
         # 自动拉起（分离进程，DSH_HOME 隔离，端口 3081）。
         # 用 env 字典传密钥，不走 cmd/PowerShell 字符串拼接：
         # 避免特殊字符注入命令行，也避免密钥出现在进程命令行（WMI 可见）。

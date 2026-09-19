@@ -61,15 +61,15 @@ def validate_lyrics(lyrics: str) -> str:
 
 
 @mcp.tool()
-def delete_history(rid: str) -> str:
-    """删除一条历史记录（含音频文件，不可恢复）。首轮返回 needs_confirm，需用户确认后带 confirm=true 重调。"""
-    return json.dumps(T.tool_delete_history(rid=rid), ensure_ascii=False)
+def delete_history(rid: str, confirm: bool = False) -> str:
+    """删除一条历史记录（含音频文件，不可恢复）。首轮返回 needs_confirm，用户确认同意后带 confirm=true 重调才会执行。"""
+    return json.dumps(T.tool_delete_history(rid=rid, _confirmed=confirm), ensure_ascii=False)
 
 
 @mcp.tool()
-def delete_voice(name: str) -> str:
-    """删除一个音色模型及其索引文件（不可恢复）。首轮返回 needs_confirm，需用户确认后带 confirm=true 重调。"""
-    return json.dumps(T.tool_delete_voice(name=name), ensure_ascii=False)
+def delete_voice(name: str, confirm: bool = False) -> str:
+    """删除一个音色模型及其索引文件（不可恢复）。首轮返回 needs_confirm，用户确认同意后带 confirm=true 重调才会执行。"""
+    return json.dumps(T.tool_delete_voice(name=name, _confirmed=confirm), ensure_ascii=False)
 
 
 if __name__ == "__main__":

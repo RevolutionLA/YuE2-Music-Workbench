@@ -1,16 +1,38 @@
 <div align="center">
 
+<img src="checkpoints/assets/architecture.png" alt="音乐工作台 YuE2" width="720">
+
 # 🎵 音乐工作台 YuE2
 
 **一键开唱 · 本地 AI 音乐生成工作站**
 
-写词 + 写曲 + 演唱，全流程在你自己的电脑上完成 —— 不上传、不排队、不花钱。
+_写词 + 写曲 + 演唱，全流程在你自己的电脑上完成 —— 不上传、不排队、不花钱。_
 
-`YuE2 大模型` · `GGUF 量化推理` · `翻唱改词` · `RVC 换声` · `批量生成` · `大陆网络开箱即用`
+[![License: CC-BY-NC-4.0](https://img.shields.io/badge/License-CC--BY--NC--4.0-red.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
+[![Platform: Windows x64](https://img.shields.io/badge/Platform-Windows%20x64-blue.svg)](#-三步开唱)
+[![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![CUDA](https://img.shields.io/badge/CUDA-GPU%20%2F%20CPU%20自适应-76B900.svg?logo=nvidia&logoColor=white)](#-显存自适应)
+[![Stars](https://img.shields.io/github/stars/RevolutionLA/YuE2-Music-Workbench?style=social)](https://github.com/RevolutionLA/YuE2-Music-Workbench/stargazers)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/RevolutionLA/YuE2-Music-Workbench/pulls)
+
+`YuE2 大模型` · `GGUF 量化推理` · `AI 翻唱` · `RVC 换声` · `批量生成` · `大陆网络开箱即用`
+
+**[快速开始](#-三步开唱) · [功能一览](#-它能做什么) · [架构](#-架构) · [常见问题](#-常见问题) · [致谢](#-致谢)**
 
 </div>
 
 ---
+
+## 📖 目录
+
+- [✨ 它能做什么](#-它能做什么)
+- [🚀 三步开唱](#-三步开唱)
+  - [🌐 大陆网络加速说明](#-大陆网络加速说明点开)
+- [🏗 架构](#-架构)
+- [❓ 常见问题](#-常见问题)
+- [🙏 致谢](#-致谢)
+- [📄 许可](#-许可)
 
 ## ✨ 它能做什么
 
@@ -31,7 +53,7 @@
 
 ```bat
 :: 1. 下载本仓库（Green 一键解压也行）
-git clone https://github.com/RevolutionLA/音乐工作台-YuE2.git
+git clone https://github.com/RevolutionLA/YuE2-Music-Workbench.git
 
 :: 2. 双击启动
 scripts\启动音乐工作台.bat
@@ -77,6 +99,33 @@ py312\python.exe scripts\download_models.py --q8     :: q8_0（约4GB，质量�
 | `watchdog.py` | 网关看门狗（假死自愈、无窗口静默运行） |
 | `cpp/` | YuE2 GGUF 推理引擎与模型（模型不入库，自动下载） |
 | `checkpoints/` | SheetSage2 乐谱提取（含上游许可） |
+| `legacy/` | 历史遗留模块（不再被引用，仅存档） |
+
+## ❓ 常见问题
+
+<details>
+<summary><b>没有 NVIDIA 显卡能跑吗？</b></summary>
+
+能。显存不足或无独显时自动切换 CPU 后端（速度慢约 5-10 倍），生成完成后自动切回。16GB 内存 + 现代多核 CPU 即可出歌，只是等待时间更长。
+</details>
+
+<details>
+<summary><b>生成一首歌要多久？</b></summary>
+
+full 模式（可编辑旋律 + 和声）+ 32 步 + 长歌词，6GB+ 显存约 60-90 分钟；melody / off 模式更快。支持批量排队挂机。
+</details>
+
+<details>
+<summary><b>数据会上传到云端吗？</b></summary>
+
+不会。除首次模型下载走镜像站外，写词、生成、换声、训练全部在本机完成，无任何遥测。
+</details>
+
+<details>
+<summary><b>能商用吗？</b></summary>
+
+不能。YuE2 模型权重遵循 CC-BY-NC 4.0（非商用），本项目扩展代码同样随上游许可分发。详见下方许可说明。
+</details>
 
 ## 🙏 致谢
 
@@ -92,6 +141,8 @@ py312\python.exe scripts\download_models.py --q8     :: q8_0（约4GB，质量�
 
 <div align="center">
 
-**觉得有用就点个 ⭐ 吧！**
+**如果这个项目帮到了你，请点一个 ⭐ —— 这是给独立开发者最好的鼓励！**
+
+[⬆ 回到顶部](#-音乐工作台-yue2)
 
 </div>

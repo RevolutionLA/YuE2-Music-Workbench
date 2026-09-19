@@ -389,16 +389,11 @@ async def score_submit(audio: UploadFile = File(...), melody_only: str = Form("t
     ext = Path(audio.filename or "in.wav").suffix.lower()
     if ext not in (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".wma"):
         ext = ".wav"
-    data = await audio.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="上传音频为空")
-    if len(data) > 200 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="音频超过 200MB 上限")
-    tmp_dir = Path("tmp/score")
+    tmp_dir = ROOT / "tmp" / "score"  # 绝对路径：不依赖进程 CWD
     tmp_dir.mkdir(parents=True, exist_ok=True)
     job_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + os.urandom(3).hex()
     src = tmp_dir / f"score_{job_id}{ext}"
-    await asyncio.to_thread(src.write_bytes, data)  # 大文件写盘放线程池，避免阻塞事件循环
+    await _stream_upload_to(audio, src, 200 * 1024 * 1024, "音频")
     with _SCORE_LOCK:
         _SCORE_JOBS[job_id] = {"done": False, "ts": time.time()}
     threading.Thread(target=_score_run, args=(job_id, src, melody_only != "false"), daemon=True).start()
@@ -407,12 +402,22 @@ async def score_submit(audio: UploadFile = File(...), melody_only: str = Form("t
 
 @router.get("/score/result")
 def score_result(job_id: str):
+    job_id = os.path.basename(job_id.replace("\\", "/"))  # 防路径穿越
     with _SCORE_LOCK:
         job = _SCORE_JOBS.get(job_id)
-        if not job:
-            raise HTTPException(status_code=404, detail="任务不存在或已过期")
-        return {"done": job["done"], "abc": job.get("abc"), "error": job.get("error"),
-                "score_id": job.get("score_id")}
+    if not job:
+        # 持久化回退：服务重启后内存任务表已清空，但已完成的结果仍落盘在 SCORES_DIR
+        p = SCORES_DIR / f"{job_id}.json"
+        if p.is_file():
+            try:
+                rec = json.loads(p.read_text(encoding="utf-8"))
+                return {"done": True, "abc": rec.get("abc"), "error": None,
+                        "score_id": rec.get("id") or job_id}
+            except Exception:
+                pass
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    return {"done": job["done"], "abc": job.get("abc"), "error": job.get("error"),
+            "score_id": job.get("score_id")}
 
 
 @router.get("/scores")
@@ -509,6 +514,34 @@ def history_active():
     return {"items": items}
 
 
+# --------------------------------------------------------------------------- #
+# 上传流式写盘：分块写、边写边判限额，不再整读进内存
+# （旧写法 await file.read() 会让 200MB 上传先吃光内存再判超限）
+# --------------------------------------------------------------------------- #
+async def _stream_upload_to(file: UploadFile, dest: Path, limit: int,
+                            label: str = "文件") -> int:
+    """把上传文件分块流式写到 dest，超过 limit 字节抛 413 并清理残文件。返回写入字节数。"""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    total = 0
+    try:
+        with open(tmp, "wb") as fh:
+            while chunk := await file.read(1024 * 1024):
+                total += len(chunk)
+                if total > limit:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"{label}超过 {limit // (1024*1024)}MB 上限，请先剪辑或压缩（5 分钟 wav 约 50MB）")
+                fh.write(chunk)
+        if total == 0:
+            raise HTTPException(status_code=400, detail="上传音频为空")
+        os.replace(tmp, dest)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return total
+
+
 @router.post("/history")
 async def history_add(audio: UploadFile = File(...), meta: str = Form("{}")):
     HIST_DIR.mkdir(parents=True, exist_ok=True)
@@ -519,15 +552,12 @@ async def history_add(audio: UploadFile = File(...), meta: str = Form("{}")):
     now = datetime.now()
     rid = now.strftime("%Y%m%d_%H%M%S_") + os.urandom(3).hex()
     fn = rid + ".wav"
-    data = await audio.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="empty audio")
-    await asyncio.to_thread(HIST_DIR.joinpath(fn).write_bytes, data)  # 音频写盘放线程池
+    size = await _stream_upload_to(audio, HIST_DIR / fn, 200 * 1024 * 1024, "音频")
     item = {
         "id": rid,
         "ts": now.isoformat(timespec="seconds"),
         "file": fn,
-        "bytes": len(data),
+        "bytes": size,
         "style": str(m.get("style", ""))[:600],
         "lyrics": str(m.get("lyrics", ""))[:4000],
         "cot": m.get("cot", "full"),
@@ -936,14 +966,15 @@ def generate_stop():
     _gen_set_job(None)  # 立即结束轮询/恢复态
     _CANCEL_EVENT.set()
     _kill_audiocpp_now()
-    # 批量队列一并叫停：未开始的全部取消
-    state = _batch_snapshot()
-    if state.get("running"):
-        state["running"] = False
-        for it in state["items"]:
-            if it["status"] in ("pending", "running"):
-                it["status"] = "cancelled"
-        _batch_store(state)
+    # 批量队列一并叫停：未开始的全部取消（读-改-写整体持锁，防止与批量 worker 互相覆盖）
+    with _BATCH_LOCK:
+        state = _batch_snapshot()
+        if state.get("running"):
+            state["running"] = False
+            for it in state["items"]:
+                if it["status"] in ("pending", "running"):
+                    it["status"] = "cancelled"
+            _batch_store(state)
     return {"ok": True, "cancelled": cancelled_any,
             "message": "已终止当前任务" + ("，引擎将自动恢复" if cancelled_any else "")}
 
@@ -1469,12 +1500,7 @@ async def rvc_convert(
     in_dir = RVC_JOB_DIR / rid
     in_dir.mkdir(parents=True, exist_ok=True)
     src = in_dir / f"src{ext}"
-    data = await file.read()  # 上限 200MB，防超大文件吃光内存
-    if not data:
-        raise HTTPException(status_code=400, detail="上传音频为空")
-    if len(data) > 200 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="音频超过 200MB 上限（5 分钟 wav 约 50MB，请先压缩或转 mp3/flac）")
-    await asyncio.to_thread(src.write_bytes, data)  # 大文件写盘放线程池，避免阻塞事件循环
+    await _stream_upload_to(file, src, 200 * 1024 * 1024, "音频")
     # 读取源音频时长，供前端估算换声进度（读失败则按 40k 双声道 wav 粗略折算）
     try:
         import soundfile as sf
@@ -1726,14 +1752,9 @@ async def rvc_train(
         ext = Path(f.filename or "s.wav").suffix.lower() or ".wav"
         if ext not in (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".wma"):
             ext = ".wav"
-        data = await f.read()
-        if not data:
-            continue  # 跳过空文件
-        if len(data) > 200 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail=f"第 {i+1} 个文件超过 200MB 上限，请先剪辑或压缩")
         p = ds / f"sample_{i:03d}{ext}"
-        await asyncio.to_thread(p.write_bytes, data)  # 大文件写盘放线程池，避免阻塞事件循环
-        total += len(data)
+        size = await _stream_upload_to(f, p, 200 * 1024 * 1024, f"第 {i+1} 个样本")
+        total += size
     if total < 300_000:
         raise HTTPException(status_code=400, detail="样本太少（建议 3-10 分钟干净干声）")
     job = {
@@ -1871,16 +1892,34 @@ def delete_voice(voice_id: str):
 @router.post("/voices/transcribe")
 async def transcribe_voice(audio: UploadFile = File(...)):
     """上传参考音频 -> 自动识别歌词/文本（ASR），用于翻唱工作流。"""
-    data = await audio.read()
-    text = asr.recognize_wav_bytes(data, audio.filename or "prompt.wav")
+    p = ROOT / "tmp" / "asr"
+    p.mkdir(parents=True, exist_ok=True)
+    ext = Path(audio.filename or "prompt.wav").suffix.lower()
+    if ext not in (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".wma"):
+        ext = ".wav"
+    f = p / (datetime.now().strftime("%H%M%S_") + os.urandom(2).hex() + ext)
+    await _stream_upload_to(audio, f, 200 * 1024 * 1024, "音频")
+    try:
+        text = asr.recognize_wav_bytes(f.read_bytes(), audio.filename or "prompt.wav")
+    finally:
+        f.unlink(missing_ok=True)
     return {"ok": True, "text": text}
 
 
 @router.post("/voices/denoise")
 async def denoise_voice(audio: UploadFile = File(...)):
     """上传参考音频 -> 降噪后返回增强音频。"""
-    data = await audio.read()
-    out = denoise.denoise_wav_bytes(data, audio.filename or "ref.wav")
+    p = ROOT / "tmp" / "denoise"
+    p.mkdir(parents=True, exist_ok=True)
+    ext = Path(audio.filename or "ref.wav").suffix.lower()
+    if ext not in (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".wma"):
+        ext = ".wav"
+    f = p / (datetime.now().strftime("%H%M%S_") + os.urandom(2).hex() + ext)
+    await _stream_upload_to(audio, f, 200 * 1024 * 1024, "音频")
+    try:
+        out = denoise.denoise_wav_bytes(f.read_bytes(), audio.filename or "ref.wav")
+    finally:
+        f.unlink(missing_ok=True)
     return Response(
         content=out,
         media_type="audio/wav",
@@ -1997,12 +2036,8 @@ def _orphan_cleanup_on_startup() -> None:
                     pass
 
 
-_orphan_cleanup_on_startup()
-
-# --------------------------------------------------------------------------- #
-# 覆盖根路径：编译网关自带的 / 带硬编码 403 访问门槛（作者残留），
-# 这里改为直接返回新版静态页面，让用户能以根路径正常访问。
-# --------------------------------------------------------------------------- #
+# 孤儿清理仅在真实启动服务时执行；模块导入（如 dsh 桥子进程 import app）不得触发，
+# 否则会把正在运行的任务误判为"服务重启，任务中断"。
 def _serve_index():
     idx = ROOT / "static" / "index.html"
     if idx.is_file():
@@ -2040,6 +2075,7 @@ if _mine_root is not None:
     app.routes.insert(0, _mine_root)
 
 if __name__ == "__main__":
+    _orphan_cleanup_on_startup()
     uvicorn.run(
         app,
         host=settings.app_host,
