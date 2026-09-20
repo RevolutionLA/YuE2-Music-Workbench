@@ -109,19 +109,18 @@ def download_one(repo: str, rel: str, dest: Path) -> bool:
 
 
 def ensure_models(quant: str) -> bool:
-    # SheetSage2 乐谱提取权重（约223MB，翻唱/改谱功能用）
-    items = [("m-a-p/SheetSage2", "model.safetensors", "../checkpoints/model.safetensors")]
+    # SheetSage2 乐谱提取权重（约223MB，翻唱/改谱功能用），落在仓库内 checkpoints/
+    items = [("m-a-p/SheetSage2", "model.safetensors", "checkpoints/model.safetensors")]
     items += sources(quant)
-    missing = [(r, s, (ROOT / d).resolve() if d.startswith("..") else MODEL_DIR / d)
-               for r, s, d in items
-               if not ((ROOT / d).resolve() if d.startswith("..") else MODEL_DIR / d).is_file()]
+    paths = [(r, s, ROOT / d) for r, s, d in items]
+    missing = [(r, s, p) for r, s, p in paths if not p.is_file()]
     if not missing:
         print("模型已齐全 ✅")
         return True
     print(f"缺少 {len(missing)} 个文件，开始下载（支持断点续传，中断重跑即可）:")
     ok = True
     for repo, rel, dest in missing:
-        print(f"  {dest.relative_to(MODEL_DIR)}")
+        print(f"  {dest.relative_to(ROOT)}")
         ok = download_one(repo, rel, dest) and ok
     if ok:
         # 保证 server.json 指向所下量化目录

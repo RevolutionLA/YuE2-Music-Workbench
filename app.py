@@ -1586,6 +1586,44 @@ def _rvc_train_epoch(name: str, fallback_total: int = 0) -> tuple[int, int]:
         return 0, 0
 
 
+_EPOCH_DONE_RE = re.compile(
+    r"====>\s*轮次：(\d+)\s*\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"
+)
+
+
+def _rvc_train_per_epoch_sec(name: str) -> float | None:
+    """从训练日志稳健估算"每轮耗时"（秒），供前端算剩余时间。
+
+    日志里每个完成轮都有带时间戳的 "====> 轮次：N [YYYY-MM-DD HH:MM:SS]" 行，
+    相邻轮时间差即该轮真实耗时。直接取"最近一次差值"会被偶发卡顿（GC/显存挤占/
+    索引导出）污染——实测一轮可达 1055~1311s 而正常仅 ~110s。
+    因此：收集全部相邻轮差值，剔除 >3×中位数的异常轮后取均值；
+    数据不足（<3 轮）时退回中位数。读不到返回 None（前端隐藏剩余时间）。
+    """
+    log = RVC_DIR / "logs" / name / "train.log"
+    try:
+        txt = log.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+    pts = []
+    for m in _EPOCH_DONE_RE.finditer(txt):
+        try:
+            t = datetime.strptime(m.group(2), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        pts.append((int(m.group(1)), t))
+    pts.sort()
+    durs = []
+    for (e0, t0), (e1, t1) in zip(pts, pts[1:]):
+        if e1 > e0:
+            durs.append((t1 - t0).total_seconds() / (e1 - e0))
+    if not durs:
+        return None
+    med = sorted(durs)[len(durs) // 2]
+    keep = [d for d in durs if d <= 3 * med] or durs
+    return round(sum(keep) / len(keep), 1)
+
+
 def _rvc_train_write(rid: str, job: dict) -> None:
     d = RVC_TRAIN_DIR / rid
     d.mkdir(parents=True, exist_ok=True)
@@ -1781,6 +1819,9 @@ def rvc_train_status(rid: str):
         if cur:
             job["epoch"] = cur
             job["epochs_total"] = total or job.get("epochs", 0)
+        pes = _rvc_train_per_epoch_sec(job.get("name", ""))
+        if pes:
+            job["per_epoch_sec"] = pes
     return job
 
 
@@ -1797,6 +1838,9 @@ def rvc_train_active():
                     if cur:
                         job["epoch"] = cur
                         job["epochs_total"] = total or job.get("epochs", 0)
+                    pes = _rvc_train_per_epoch_sec(job.get("name", ""))
+                    if pes:
+                        job["per_epoch_sec"] = pes
                 out.append(job)
     return {"items": out}
 

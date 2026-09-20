@@ -1013,19 +1013,21 @@ $("stopGen").onclick = async () => {
   }
 };
 
-// 进度估算：基于本机 13 次实测拟合（1660S + Q4，GPU 模式，2026-09-14/15 批次）：
-//   off/4步/41词→34~172s · off/8步/29词→203s · full/32步/72字→288~354s · full/32步/287字→1155~2218s
-// 关键结论：同配置波动可达 ±50%（受显存挤占影响），故用中位数公式 + 区间显示。
-// 模型：t = (110 + 1.5×加权字符数) × f_cot × f_steps
-//   加权字符数 u = 中文字×2.4 + 其他字符；f_cot: full 1.0 / melody 0.72 / off 0.55
-//   f_steps = 0.42 + 0.58×steps/32
+// 进度估算：基于本机 44 次历史任务实测拟合（1660S + Q4，GPU 模式，2026-09-14/19 批次）：
+//   耗时与"歌曲时长"呈二次关系（sec vs L² 相关 0.92），歌词字数是可用的代理变量；
+//   旧线性公式 t=(110+1.5u) 会把长歌低估 3~5 倍（287 字实测中位 41 分钟，旧公式只估 24 分钟）。
+// 模型：t = (1.2×u + 0.0008×u²) × f_cot × f_steps   （u = 中文字×2.4 + 其他字符）
+//   f_cot: full 1.0 / melody 0.85 / off 0.75（实测 cot 对总耗时影响远小于预期，off/32 反而比 full 慢）
+//   f_steps = 0.6 + 0.4×steps/32（实测 16 步并不比 32 步快一倍，故取平缓系数）
+// 关键结论：同一歌词多次生成波动 ±40%（模型随机性），单点 ETA 天生不准 → 区间显示。
+// 全 34 条 full/32 校验：实测/估计 中位 1.15（略偏保守），P10 0.84 / P90 2.13。
 function estimateTotalSec(job) {
   const s = (job.lyrics || "").replace(/\s/g, "");
   let units = 0;
   for (const ch of s) units += /[\u3400-\u4dbf\u4e00-\u9fff]/.test(ch) ? 2.4 : 1;
-  const fCot = job.cot === "melody" ? 0.72 : job.cot === "off" ? 0.55 : 1.0;
+  const fCot = job.cot === "melody" ? 0.85 : job.cot === "off" ? 0.75 : 1.0;
   const steps = (job.params && job.params.num_inference_steps) || 32;
-  const t = (110 + 1.5 * units) * fCot * (0.42 + 0.58 * steps / 32);
+  const t = (1.2 * units + 0.0008 * units * units) * fCot * (0.6 + 0.4 * steps / 32);
   return Math.min(21600, Math.max(60, t));
 }
 
@@ -1040,15 +1042,18 @@ function renderJobProgress(job) {
   // 前段稍快、尾段放缓的缓动曲线，视觉上更接近真实节奏
   const pct = Math.min(97, 4 + 93 * Math.pow(ratio, 0.9));
   $("progressBar").style.width = pct.toFixed(1) + "%";
-  const eta = Math.max(0, total - elapsed);
-  const overtime = elapsed > total * 1.5;  // 实测同配置波动±50%，1.5倍内都属正常
+  // 实测波动 P10~P90 = 0.84~2.13×估计值 → 显示 0.9×~1.8× 区间；超过 2× 才提示异常
+  const etaLo = Math.max(0, total * 0.9 - elapsed);
+  const etaHi = Math.max(0, total * 1.8 - elapsed);
+  const overtime = elapsed > total * 2;
   const pre = chain && chain.total > 1 ? `第 ${chain.index || job.chain_index || 1}/${chain.total} 首 · ` : "";
-  const etaStr = eta > 90 ? Math.round(eta / 60) + " 分钟" : Math.round(eta) + " 秒";
+  const fmt = (t) => t > 90 ? Math.round(t / 60) + " 分钟" : Math.round(t) + " 秒";
+  const etaStr = etaHi <= 0 ? "" : etaLo > 0 ? fmt(etaLo) + "~" + fmt(etaHi) : "不超过 " + fmt(etaHi);
   $("status").innerHTML = pre + (overtime
-    ? "仍在生成（耗时超过预估区间，受显存挤占影响属正常）… "
+    ? "仍在生成（耗时超过常见区间，受显存挤占影响属正常）… "
     : (job.cpu_fallback ? "CPU 模式生成中（较慢，请耐心等待）… " : "服务端生成中（刷新页面不会丢失任务）… "))
     + "<span class='timer'>" + Math.floor(elapsed/60) + "分" + Math.round(elapsed%60) + "秒</span>"
-    + (overtime ? "" : " · 预计还需 " + etaStr);
+    + (etaStr ? " · 预计还需 " + etaStr : "");
 }
 
 // ---------- 完成通知：浏览器通知(requireInteraction) + 页内常驻横幅(带X) ----------
@@ -1891,17 +1896,20 @@ async function pollRvc(rid) {
         $("rvcStatus").textContent = "换声失败：" + (j.error || "未知错误").slice(0, 160);
         return;
       }
-      // 进度估算：t ≈ 15s(模型加载) + 1.2×源音频时长（本机实测：30s音频 首次43.7s/缓存18.9s）
+      // 进度估算：本机 3 次实测（29.4s 源音频：首跑 43.7s，缓存后 18.9~20.2s）。
+      // 首跑 ≈ 15s模型加载 + 1×时长；缓存后 ≈ 0.65×时长 → 显示区间而不是单点。
       const dur = j.src_duration || (rvcJobs.find(x => x.id === rid) || {}).src_duration || 30;
-      const total = Math.max(20, 15 + 1.2 * dur);
+      const total = Math.max(20, 15 + 1.0 * dur);
       const t0 = new Date(j.ts).getTime() || Date.now();
       const elapsed = (Date.now() - t0) / 1000;
       const ratio = Math.min(1, elapsed / total);
       $("rvcProgress").classList.add("show");
       $("rvcProgressBar").style.width = Math.min(97, 5 + 92 * ratio).toFixed(1) + "%";
-      const eta = Math.max(0, total - elapsed);
-      const etaStr = eta > 90 ? Math.round(eta / 60) + " 分钟" : Math.round(eta) + " 秒";
-      $("rvcStatus").textContent = `转换中（${j.model || ""}）… 已 ${Math.floor(elapsed/60)}分${Math.round(elapsed%60)}秒 · 预计还需 ${etaStr}（可离开页面）`;
+      const etaLo = Math.max(0, 0.65 * dur + 10 - elapsed);   // 缓存后快路径
+      const etaHi = Math.max(0, total - elapsed);              // 首跑慢路径
+      const fmtR = (t) => t > 90 ? Math.round(t / 60) + " 分钟" : Math.round(t) + " 秒";
+      const etaStrR = etaHi <= 0 ? "" : etaLo > 0 ? fmtR(etaLo) + "~" + fmtR(etaHi) : "不超过 " + fmtR(etaHi);
+      $("rvcStatus").textContent = `转换中（${j.model || ""}）… 已 ${Math.floor(elapsed/60)}分${Math.round(elapsed%60)}秒` + (etaStrR ? ` · 预计还需 ${etaStrR}` : "") + "（可离开页面）";
     }
   } catch {}
   if (!rvcPolls.has(rid)) {
@@ -2042,8 +2050,11 @@ function renderRvcTrainList() {
     const inTrain = j.status === "running" && j.step === "训练中" && j.epoch && total > 0;
     const pct = inTrain ? Math.min(100, Math.round(j.epoch / total * 100)) : null;
     let eta = "";
-    if (inTrain && j._per_epoch_last) {
-      const remain = Math.max(0, (total - j.epoch) * j._per_epoch_last);
+    // 优先用服务端从训练日志稳健解析的每轮耗时（剔除偶发卡顿轮）；
+    // 老网关没有该字段时退回前端两次轮询观测值
+    const perEpoch = j.per_epoch_sec || j._per_epoch_last;
+    if (inTrain && perEpoch) {
+      const remain = Math.max(0, (total - j.epoch) * perEpoch);
       eta = " · 剩余约 " + (remain > 90 ? Math.round(remain / 60) + " 分" : Math.round(remain) + " 秒");
     }
     // 有效日志行：取 log_tail 最后一条非空行（避免一直停在旧步骤的输出）

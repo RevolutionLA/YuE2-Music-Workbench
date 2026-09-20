@@ -112,3 +112,6 @@ scripts/bak/
 
 # ===== SheetSage2 大权重（不入库，运行时自动下载） =====
 checkpoints/model.safetensors
+
+# ===== 模型权重下载目录（运行时下载，不入库） =====
+yue2-q4_k_m/

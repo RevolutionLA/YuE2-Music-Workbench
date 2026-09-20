@@ -71,7 +71,9 @@ def log(msg: str) -> None:
     line = f"[{time.strftime('%m-%d %H:%M:%S')}] {msg}"
     print(line, flush=True)
     try:
-        with open(ROOT / "watchdog.log", "a", encoding="utf-8") as f:
+        log_dir = ROOT / "data" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with open(log_dir / "watchdog.log", "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except Exception:
         pass
