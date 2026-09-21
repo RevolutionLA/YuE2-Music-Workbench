@@ -31,7 +31,7 @@ for _pk in ("NO_PROXY", "no_proxy"):
         os.environ[_pk] = (_pv + "," if _pv else "") + "127.0.0.1,localhost,::1"
 
 import uvicorn
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 import httpx
@@ -41,6 +41,7 @@ from settings import settings
 import voices
 import asr
 import denoise
+import lrc as lrc_mod
 
 router = APIRouter(prefix="/api")
 app = main.app  # 复用编译网关的 FastAPI 应用
@@ -669,6 +670,83 @@ def _output_wav_path(rid: str) -> Path:
     return OUTPUT_DIR / f"{rid}.wav"
 
 
+def _output_lyrics_path(rid: str) -> Path:
+    return OUTPUT_DIR / f"{rid}.txt"
+
+
+def _output_lrc_path(rid: str) -> Path:
+    return OUTPUT_DIR / f"{rid}.lrc"
+
+
+def _lrc_job_read(rid: str) -> dict | None:
+    try:
+        return json.loads((_output_lrc_path(rid).with_suffix(".lrcjob")).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _lrc_job_write(rid: str, state: dict) -> None:
+    p = _output_lrc_path(rid).with_suffix(".lrcjob")
+    try:
+        p.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _lrc_build_thread(rid: str) -> None:
+    """后台线程：对齐歌词与音频生成 .lrc，状态写 .lrcjob 供前端轮询。"""
+    _lrc_job_write(rid, {"status": "running"})
+    try:
+        meta = _output_read_meta(rid)
+        wav = _output_wav_path(rid)
+        if not meta or not wav.is_file() or not str(meta.get("lyrics") or "").strip():
+            raise RuntimeError("任务缺少音频或歌词")
+        text = lrc_mod.generate_lrc(
+            wav, meta.get("lyrics", ""), meta.get("task_name", ""))
+        _output_lrc_path(rid).write_text(text, encoding="utf-8")
+        _lrc_job_write(rid, {"status": "done"})
+    except HTTPException as e:
+        _lrc_job_write(rid, {"status": "error", "error": str(e.detail)})
+    except Exception as e:
+        _lrc_job_write(rid, {"status": "error", "error": str(e)[:300]})
+
+
+def _lrc_build_async(rid: str) -> None:
+    threading.Thread(target=_lrc_build_thread, args=(rid,), daemon=True).start()
+
+
+def _lyrics_clean(text: str) -> str:
+    """清洗歌词为可投稿的纯文本：去掉 YuE2 特有指令标记，保留结构段落标记。
+
+    去除 [structure]/[mix]/[verse] 等中括号以外的模型指令行
+    （如 [verse-start] 之外的 --lam/param 之类），并把多个空行合并。
+    """
+    lines = []
+    for raw in str(text or "").splitlines():
+        line = raw.rstrip()
+        # 跳过纯指令行：形如 [xxx] 的 YuE 结构标记之外的参数/注释行
+        if re.fullmatch(r"\s*(--[\w-]+(\s+\S+)?)\s*", line):
+            continue
+        lines.append(line)
+    out = "\n".join(lines)
+    out = re.sub(r"\n{3,}", "\n\n", out).strip() + "\n"
+    return out
+
+
+def _output_write_lyrics(rid: str, lyrics: str, task_name: str = "") -> None:
+    """生成成功后把歌词落盘为 txt（方便投稿音乐平台）。失败静默，不影响主流程。"""
+    try:
+        if not str(lyrics or "").strip():
+            return
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        header = f"歌曲：{task_name}\n" if task_name else ""
+        _output_lyrics_path(rid).write_text(
+            header + _lyrics_clean(lyrics), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
 def _output_read_meta(rid: str) -> dict | None:
     p = _output_meta_path(rid)
     if not p.is_file():
@@ -919,6 +997,8 @@ def _gen_run(job: dict, payload: dict) -> None:
                 file=wav.name,
             )
             _output_write_meta(job)
+            _output_write_lyrics(rid, job.get("lyrics", ""), job.get("task_name", ""))
+            _lrc_build_async(rid)  # 后台对齐生成 .lrc（几秒到几十秒，不阻塞主流程）
             _win_toast(
                 "🎵 生成完成：" + title,
                 f"耗时 {int(elapsed // 60)} 分 {int(elapsed % 60)} 秒，已保存到 output/",
@@ -1016,6 +1096,7 @@ async def generate_start(payload: dict):
             "lyrics": str(payload.get("lyrics") or "")[:4000],
             "cot": payload.get("cot", "full"),
             "abc": str(payload.get("abc") or "")[:4000],
+            "task_name": str(payload.get("task_name") or "").strip()[:100],
             "model": payload.get("model", "yue2"),
             "params": params,
             "chain_index": i,
@@ -1092,7 +1173,7 @@ def generate_list():
             m = _output_read_meta(p.stem)
             if m:
                 items.append(m)
-    return {"items": items[:60]}
+    return {"items": items[:1000]}
 
 
 @router.get("/generate/audio/{rid}")
@@ -1104,6 +1185,68 @@ def generate_audio(rid: str):
     return Response(content=fp.read_bytes(), media_type="audio/wav")
 
 
+@router.get("/generate/lyrics/{rid}")
+def generate_lyrics(rid: str):
+    """歌词文件下载（历史任务回填）：txt 已存在直接返回，否则从 meta 现生成一份。"""
+    rid = os.path.basename(rid)
+    meta = _output_read_meta(rid)
+    if not meta:
+        raise HTTPException(status_code=404, detail="task not found")
+    fp = _output_lyrics_path(rid)
+    if not fp.is_file():
+        _output_write_lyrics(rid, meta.get("lyrics", ""), meta.get("task_name", ""))
+        if not fp.is_file():
+            raise HTTPException(status_code=404, detail="该任务没有歌词内容")
+    return Response(
+        content=fp.read_bytes(),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{rid}.txt"'},
+    )
+
+
+@router.post("/generate/lrc/{rid}")
+def generate_lrc_build(rid: str):
+    """为历史任务生成/重建 LRC（后台对齐，前端轮询 /generate/lrc/{rid} 查状态）。"""
+    rid = os.path.basename(rid)
+    meta = _output_read_meta(rid)
+    if not meta:
+        raise HTTPException(status_code=404, detail="task not found")
+    if not _output_wav_path(rid).is_file():
+        raise HTTPException(status_code=404, detail="音频文件不存在")
+    if not str(meta.get("lyrics") or "").strip():
+        raise HTTPException(status_code=400, detail="该任务没有歌词内容")
+    _lrc_build_async(rid)
+    return {"ok": True, "status": "running"}
+
+
+@router.get("/generate/lrc/{rid}")
+def generate_lrc_status(rid: str):
+    """LRC 生成状态查询；done 时直接返回 lrc 文本。"""
+    rid = os.path.basename(rid)
+    fp = _output_lrc_path(rid)
+    if fp.is_file():
+        return {"status": "done", "lrc": fp.read_text(encoding="utf-8")}
+    job = _lrc_job_read(rid)
+    if job:
+        return job
+    return {"status": "none"}
+
+
+@router.patch("/generate/{rid}/name")
+def generate_rename(rid: str, payload: dict = Body(default={})):
+    """重命名历史任务（改 meta 里的 task_name，历史展示与下载命名同步生效）。"""
+    rid = os.path.basename(rid)
+    meta = _output_read_meta(rid)
+    if not meta:
+        raise HTTPException(status_code=404, detail="task not found")
+    name = str(payload.get("task_name") or "").strip()[:100]
+    if not name:
+        raise HTTPException(status_code=400, detail="任务名不能为空")
+    meta["task_name"] = name
+    _output_write_meta(meta)
+    return {"ok": True, "task_name": name}
+
+
 @router.delete("/generate/{rid}")
 def generate_delete(rid: str):
     rid = os.path.basename(rid)
@@ -1111,7 +1254,9 @@ def generate_delete(rid: str):
     if job and job.get("id") == rid and job.get("status") == "running":
         raise HTTPException(status_code=409, detail="任务进行中，不能删除")
     removed = False
-    for p in (_output_wav_path(rid), _output_meta_path(rid)):
+    for p in (_output_wav_path(rid), _output_meta_path(rid),
+              _output_lyrics_path(rid), _output_lrc_path(rid),
+              _output_lrc_path(rid).with_suffix(".lrcjob")):
         if p.is_file():
             p.unlink()
             removed = True
@@ -1182,6 +1327,7 @@ def _batch_run_worker() -> None:
             "lyrics": str(payload.get("lyrics") or "")[:4000],
             "cot": payload.get("cot", "full"),
             "abc": str(payload.get("abc") or "")[:4000],
+            "task_name": str(nxt.get("name") or "")[:100],
             "model": payload.get("model", "yue2"),
             "params": {
                 k: payload.get(k)
@@ -1416,14 +1562,89 @@ def rvc_model_rename(name: str, payload: dict):
     return {"ok": True, "name": new_name}
 
 
+# 人声分离（BS-RoFormer + HP5 去和声）：复用 GPT-SoVITS runtime 与权重，
+# 换声带伴奏的歌曲时先分离出纯净主唱再送 RVC，避免伴奏被当成"人声"转换。
+GSV_ROOT = Path(r"E:\AI\10AIMusic\GPT-SoVITS-v2pro-20250604")
+GSV_PY = GSV_ROOT / "runtime" / "python.exe"
+SEP_ROFORMER = GSV_ROOT / "sep_roformer.py"
+SEP_HP5 = GSV_ROOT / "sep_hp5.py"
+
+
+def vocal_sep_available() -> bool:
+    return GSV_PY.is_file() and SEP_ROFORMER.is_file() and SEP_HP5.is_file()
+
+
+def _run_vocal_separation(src: Path, in_dir: Path, job: dict) -> tuple[Path, dict]:
+    """两步人声分离：BS-RoFormer 分离伴奏 → HP5 去和声。
+
+    返回 (纯净主唱路径, 产物字典)；产物字典含原人声（含和声）与伴奏，
+    供换声完成后合成完整歌曲与多产物下载。"""
+    sep_dir = in_dir / "sep"
+    sep_dir.mkdir(parents=True, exist_ok=True)
+    artifacts: dict[str, str] = {}
+
+    def _newest(pattern: str) -> Path | None:
+        cands = sorted(sep_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+        return cands[0] if cands else None
+
+    # 步骤 1：BS-RoFormer（人声 + 伴奏）
+    job["sep_stage"] = "分离伴奏（BS-RoFormer，较慢）"
+    r1 = subprocess.run(
+        [str(GSV_PY), str(SEP_ROFORMER), str(src), str(sep_dir)],
+        capture_output=True, timeout=3600,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if r1.returncode != 0:
+        tail = (r1.stderr or r1.stdout or b"")[-300:].decode("utf-8", "replace")
+        raise RuntimeError(f"人声分离（伴奏分离）失败：{tail}")
+    # 排除伴奏产物（other/instrument 字样），取人声轨道
+    vocals = next((v for v in sorted(sep_dir.glob(f"{src.stem}_*.wav"),
+                                     key=lambda p: p.stat().st_mtime, reverse=True)
+                   if not any(k in v.stem.lower() for k in ("other", "instrument"))), None)
+    if not vocals:
+        raise RuntimeError("人声分离（伴奏分离）未找到人声轨道")
+    # 伴奏：BS-RoFormer 的 <stem>_other.wav（与人声同批产物）。
+    # 注意 HP5 的 instrument_*.wav 是去和声副产品（无和声时≈静音），不能当伴奏。
+    accompaniment = sep_dir / f"{vocals.stem}_other.wav"
+    if not accompaniment.is_file():
+        accompaniment = next((v for v in sorted(sep_dir.glob(f"{src.stem}_*_other.wav"))
+                              if not v.name.startswith(("vocal_", "instrument_"))), None)
+    if accompaniment is None or not accompaniment.is_file():
+        raise RuntimeError("人声分离（伴奏分离）未找到伴奏轨道")
+    artifacts["vocals_raw"] = vocals.name      # 原人声（含和声，BS-RoFormer）
+    artifacts["accompaniment"] = accompaniment.name  # 伴奏（BS-RoFormer other 声部）
+
+    # 步骤 2：HP5 去和声（只留主唱）
+    job["sep_stage"] = "去除和声（HP5）"
+    r2 = subprocess.run(
+        [str(GSV_PY), str(SEP_HP5), str(vocals), str(sep_dir)],
+        capture_output=True, timeout=3600,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if r2.returncode != 0:
+        tail = (r2.stderr or r2.stdout or b"")[-300:].decode("utf-8", "replace")
+        raise RuntimeError(f"人声分离（去和声）失败：{tail}")
+    main_vocal = next((v for v in sorted(sep_dir.glob("vocal_*.wav"),
+                                         key=lambda p: p.stat().st_mtime, reverse=True)), None)
+    if not main_vocal:
+        # HP5 失败时降级：用含和声的人声继续（比带伴奏好）
+        return vocals, artifacts
+    return main_vocal, artifacts
+
+
 def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
                         model: str, pitch: int, f0_method: str,
-                        index_rate: float, protect: float, rms_mix_rate: float) -> None:
+                        index_rate: float, protect: float, rms_mix_rate: float,
+                        separate_vocal: bool = False) -> None:
     """换声推理 worker（上传入口与历史转发入口共用）。"""
     started = time.time()
     with _RVC_LOCK:
         _RVC_JOBS[rid] = {**_RVC_JOBS.get(rid, job), "status": "running"}
     try:
+        artifacts: dict[str, str] = {}
+        orig_src = in_dir / next(p.name for p in in_dir.iterdir() if p.name.startswith("src"))
+        if separate_vocal:
+            src, artifacts = _run_vocal_separation(src, in_dir, job)
         out_name = "converted.wav"
         cmd = [
             str(RVC_PY), str(RVC_DIR / "infer" / "cli.py"),
@@ -1431,7 +1652,10 @@ def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
             "--input", str(src), "--output", str(in_dir / out_name),
             "--pitch", str(int(pitch)), "--f0-method", f0_method,
             "--index-rate", str(index_rate), "--protect", str(protect),
-            "--rms-mix-rate", str(rms_mix_rate), "--overwrite",
+            "--rms-mix-rate", str(rms_mix_rate),
+            # 输出重采样到 48k：源素材普遍 44.1/48k，40k 直出会损失高频
+            "--resample-sr", "48000",
+            "--overwrite",
         ]
         env = {**os.environ,
                "PYTHONPATH": str(RVC_DIR),
@@ -1464,6 +1688,73 @@ def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
                                       "index_rate": index_rate, "protect": protect,
                                       "rms_mix_rate": rms_mix_rate},
         }
+        # 多产物：分离开启时，把原人声/伴奏拷进 output/，并把换声人声与伴奏混音成完整歌曲
+        assets: dict[str, str] = {}
+        if separate_vocal:
+            try:
+                import soundfile as sf
+                import numpy as np
+                sep_dir = in_dir / "sep"
+
+                def _copy(src_p: Path, dst_name: str) -> None:
+                    dst = OUTPUT_DIR / f"{rid}_{dst_name}.wav"
+                    dst.write_bytes(src_p.read_bytes())
+                    assets[dst_name] = dst.name
+
+                # 原人声（含和声）
+                raw_v_name = artifacts.get("vocals_raw", "")
+                raw_v = sep_dir / raw_v_name if raw_v_name else None
+                if raw_v is not None and raw_v.is_file():
+                    _copy(raw_v, "vocals_original")
+                # 伴奏：分离函数已精确登记（BS-RoFormer other 声部），直接取用
+                acc_name = artifacts.get("accompaniment", "")
+                acc = sep_dir / acc_name if acc_name else None
+                if acc is not None and not acc.is_file():
+                    acc = None
+                if acc is not None and acc.is_file():
+                    _copy(acc, "accompaniment")
+                    # 混音：换声后的人声 + 伴奏 → 完整歌曲（按伴奏采样率对齐）
+                    voc, sr_v = sf.read(str(wav), dtype="float32", always_2d=True)
+                    accm, sr_a = sf.read(str(acc), dtype="float32", always_2d=True)
+                    if sr_v != sr_a:
+                        import librosa
+                        voc = librosa.resample(voc.T, orig_sr=sr_v, target_sr=sr_a).T
+                        sr_v = sr_a
+                    n = max(voc.shape[0], accm.shape[0])
+                    if voc.shape[0] < n:
+                        voc = np.pad(voc, ((0, n - voc.shape[0]), (0, 0)))
+                    if accm.shape[0] < n:
+                        accm = np.pad(accm, ((0, n - accm.shape[0]), (0, 0)))
+                    if voc.shape[1] != accm.shape[1]:
+                        voc = voc[:, :1] if voc.shape[1] == 1 else np.repeat(voc[:, :1], accm.shape[1], axis=1)
+                        accm = accm[:, :1] if accm.shape[1] == 1 else np.repeat(accm[:, :1], voc.shape[1], axis=1)
+                    # 响度校准：把换声人声的 RMS 对齐到原曲人声，避免合成后忽大忽小
+                    try:
+                        raw_p = sep_dir / (artifacts.get("vocals_raw") or "")
+                        if raw_p.is_file():
+                            rawm, _ = sf.read(str(raw_p), dtype="float32", always_2d=True)
+                            if sr_v != sr_a:
+                                import librosa
+                                rawm = librosa.resample(rawm.T, orig_sr=sr_a, target_sr=sr_a).T
+                            ref_rms = float(np.sqrt((rawm ** 2).mean()))
+                            voc_rms = float(np.sqrt((voc ** 2).mean()))
+                            if voc_rms > 1e-6 and ref_rms > 1e-6:
+                                gain = min(3.0, max(0.33, ref_rms / voc_rms))
+                                voc *= gain
+                    except Exception:
+                        pass
+                    mixed = voc + accm
+                    peak = float(np.abs(mixed).max()) / 0.99
+                    if peak > 1:
+                        mixed /= peak
+                    full = OUTPUT_DIR / f"{rid}_full_song.wav"
+                    sf.write(str(full), mixed, sr_a)
+                    assets["full_song"] = full.name
+            except Exception:
+                # 多产物失败不影响主结果（换声人声已在），meta 里如实省略 assets
+                assets = {}
+        if assets:
+            meta["assets"] = assets
         _output_write_meta(meta)
         with _RVC_LOCK:
             _RVC_JOBS[rid] = {**_RVC_JOBS[rid], "status": "done",
@@ -1481,13 +1772,17 @@ def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
 async def rvc_convert(
     file: UploadFile,
     model: str = Form(...),
+    task_name: str = Form(""),
     pitch: int = Form(0),
     f0_method: str = Form("rmvpe"),
     index_rate: float = Form(0.75),
     protect: float = Form(0.33),
     rms_mix_rate: float = Form(1.0),
+    separate_vocal: str = Form("auto"),
 ):
-    """上传音频 + 选音色模型 → 后台转换 → 结果落盘 output/（与生成结果同处可回放）。"""
+    """上传音频 + 选音色模型 → 后台转换 → 结果落盘 output/（与生成结果同处可回放）。
+
+    separate_vocal: auto=默认先人声分离（带伴奏歌曲必需）；off=直接换声（输入已是干声）。"""
     if not RVC_PY.is_file():
         raise HTTPException(status_code=500, detail="rvc python 环境缺失（py312/python.exe）")
     models = _rvc_models()
@@ -1510,6 +1805,7 @@ async def rvc_convert(
 
     job = {
         "id": rid, "status": "running", "ts": datetime.now().isoformat(timespec="seconds"),
+        "task_name": str(task_name or "").strip()[:100],
         "model": model, "pitch": pitch, "f0_method": f0_method,
         "index_rate": index_rate, "protect": protect, "rms_mix_rate": rms_mix_rate,
         "src_name": (file.filename or "")[:120],
@@ -1520,7 +1816,8 @@ async def rvc_convert(
 
     threading.Thread(
         target=_rvc_convert_worker,
-        args=(rid, job, src, in_dir, model, pitch, f0_method, index_rate, protect, rms_mix_rate),
+        args=(rid, job, src, in_dir, model, pitch, f0_method, index_rate, protect,
+              rms_mix_rate, separate_vocal != "off"),
         daemon=True,
     ).start()
     return {"ok": True, "id": rid, "job": job}
@@ -1545,8 +1842,28 @@ def rvc_active():
 
 
 @router.get("/rvc/audio/{rid}")
-def rvc_audio(rid: str):
+def rvc_audio(rid: str, part: str = ""):
+    """下载换声产物。part 为空=换声后的人声（主产物）；
+    part=vocals_original/accompaniment/full_song=分离任务的多产物之一。"""
     rid = os.path.basename(rid)
+    if part:
+        part = os.path.basename(part)
+        if not re.fullmatch(r"[a-z_]+", part):
+            raise HTTPException(status_code=400, detail="非法产物名")
+        meta_path = _output_meta_path(rid)
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        fname = (meta.get("assets") or {}).get(part)
+        if not fname:
+            raise HTTPException(status_code=404, detail=f"产物不存在：{part}")
+        wav = OUTPUT_DIR / fname
+        if not wav.is_file():
+            raise HTTPException(status_code=404, detail="产物文件已丢失")
+        labels = {"vocals_original": "原人声", "accompaniment": "伴奏", "full_song": "完整歌曲"}
+        return FileResponse(str(wav), media_type="audio/wav",
+                            filename=f"{rid}_{labels.get(part, part)}.wav")
     wav = _output_wav_path(rid)
     if not wav.is_file():
         raise HTTPException(status_code=404, detail="结果不存在")
@@ -1714,19 +2031,35 @@ def _rvc_train_worker(rid: str, name: str, epochs: int) -> None:
         )
         job["samples_used"] = len(pairs)
         _rvc_train_write(rid, job)
-        # 4) 训练（40k v2 f0，从 pretrained_v2 底模热启；-sw 1 每 save 轮自动导出小模型到 weights）
+        # 4) 训练（40k v2 f0，从 pretrained_v2 底模热启；-sw 0 不中途导出，
+        #    训练完只导出最终成品一个 pth 进音色库，避免中间权重污染音色列表）
         _rvc_run_step([str(RVC_PY), str(RVC_DIR / "train" / "train.py"),
                        "-e", name, "-sr", "40k", "-f0", "1", "-bs", "4",
                        "-te", str(epochs), "-se", str(max(5, epochs // 4)),
                        "-pg", "assets/pretrained_v2/f0G40k.pth", "-pd", "assets/pretrained_v2/f0D40k.pth",
-                       "-l", "1", "-c", "0", "-sw", "1", "-v", "v2"], job, "训练中")
+                       "-l", "1", "-c", "0", "-sw", "0", "-v", "v2"], job, "训练中")
         # 5) 音色索引
         _rvc_run_step([str(RVC_PY), str(RVC_DIR / "train" / "train_index.py"),
                        name, "v2", str(RVC_DIR / "assets" / "indices"), str(n_p)], job, "音色索引")
-        # 6) 确认导出产物
-        exported = _rvc_latest_export(name)
-        if exported is None:
-            raise RuntimeError("训练完成但未找到导出的 pth（检查训练日志）")
+        # 5.5) 只导出最终成品：从最新检查点 G_2333333.pth 提取推理用小模型
+        job["step"] = "导出成品"
+        _rvc_train_write(rid, job)
+        final_ckpt = exp_logs / "G_2333333.pth"
+        if not final_ckpt.is_file():
+            raise RuntimeError("训练完成但未找到最终检查点 G_2333333.pth")
+        _rvc_run_step([str(RVC_PY), "-c",
+                       "import sys, json; sys.path.insert(0, '.'); "
+                       "from train.process_ckpt import extract_small_model; "
+                       "info = extract_small_model(r'%s', r'%s', '40k', 1, '%d epoch', 'v2'); "
+                       "print(info)" % (final_ckpt, name, epochs)], job, "导出成品")
+        exported = RVC_MODELS_DIR / f"{name}.pth"
+        if not exported.is_file():
+            raise RuntimeError("成品导出失败（weights 下未生成 %s.pth）" % name)
+        # 6) 清理训练检查点（G_*/D_* 每个 400-800MB，成品已导出即无用），保留索引与日志
+        for ck in exp_logs.glob("G_*.pth"):
+            ck.unlink(missing_ok=True)
+        for ck in exp_logs.glob("D_*.pth"):
+            ck.unlink(missing_ok=True)
         idx_files = list((RVC_DIR / "logs" / name).glob("added_*.index"))
         job.update(
             status="done", step="完成",
@@ -1768,11 +2101,17 @@ def _rvc_train_worker(rid: str, name: str, epochs: int) -> None:
 async def rvc_train(
     files: list[UploadFile],
     name: str = Form(...),
-    epochs: int = Form(100),
+    epochs: int = Form(200),
 ):
-    """上传若干干声样本 → 创建音色制作任务（独占运行，与换声/生成共用 GPU）。"""
+    """上传若干干声样本 → 创建音色制作任务（独占运行，与换声/生成共用 GPU）。
+
+    epochs 约束：RVC 底模微调下限 150（低于此音色发虚，实测 50 轮不可用），
+    上限 400（超过收益趋零且过拟合风险上升）。"""
     global _RVC_TRAIN_WORKER
     name = re.sub(r'[\\/:*?"<>|\s]+', "_", name.strip())[:40] or "voice"
+    if not 150 <= epochs <= 400:
+        raise HTTPException(status_code=400,
+                            detail="训练轮数须在 150-400 之间（低于 150 音色明显发虚；推荐 200，样本少可用 300）")
     if RVC_MODELS_DIR.joinpath(f"{name}.pth").is_file() or any(RVC_MODELS_DIR.glob(f"{name}*.pth")):
         raise HTTPException(status_code=409, detail=f"音色名已存在：{name}")
     # 在训互斥：已有制作任务排队/运行中时拒绝，防双进程 CUDA OOM 与 logs/<name> 互写
@@ -1886,6 +2225,7 @@ async def rvc_convert_by_rid(rid: str, payload: dict):
         src_duration = round(src.stat().st_size / 160_000, 1)
     job = {
         "id": rid2, "status": "running", "ts": datetime.now().isoformat(timespec="seconds"),
+        "task_name": str(payload.get("task_name") or "").strip()[:100],
         "model": model, "pitch": int(payload.get("pitch") or 0),
         "f0_method": str(payload.get("f0_method") or "rmvpe"),
         "index_rate": float(payload.get("index_rate") or 0.75),
@@ -1902,7 +2242,8 @@ async def rvc_convert_by_rid(rid: str, payload: dict):
                            str(payload.get("f0_method") or "rmvpe"),
                            float(payload.get("index_rate") or 0.75),
                            float(payload.get("protect") or 0.33),
-                           float(payload.get("rms_mix_rate") or 1.0)),
+                           float(payload.get("rms_mix_rate") or 1.0),
+                           payload.get("separate_vocal", "auto") != "off"),
                      daemon=True).start()
     return {"ok": True, "id": rid2, "job": job}
 

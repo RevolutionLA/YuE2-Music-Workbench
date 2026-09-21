@@ -115,3 +115,6 @@ checkpoints/model.safetensors
 
 # ===== 模型权重下载目录（运行时下载，不入库） =====
 yue2-q4_k_m/
+
+# ===== 本地 ASR/对齐模型权重（1.6GB，运行时放置，不入库） =====
+models/

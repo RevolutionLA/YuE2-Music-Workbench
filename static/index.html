@@ -250,6 +250,14 @@
   .row-list { display: flex; flex-direction: column; gap: 7px; }
   .empty { color: var(--dim); font: 12px var(--sans); padding: 28px 0; text-align: center; background: var(--panel-2); border-radius: 10px; }
 
+  /* 历史页子页签 */
+  .subtabs { display: flex; gap: 6px; flex-wrap: wrap; }
+  .subtab { font: 12px var(--sans); color: var(--tx2); background: var(--panel-2); border: 1px solid transparent; border-radius: 8px; padding: 5px 12px; cursor: pointer; }
+  .subtab:hover { color: var(--text); }
+  .subtab.active { color: var(--acc); border-color: var(--acc); background: var(--panel); }
+  .subtab span { color: var(--dim); margin-left: 2px; }
+  .subtab.active span { color: var(--acc); }
+
   .hist-item { display: flex; gap: 12px; align-items: center; padding: 10px 14px; border-radius: 10px; background: var(--panel-2); cursor: pointer; transition: background .15s; }
   .hist-item:hover { background: #ececf0; }
   .hist-item .h-body { flex: 1; min-width: 0; }
@@ -370,7 +378,9 @@
     <div class="grid">
 
       <div>
-        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4h12M2 8h8M2 12h10"/></svg>风格</div>
+        <label for="taskName" style="margin-top:0;">任务名称（用于历史展示与下载命名）</label>
+        <input id="taskName" placeholder="例如：稻香" maxlength="100" />
+        <div class="sec" style="margin-top:14px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4h12M2 8h8M2 12h10"/></svg>风格</div>
         <div class="chips" id="styleChips"></div>
         <div class="frow">
           <div>
@@ -512,6 +522,12 @@ We will sing beyond the night</textarea>
         <button class="danger" id="histClear" style="padding:4px 12px; font-size:12px;">清空</button>
       </div>
     </div>
+    <div class="subtabs" id="histTabs" style="margin-top:10px;">
+      <button class="subtab active" data-kind="all">全部 <span id="histN_all">0</span></button>
+      <button class="subtab" data-kind="generate">🎵 歌曲 <span id="histN_generate">0</span></button>
+      <button class="subtab" data-kind="rvc">🎙 换声 <span id="histN_rvc">0</span></button>
+      <button class="subtab" data-kind="train">🎨 音色 <span id="histN_train">0</span></button>
+    </div>
     <div class="sec" id="histActiveSec" style="display:none; margin-top:14px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.3 2.3"/></svg>进行中的任务</div>
     <div class="row-list" id="histActiveList" style="max-width:1240px; display:none;"></div>
     <div class="sec" style="margin-top:14px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 8.5l3.5 3.5L14 3.5"/></svg>已完成</div>
@@ -602,19 +618,44 @@ We will sing beyond the night</textarea>
 
       <div>
         <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 10V6a5 5 0 0 1 10 0v4"/><rect x="2" y="9.5" width="3" height="4.5" rx="1.2"/><rect x="11" y="9.5" width="3" height="4.5" rx="1.2"/></svg>音频换声（RVC 音色转换）</div>
-        <label for="rvcFile">选择音频文件（wav / mp3 / flac / m4a…，如生成历史里的歌曲）</label>
+        <label for="rvcTaskName" style="margin-top:0;">任务名称（用于历史展示与下载命名）</label>
+        <input id="rvcTaskName" placeholder="例如：稻香·女声版" maxlength="100" />
+        <label for="rvcFile" style="margin-top:10px;">选择音频文件（wav / mp3 / flac / m4a…，如生成历史里的歌曲）</label>
         <input id="rvcFile" type="file" accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" />
         <div class="pgrid" style="margin-top:10px;">
           <div><label for="rvcModel">音色模型</label><select id="rvcModel"></select></div>
-          <div><label for="rvcPitch">变调（半音，男转女 +12 / 女转男 -12）</label><input id="rvcPitch" type="number" value="0" min="-24" max="24" /></div>
+          <div><label for="rvcPitch">变调（半音）</label><input id="rvcPitch" type="number" value="0" min="-24" max="24" /></div>
+          <div style="grid-column: 1 / -1; display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
+            <span style="color:var(--tx2); font-size:12px;">变调快捷：</span>
+            <button class="ghost" type="button" data-pitch="0" title="同一性别声线直接用 0">同性别 0</button>
+            <button class="ghost" type="button" data-pitch="-12" title="女生唱的歌曲换成男声">女转男 -12</button>
+            <button class="ghost" type="button" data-pitch="12" title="男生唱的歌曲换成女声">男转女 +12</button>
+            <button class="ghost" type="button" data-pitch="-4">微调 -4</button>
+            <button class="ghost" type="button" data-pitch="4">微调 +4</button>
+          </div>
+          <div class="hint-xs" style="grid-column: 1 / -1;">💡 变调怎么填：先判断「歌曲里原唱的性别」和「目标音色的性别」——不同性别必须 ±12（女转男 -12 / 男转女 +12），否则会闷哑或尖细；同性别可先用 0，听感偏高/偏低再 ±3~5 微调。判断不准就先试 0，跑完听「换声人声」再调。</div>
           <div><label for="rvcF0">变调算法</label>
             <select id="rvcF0">
               <option value="rmvpe" selected>rmvpe · 精准（推荐）</option>
-              <option value="pm">pm · 快速</option>
+              <option value="pm">pm · 快速（音准略差）</option>
             </select>
           </div>
           <div><label for="rvcIndexRate">音色检索强度</label><input id="rvcIndexRate" type="number" step="0.05" value="0.75" min="0" max="1" /></div>
-          <div><label for="rvcProtect"> protects（防气声，0.33 默认）</label><input id="rvcProtect" type="number" step="0.01" value="0.33" min="0" max="0.5" /></div>
+          <div><label for="rvcProtect">protect（防气声）</label><input id="rvcProtect" type="number" step="0.01" value="0.33" min="0" max="0.5" /></div>
+          <div style="grid-column: 1 / -1; display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
+            <span style="color:var(--tx2); font-size:12px;">效果预设：</span>
+            <button class="ghost" type="button" data-preset="0.75,0.33" title="多数场景的最佳起点">⭐ 标准</button>
+            <button class="ghost" type="button" data-preset="0.85,0.33" title="更像目标音色，但可能轻微电音">更像音色</button>
+            <button class="ghost" type="button" data-preset="0.65,0.45" title="咬字更清晰，音色略淡">咬字更清</button>
+          </div>
+          <div class="hint-xs" style="grid-column: 1 / -1;">💡 检索强度越高音色越像、但可能带电音；protect 越高咬字越清楚、气声越多。调不准就保持「标准」预设。</div>
+          <div style="grid-column: 1 / -1;">
+            <label for="rvcSep" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+              <input id="rvcSep" type="checkbox" checked style="width:auto;" />
+              <span>先做人声分离再换声（歌曲带伴奏时必勾；分离耗时较久，一首歌约 10-30 分钟）</span>
+            </label>
+          </div>
+          <div class="hint-xs" style="grid-column: 1 / -1;">💡 输入是完整歌曲（人声+伴奏）→ 保持勾选，换声前会自动分离出纯净人声，完成后可下载「换声人声 / 原人声 / 伴奏 / 完整歌曲」四份产物；输入已经是纯干声（录音、清唱）→ 取消勾选直接换声，速度更快。</div>
         </div>
         <div class="actions">
           <button class="primary" id="rvcGo">开始换声</button>
@@ -637,17 +678,20 @@ We will sing beyond the night</textarea>
         <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5" r="2.6"/><path d="M2.8 13.5c.6-2.8 2.7-4.3 5.2-4.3s4.6 1.5 5.2 4.3"/></svg>音色制作（用干声样本训练新音色）</div>
         <label for="rvcTrainName">音色名称（英文/拼音，训练完成后出现在上方音色下拉框）</label>
         <input id="rvcTrainName" placeholder="例如：myvoice" />
-        <label for="rvcTrainFiles" style="margin-top:10px;">干声样本（可多选，建议 3-10 分钟干净人声、无伴奏无混响）</label>
+        <label for="rvcTrainFiles" style="margin-top:10px;">干声样本（可多选，建议 5-10 分钟干净人声、无伴奏无混响）</label>
         <input id="rvcTrainFiles" type="file" multiple accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" />
-        <div class="hint-xs">🎤 怎么录音：手机自带的录音机即可（m4a 能直接用）——安静房间、离麦 20-30cm 正常说话/唱歌，录 3 段以上每段 1-2 分钟；不要加伴奏、混响、变声特效。手机录的先传到电脑再选文件。质量差会导致音色发闷或跑调。</div>
+        <div class="hint-xs">🎤 怎么录音：手机自带的录音机即可（m4a 能直接用）——安静房间（关窗、关风扇空调）、离麦 20-30cm 正常说话或唱歌，录 4-6 段每段 1-2 分钟；不要加伴奏、混响、变声特效，不要背景音乐。唱歌音色选唱段、说话音色选说话，或两者混录。手机录的先传到电脑再选文件。</div>
+        <div class="hint-xs">✅ 好素材的判断：回放录音能听清每个字、没有嗡嗡的房间声、音量稳定——素材质量决定音色上限，比任何参数都重要。</div>
         <div class="pgrid" style="margin-top:10px;">
-          <div><label for="rvcTrainEpochs">训练轮数（100 轮约 20-60 分钟，样本少用 100-200）</label><input id="rvcTrainEpochs" type="number" value="100" min="20" max="1000" /></div>
+          <div><label for="rvcTrainEpochs">训练轮数（150-400，推荐 200；约 2.5 分钟/轮）</label><input id="rvcTrainEpochs" type="number" value="200" min="150" max="400" step="10" /></div>
         </div>
+        <div class="hint-xs">💡 轮数怎么选：200 轮适合 5 分钟以上素材（推荐）；素材偏少（3-5 分钟）用 300 轮补足；400 轮仅素材很干净时使用，过高可能过拟合（音色发劈）。训练太少的音色会发虚、发闷——不满意请加轮数重训，不要反复换声调试。</div>
         <div class="actions">
           <button class="primary" id="rvcTrainGo">开始制作音色</button>
         </div>
-        <div class="status" id="rvcTrainStatus">训练在服务端进行（占用 GPU，期间不要同时生成歌曲）。完成后新音色自动出现在换声页的音色下拉框。</div>
+        <div class="status" id="rvcTrainStatus">训练在服务端进行（独占 GPU，期间不要同时生成歌曲/换声）。完成后新音色自动出现在换声页的音色下拉框，只保留最终成品。</div>
         <div class="progress" id="rvcTrainProgress"><div id="rvcTrainProgressBar"></div></div>
+        <div class="hint-xs">🎓 训练完成后怎么验收：到换声页用新音色换一段 30 秒的清唱或歌曲（先勾人声分离）试听——音色像、咬字清即合格；如果发虚发闷→素材太少或轮数不够，加轮数重训；如果有电音→换声时把「音色检索强度」降到 0.65。</div>
       </div>
 
       <div>
@@ -775,6 +819,13 @@ function fmtBytes(n) {
   if (n < 1024*1024) return (n/1024).toFixed(1) + " KB";
   return (n/1024/1024).toFixed(2) + " MB";
 }
+// 下载命名：任务名称 + 年月日（如「稻香 260921」）
+function dlName(name, ext = "wav") {
+  const d = new Date();
+  const ymd = String(d.getFullYear()).slice(2) + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0");
+  const base = String(name || "").trim().replace(/[\\/:*?"<>|]+/g, "_").slice(0, 80) || "yue2";
+  return base + " " + ymd + "." + ext;
+}
 async function jfetch(url, opts) {
   const r = await fetch(url, opts);
   if (!r.ok) {
@@ -787,6 +838,7 @@ async function jfetch(url, opts) {
 
 // ---------- state ----------
 let lastBlob = null, lastUrl = null;
+let lastTaskName = "";  // 当前播放坞音频对应的任务名称（用于下载命名）
 let curTab = "compose";
 let currentModels = [];
 
@@ -815,6 +867,8 @@ function switchTab(name) {
   curTab = name;
   $$(".tab").forEach(x => x.classList.toggle("active", x.dataset.tab === name));
   $$(".panel-tab").forEach(p => p.style.display = p.id === "tab-" + name ? "" : "none");
+  // 进入历史页时自动刷新，确保看到的是最新列表
+  if (name === "history" && typeof renderHistory === "function") renderHistory();
 }
 
 // ---------- presets ----------
@@ -959,8 +1013,9 @@ $("modelSel").onchange = async () => {
 };
 
 // ---------- audio player ----------
-function loadAudio(blob, name) {
+function loadAudio(blob, name, taskName) {
   lastBlob = blob;
+  lastTaskName = taskName || "";
   if (lastUrl) URL.revokeObjectURL(lastUrl);
   lastUrl = URL.createObjectURL(blob);
   const p = $("player"); p.pause(); p.src = lastUrl; p.load();
@@ -973,14 +1028,9 @@ $("audioFile").onchange = () => {
 };
 $("download").onclick = () => {
   if (!lastUrl) return;
-  let name = ($("audioName").textContent || "").trim();
   const a = document.createElement("a");
   a.href = lastUrl;
-  if (name && /\.(wav|mp3|flac|ogg|m4a)$/i.test(name)) {
-    a.download = name.replace(/[\\/:*?"<>|]+/g, "_");
-  } else {
-    a.download = "yue2-" + new Date().toISOString().slice(0,19).replace(/[:T]/g,"") + ".wav";
-  }
+  a.download = dlName(lastTaskName || "yue2");
   a.click();
 };
 
@@ -1087,7 +1137,7 @@ function applyFinishedJob(job) {
     $("status").innerHTML = "生成完成 · " + fmtBytes(job.bytes) + " · seed="
       + escapeHtml(String(job.seed_actual ?? "")) + " · <span class='timer'>" + (job.sec || "?") + "s</span>";
     fetch("/api/generate/audio/" + job.id).then(r => r.ok ? r.blob() : null).then(b => {
-      if (b) loadAudio(b, job.id + ".wav");
+      if (b) loadAudio(b, job.id + ".wav", job.task_name || (job.style || "").split(",")[0]);
     });
     toast("歌曲生成完成，已保存到 output/", "ok");
     stickyNotify("🎵 生成完成：" + name, "已保存到 output/，可在历史页回放。" + (job.batch ? "批量队列将继续下一首。" : ""), true);
@@ -1171,6 +1221,7 @@ $("go").onclick = async () => {
   }
   const genCount = Math.max(1, Math.min(20, numOrNull("genCount") || 1));
   const payload = {
+    task_name: $("taskName").value.trim(),
     lyrics, style,
     cot: $("cot").value,
     abc: $("abc").value,
@@ -1321,7 +1372,7 @@ async function renderBatch() {
         if (pb) pb.onclick = async (e) => {
           e.stopPropagation();
           const rr = await fetch("/api/generate/audio/" + it.id);
-          if (rr.ok) { loadAudio(await rr.blob(), it.id + ".wav"); }
+          if (rr.ok) { loadAudio(await rr.blob(), it.id + ".wav", it.name); }
           else toast("音频文件缺失", "err");
         };
         // 点击任务条目：把该任务的曲风/歌词/参数回填到左侧表单，便于浏览和修改
@@ -1419,6 +1470,15 @@ $("bStop").onclick = async () => {
 // ---------- history（output/ 自动落盘，含 style/歌词/参数）----------
 // ---------- history：进行中任务（生成/换声/音色训练） ----------
 const _KIND_LABEL = { generate: "🎵 生成", rvc: "🎙 换声", train: "🎨 音色制作" };
+// 历史页当前子页签（all/generate/rvc/train）
+let histKind = "all";
+$("histTabs").querySelectorAll(".subtab").forEach(btn => {
+  btn.onclick = () => {
+    histKind = btn.dataset.kind || "all";
+    $("histTabs").querySelectorAll(".subtab").forEach(b => b.classList.toggle("active", b === btn));
+    renderHistory();
+  };
+});
 
 function renderHistoryActive() {
   fetch("/api/history/active").then(r => r.ok ? r.json() : { items: [] }).then(d => {
@@ -1441,10 +1501,10 @@ function renderHistoryActive() {
           : (j.step || "排队中") + ` · ${j.samples || "?"} 个样本`;
         if (j.step === "训练中" && j.epoch && total) pct = Math.round(j.epoch / total * 100);
       } else if (kind === "rvc") {
-        title = `${_KIND_LABEL.rvc} · ${(j.model || "").replace(/\.pth$/i, "")}`;
+        title = `${_KIND_LABEL.rvc} · ${(j.task_name || (j.model || "").replace(/\.pth$/i, "")).slice(0, 30)}`;
         sub = `源音频 ${Math.round(j.src_duration || 0)}s · 转换中`;
       } else {
-        title = `${_KIND_LABEL.generate} · ${((j.style || "").split(",")[0] || "未命名").slice(0, 30)}`;
+        title = `${_KIND_LABEL.generate} · ${(j.task_name || (j.style || "").split(",")[0] || "未命名").slice(0, 30)}`;
         sub = `cot:${j.cot || "full"} · ${j.params?.num_inference_steps || "?"} 步 · 生成中`;
       }
       d.innerHTML = `
@@ -1467,13 +1527,21 @@ async function renderHistory() {
     const j = await r.json();
     const list = Array.isArray(j.items) ? j.items : [];
     $("histCount").textContent = list.length;
+    // 按子页签过滤 kind（all 显示全部时间线）
+    const kindOf = h => h.kind === "train" || h.kind === "rvc" ? h.kind : "generate";
+    const counts = { all: list.length, generate: 0, rvc: 0, train: 0 };
+    list.forEach(h => counts[kindOf(h)]++);
+    for (const k of ["all", "generate", "rvc", "train"]) {
+      const n = $("histN_" + k); if (n) n.textContent = counts[k];
+    }
+    const shown = histKind === "all" ? list : list.filter(h => kindOf(h) === histKind);
     const el = $("histList");
-    if (!list.length) { el.innerHTML = '<div class="empty">暂无历史记录。生成歌曲后会自动保存（含音频与参数）。</div>'; return; }
+    if (!shown.length) { el.innerHTML = `<div class="empty">${histKind === "all" ? "暂无历史记录。生成歌曲后会自动保存（含音频与参数）。" : "该分类下暂无记录。"}</div>`; return; }
     el.innerHTML = "";
-    list.forEach(h => {
+    shown.forEach(h => {
       const d = document.createElement("div");
       d.className = "hist-item";
-      const title = (h.style || "").split(",")[0] || "未命名";
+      const title = (h.task_name || (h.style || "").split(",")[0] || "未命名");
       const size = h.bytes ? " · " + fmtBytes(h.bytes) : "";
       const isTrain = h.kind === "train";
       const isRvc = h.kind === "rvc";
@@ -1491,9 +1559,19 @@ async function renderHistory() {
           ${h.status === "done" && !isTrain ? '<button class="ghost" data-play>▶ 播放</button><button class="ghost" data-dl>⬇ 下载</button>' : ''}
           ${h.status === "done" && isTrain ? '<button class="ghost" data-use>去使用</button>' : ''}
           ${h.status === "done" && !isTrain && !isRvc ? '<button class="ghost" data-rvc>送去换声</button>' : ''}
-          ${h.status !== "done" && !isTrain ? '<button class="ghost" data-restore>回填</button>' : ''}
+          ${!isTrain && !isRvc && (h.lyrics || "").trim() ? '<button class="ghost" data-lyrics>⬇ LRC歌词</button>' : ''}
+          ${!isTrain && !isRvc ? '<button class="ghost" data-restore>回填</button>' : ''}
+          <button class="ghost" data-rename>✏ 改名</button>
           <button class="danger" data-del>删除</button>
-        </div>`;
+        </div>
+        ${h.status === "done" && isRvc && h.assets && Object.keys(h.assets).length ? `
+        <div class="h-sub" style="grid-column:1/-1; display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
+          <span style="color:var(--tx2);">多产物下载：</span>
+          <button class="ghost" data-part-dl="">🎙 换声人声</button>
+          ${h.assets.vocals_original ? '<button class="ghost" data-part-dl="vocals_original">🎤 原人声</button>' : ''}
+          ${h.assets.accompaniment ? '<button class="ghost" data-part-dl="accompaniment">🎹 伴奏</button>' : ''}
+          ${h.assets.full_song ? '<button class="ghost" data-part-dl="full_song">🎵 完整歌曲</button>' : ''}
+        </div>` : ''}`;
       // 回填：style/歌词/参数 + 从 style 反解歌手性别（与刷新恢复共用一套逻辑）
       const restore = () => {
         $("style").value = h.style || ""; $("lyrics").value = h.lyrics || ""; $("cot").value = h.cot || "full"; $("abc").value = h.abc || "";
@@ -1505,12 +1583,23 @@ async function renderHistory() {
         if (p.num_inference_steps) $("steps").value = p.num_inference_steps;
         switchTab("compose");
       };
-      // 播放 + 回填二合一：整条记录可点；失败/进行中的记录点击仅回填参数
+      // 播放 + 回填二合一：整条记录可点；失败/进行中的记录点击仅回填参数。
+      // 换声任务且合成过完整歌曲时，播放优先用「换声人声+伴奏」合成版，而非纯人声。
       const playAndRestore = async () => {
         if (h.status !== "done") { restore(); toast("已回填该次生成参数", "ok"); return; }
+        const wantFull = isRvc && h.assets && h.assets.full_song;
         const rr = await fetch("/api/generate/audio/" + h.id);
         if (rr.ok) {
-          loadAudio(await rr.blob(), h.id + ".wav");
+          if (wantFull) {
+            const fr = await fetch("/api/rvc/audio/" + h.id + "?part=full_song");
+            if (fr.ok) {
+              loadAudio(await fr.blob(), h.id + "_full_song.wav", h.task_name + " · 完整歌曲");
+              restore();
+              toast("已回填参数并播放完整歌曲（换声人声+伴奏）", "ok");
+              return;
+            }
+          }
+          loadAudio(await rr.blob(), h.id + ".wav", h.task_name);
           restore();
           toast("已回填参数并开始播放", "ok");
         }
@@ -1542,14 +1631,77 @@ async function renderHistory() {
           const blob = await rr.blob();
           const a = document.createElement("a");
           a.href = URL.createObjectURL(blob);
-          a.download = (h.id) + ".wav";
+          a.download = dlName(h.task_name || (h.style || "").split(",")[0]);
           document.body.appendChild(a); a.click(); a.remove();
           setTimeout(() => URL.revokeObjectURL(a.href), 5000);
           toast("已开始下载", "ok");
         } catch (err) { toast("下载失败：" + err.message, "err"); }
       };
+      // 换声多产物下载（换声人声/原人声/伴奏/完整歌曲）
+      d.querySelectorAll("[data-part-dl]").forEach(btn => {
+        btn.onclick = async (e) => {
+          e.stopPropagation();
+          const part = btn.dataset.partDl || "";
+          try {
+            const rr = await fetch("/api/rvc/audio/" + h.id + (part ? "?part=" + part : ""));
+            if (!rr.ok) {
+              let msg = "产物不存在";
+              try { msg = (await rr.json()).detail || msg; } catch {}
+              toast(msg, "err"); return;
+            }
+            const blob = await rr.blob();
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            const partLabel = { "vocals_original": "原人声", "accompaniment": "伴奏", "full_song": "完整歌曲" }[part] || "换声人声";
+            a.download = dlName((h.task_name || (h.style || "").split(",")[0]) + " " + partLabel);
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+            toast("已开始下载", "ok");
+          } catch (err) { toast("下载失败：" + err.message, "err"); }
+        };
+      });
       const rb = d.querySelector("[data-restore]");
       if (rb) rb.onclick = (e) => { e.stopPropagation(); restore(); toast("已回填该次生成参数", "ok"); };
+      // 下载 LRC 歌词（带时间轨）：已生成直接下载，否则触发后端对齐并轮询
+      const lb = d.querySelector("[data-lyrics]");
+      if (lb) lb.onclick = async (e) => {
+        e.stopPropagation();
+        const btn = lb;
+        const oldTxt = btn.textContent;
+        btn.disabled = true;
+        try {
+          // 首查状态：已有 lrc 直接用；没有则触发后台对齐
+          let r = await fetch("/api/generate/lrc/" + h.id);
+          let j = await r.json();
+          if (!r.ok) { throw new Error(j.detail || "状态查询失败"); }
+          if (j.status === "none") {
+            btn.textContent = "对齐中…";
+            const pr = await fetch("/api/generate/lrc/" + h.id, { method: "POST" });
+            if (!pr.ok) { const pj = await pr.json().catch(() => ({})); throw new Error(pj.detail || "提交失败"); }
+            j = { status: "running" };
+          }
+          if (j.status !== "done") {
+            btn.textContent = "对齐中…";
+            toast("正在对齐歌词时间轴，请稍候…", "ok");
+            for (let i = 0; i < 120; i++) {
+              await new Promise(res => setTimeout(res, 2000));
+              const rr = await fetch("/api/generate/lrc/" + h.id);
+              const jj = await rr.json();
+              if (jj.status === "done") { j = jj; break; }
+              if (jj.status === "error") throw new Error(jj.error || "对齐失败");
+            }
+            if (j.status !== "done") throw new Error("对齐超时，请稍后重试");
+          }
+          const blob = new Blob([j.lrc], { type: "text/plain;charset=utf-8" });
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = dlName(h.task_name || (h.style || "").split(",")[0]) + ".lrc";
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+          toast("已开始下载 LRC 歌词", "ok");
+        } catch (err) { toast("LRC 下载失败：" + err.message, "err"); }
+        finally { btn.disabled = false; btn.textContent = oldTxt; }
+      };
       // 音色制作完成：跳到换声页并选中该音色
       const ub = d.querySelector("[data-use]");
       if (ub) ub.onclick = async (e) => {
@@ -1576,7 +1728,7 @@ async function renderHistory() {
         try {
           const r = await fetch(`/api/rvc/convert/${h.id}`, {
             method: "POST", headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({ model, pitch }),
+            body: JSON.stringify({ model, pitch, task_name: ((h.task_name || (h.style || "").split(",")[0] || "") + "·" + model.replace(/\.pth$/i, "")).slice(0, 100) }),
           });
           const j = await r.json();
           if (!r.ok) throw new Error(j.detail || "提交失败");
@@ -1584,6 +1736,30 @@ async function renderHistory() {
           switchTab("rvc");
         } catch (err) { toast(err.message, "err"); }
         finally { rv.disabled = false; rv.textContent = "送去换声"; }
+      };
+      // 重命名任务：改 meta 的 task_name，历史展示与下载命名同步生效
+      const rn = d.querySelector("[data-rename]");
+      if (rn) rn.onclick = async (e) => {
+        e.stopPropagation();
+        const cur = h.task_name || (h.style || "").split(",")[0] || "";
+        const name = prompt("修改任务名称（最多 100 字）：", cur);
+        if (name === null) return;
+        const trimmed = name.trim();
+        if (!trimmed) { toast("任务名不能为空", "err"); return; }
+        rn.disabled = true;
+        try {
+          const rr = await fetch("/api/generate/" + h.id + "/name", {
+            method: "PATCH", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ task_name: trimmed.slice(0, 100) }),
+          });
+          const j = await rr.json().catch(() => ({}));
+          if (!rr.ok) throw new Error(j.detail || "改名失败");
+          h.task_name = j.task_name;
+          const t = d.querySelector(".h-title");
+          if (t) t.textContent = h.task_name + kindTag + st;
+          toast("已重命名", "ok");
+        } catch (err) { toast(err.message, "err"); }
+        finally { rn.disabled = false; }
       };
       d.querySelector("[data-del]").onclick = async (e) => {
         e.stopPropagation();
@@ -1715,6 +1891,7 @@ async function loadTpls() {
 }
 function currentConfig() {
   return {
+    task_name: $("taskName").value,
     style: $("style").value, lyrics: $("lyrics").value, cot: $("cot").value, abc: $("abc").value,
     seed: $("seed").value, cfg: $("cfg").value, steps: $("steps").value, gender: $("gender").value,
     abc_temperature: $("abc_temperature").value, abc_top_p: $("abc_top_p").value, abc_top_k: $("abc_top_k").value,
@@ -1722,6 +1899,7 @@ function currentConfig() {
   };
 }
 function applyConfig(c) {
+  if (c.task_name !== undefined && c.task_name !== null) $("taskName").value = c.task_name;
   if (c.style) $("style").value = c.style;
   if (c.lyrics) $("lyrics").value = c.lyrics;
   if (c.cot) $("cot").value = c.cot;
@@ -1838,10 +2016,11 @@ function renderRvcList() {
     const d = document.createElement("div");
     d.className = "hist-item";
     const st = j.status === "done" ? "✓ 完成" : j.status === "error" ? "✕ 失败" : "🎵 转换中";
+    const rvcTitle = j.task_name || (j.model || "").replace(/\.pth$/i, "");
     d.innerHTML = `
       <div class="h-body">
-        <div class="h-title">${escapeHtml((j.model || "").replace(/\.pth$/i, ""))} · ${st}${j.sec ? " · " + j.sec + "s" : ""}</div>
-        <div class="h-sub truncate">${escapeHtml(j.src_name || j.srcName || "")}</div>
+        <div class="h-title">${escapeHtml(rvcTitle)} · ${st}${j.sec ? " · " + j.sec + "s" : ""}</div>
+        <div class="h-sub truncate">${escapeHtml((j.model || "").replace(/\.pth$/i, ""))} · ${escapeHtml(j.src_name || j.srcName || "")}</div>
         ${j.status === "error" ? `<div class="h-sub truncate" title="${escapeHtml(j.error || "")}">${escapeHtml((j.error || "").slice(0, 80))}</div>` : ""}
       </div>
       ${j.status === "done" ? '<button class="ghost" data-play>▶ 播放</button>' : ''}`;
@@ -1849,7 +2028,7 @@ function renderRvcList() {
     if (pb) pb.onclick = async (e) => {
       e.stopPropagation();
       const rr = await fetch("/api/rvc/audio/" + j.id);
-      if (rr.ok) { loadAudio(await rr.blob(), j.id + ".wav"); }
+      if (rr.ok) { loadAudio(await rr.blob(), j.id + ".wav", j.task_name); }
       else toast("结果文件缺失", "err");
     };
     el.appendChild(d);
@@ -1918,6 +2097,19 @@ async function pollRvc(rid) {
   }
 }
 
+// 变调快捷按钮：一键填入推荐值
+$$("[data-pitch]").forEach(b => {
+  b.onclick = () => { $("rvcPitch").value = b.dataset.pitch; };
+});
+// 效果预设：一键设置检索强度 + protect
+$$("[data-preset]").forEach(b => {
+  b.onclick = () => {
+    const [ir, pr] = b.dataset.preset.split(",");
+    $("rvcIndexRate").value = ir;
+    $("rvcProtect").value = pr;
+  };
+});
+
 $("rvcGo").onclick = async () => {
   const f = $("rvcFile").files && $("rvcFile").files[0];
   if (!f) { $("rvcStatus").className = "status err"; $("rvcStatus").textContent = "请先选择音频文件。"; return; }
@@ -1926,18 +2118,22 @@ $("rvcGo").onclick = async () => {
   const fd = new FormData();
   fd.append("file", f);
   fd.append("model", model);
+  fd.append("task_name", $("rvcTaskName").value.trim());
   fd.append("pitch", $("rvcPitch").value || "0");
   fd.append("f0_method", $("rvcF0").value);
   fd.append("index_rate", $("rvcIndexRate").value || "0.75");
   fd.append("protect", $("rvcProtect").value || "0.33");
+  fd.append("separate_vocal", $("rvcSep").checked ? "auto" : "off");
   $("rvcGo").disabled = true;
   $("rvcStatus").className = "status";
-  $("rvcStatus").textContent = "上传并提交转换…";
+  $("rvcStatus").textContent = $("rvcSep").checked
+    ? "上传并提交转换…（已开启人声分离，分离阶段较慢，请耐心等待）"
+    : "上传并提交转换…";
   try {
     const r = await fetch("/api/rvc/convert", { method: "POST", body: fd });
     const j = await r.json();
     if (!r.ok) throw new Error(j.detail || "提交失败");
-    rvcJobs.unshift({ id: j.id, status: "running", model, src_name: f.name });
+    rvcJobs.unshift({ id: j.id, status: "running", model, src_name: f.name, task_name: $("rvcTaskName").value.trim() });
     renderRvcList();
     $("rvcStatus").textContent = "转换进行中（首次加载模型需 1-2 分钟），可离开页面。";
     pollRvc(j.id);
@@ -2170,7 +2366,13 @@ $("rvcTrainGo").onclick = async () => {
   const fd = new FormData();
   for (const f of files) fd.append("files", f);
   fd.append("name", name);
-  fd.append("epochs", $("rvcTrainEpochs").value || "100");
+  const ep = parseInt($("rvcTrainEpochs").value || "200", 10);
+  if (!(ep >= 150 && ep <= 400)) {
+    $("rvcTrainStatus").className = "status err";
+    $("rvcTrainStatus").textContent = "训练轮数须在 150-400 之间（推荐 200；样本少可用 300）";
+    return;
+  }
+  fd.append("epochs", String(ep));
   $("rvcTrainGo").disabled = true;
   $("rvcTrainStatus").className = "status";
   $("rvcTrainStatus").textContent = "上传样本并提交训练…";
@@ -2206,7 +2408,7 @@ $("rvcTrainGo").onclick = async () => {
   };
   let timer = null;
   document.addEventListener("input", (ev) => {
-    if (ev.target && ev.target.id && /^(style|lyrics|abc|cot|seed|cfg|steps|gender|abc_|semantic_|genCount|model)$/.test(ev.target.id)) {
+    if (ev.target && ev.target.id && /^(style|lyrics|abc|cot|seed|cfg|steps|gender|abc_|semantic_|genCount|model|taskName)$/.test(ev.target.id)) {
       clearTimeout(timer);
       timer = setTimeout(save, 400);
     }
