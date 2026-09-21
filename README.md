@@ -1,24 +1,31 @@
 <div align="center">
 
-<img src="checkpoints/assets/architecture.png" alt="音乐工作台 YuE2" width="720">
+<img src="pic/音乐工作台.png" alt="音乐工作台 YuE2" width="860">
 
 # 🎵 音乐工作台 YuE2
 
 **一键开唱 · 本地 AI 音乐生成工作站**
 
-_写词 + 写曲 + 演唱，全流程在你自己的电脑上完成 —— 不上传、不排队、不花钱。_
+_写词 + 写曲 + 演唱 + 滚动歌词，全流程在你自己的电脑上完成 —— 不上传、不排队、不花钱。_
 
 [![License: CC-BY-NC-4.0](https://img.shields.io/badge/License-CC--BY--NC--4.0-red.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
-[![Platform: Windows x64](https://img.shields.io/badge/Platform-Windows%20x64-blue.svg)](#-三步开唱)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20x64-0078D6.svg?logo=windows11&logoColor=white)](#-三步开唱)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![CUDA](https://img.shields.io/badge/CUDA-GPU%20%2F%20CPU%20自适应-76B900.svg?logo=nvidia&logoColor=white)](#-显存自适应)
+[![FastAPI](https://img.shields.io/badge/FastAPI-%E2%9A%A1-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![CUDA](https://img.shields.io/badge/CUDA-GPU%2FCPU%20自适应-76B900.svg?logo=nvidia&logoColor=white)](#-常见问题)
+[![GGUF](https://img.shields.io/badge/GGUF-量化推理-8A2BE2.svg)](https://github.com/ggml-org/ggml)
+[![RVC](https://img.shields.io/badge/RVC-音色转换-FF6B9D.svg)](#-它能做什么)
+[![Whisper](https://img.shields.io/badge/Whisper-LRC%20歌词对齐-FF9F43.svg)](#-它能做什么)
+[![Offline](https://img.shields.io/badge/100%25-本地运行-success.svg?logo=shield&logoColor=white)](#-常见问题)
 [![Stars](https://img.shields.io/github/stars/RevolutionLA/YuE2-Music-Workbench?style=social)](https://github.com/RevolutionLA/YuE2-Music-Workbench/stargazers)
+[![Forks](https://img.shields.io/github/forks/RevolutionLA/YuE2-Music-Workbench?style=social)](https://github.com/RevolutionLA/YuE2-Music-Workbench/network/members)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/RevolutionLA/YuE2-Music-Workbench/pulls)
 
-`YuE2 大模型` · `GGUF 量化推理` · `AI 翻唱` · `RVC 换声` · `批量生成` · `大陆网络开箱即用`
+**`YuE2 大模型`** · **`GGUF 量化`** · **`AI 翻唱`** · **`RVC 换声`** · **`LRC 滚动歌词`** · **`批量生成`** · **`大陆网络开箱即用`**
 
-**[快速开始](#-三步开唱) · [功能一览](#-它能做什么) · [架构](#-架构) · [常见问题](#-常见问题) · [致谢](#-致谢)**
+[快速开始](#-三步开唱) · [功能一览](#-它能做什么) · [界面预览](#-界面预览) · [架构](#-架构) · [常见问题](#-常见问题) · [致谢](#-致谢)
+
+**⭐ 觉得有用就点个 Star —— 这是给独立开发者最好的鼓励！**
 
 </div>
 
@@ -27,8 +34,8 @@ _写词 + 写曲 + 演唱，全流程在你自己的电脑上完成 —— 不�
 ## 📖 目录
 
 - [✨ 它能做什么](#-它能做什么)
+- [🎬 界面预览](#-界面预览)
 - [🚀 三步开唱](#-三步开唱)
-  - [🌐 大陆网络加速说明](#-大陆网络加速说明点开)
 - [🏗 架构](#-架构)
 - [❓ 常见问题](#-常见问题)
 - [🙏 致谢](#-致谢)
@@ -39,13 +46,38 @@ _写词 + 写曲 + 演唱，全流程在你自己的电脑上完成 —— 不�
 | | 功能 | 一句话说明 |
 |---|---|---|
 | 🎼 | **AI 写歌** | 输入风格 + 歌词 → 完整人声歌曲（副歌/主歌自动编排），支持改旋律（ABC 乐谱）|
+| 🤖 | **AI 辅助写词写风格** | 内置 DeepSeek 驱动的创作助手：说人话，它帮你出六要素风格标签和结构化歌词 |
 | 🎤 | **翻唱 / 改词 / 改曲风** | 丢一段参考音频 → 自动识别歌词 → 换词换曲风重新演绎 |
 | 🗣 | **换声** | RVC 音色转换：把自己的音色变成任意歌手 |
+| 📝 | **LRC 滚动歌词** | faster-whisper 词级时间戳，把歌词逐字对齐到已生成音频，产出标准 `.lrc` 直接导入音乐 App |
 | 🎨 | **音色制作** | 上传干声训练专属音色库 |
 | 📦 | **批量生成** | 一次排队几十首，跑完自动落盘，**中途可随时终止** |
 | 📥 | **历史管理** | 每首歌自动存档，随时回填参数重跑、一键下载 WAV |
 | ⏸ | **任务托管** | 刷新页面、关掉浏览器都不丢任务，回来接着看 |
+| 🩺 | **看门狗自愈** | 网关/工作台假死自动检测重启，页面卡不住 |
 | 🖥 | **显存自适应** | 显存够走 GPU 飞快，不够自动切 CPU 兜底，完成后自动切回 |
+
+## 🎬 界面预览
+
+<div align="center">
+
+### 创作主界面
+<img src="pic/音乐工作台.png" alt="创作主界面" width="860">
+
+### 🤖 AI 辅助写词写风格
+<img src="pic/音乐工作台-AI辅助写词写风格.png" alt="AI 辅助写词" width="860">
+
+### ⏸ 任务管理
+<img src="pic/音乐工作台-任务管理.png" alt="任务管理" width="860">
+
+| 🎤 换声 | 📦 批量生成 | 🎨 音色制作 |
+|:---:|:---:|:---:|
+| <img src="pic/预览效果图-换声.png" width="270" alt="换声"> | <img src="pic/预览效果图-批量.png" width="270" alt="批量生成"> | <img src="pic/预览效果图-音色制作.png" width="270" alt="音色制作"> |
+
+### ⚙️ dsh 原生配置模型
+<img src="pic/音乐工作台-dsh原生配置模型.png" alt="dsh 配置" width="720">
+
+</div>
 
 ## 🚀 三步开唱
 
@@ -55,8 +87,7 @@ _写词 + 写曲 + 演唱，全流程在你自己的电脑上完成 —— 不�
 :: 1. 下载本仓库（Green 一键解压也行）
 git clone https://github.com/RevolutionLA/YuE2-Music-Workbench.git
 
-:: 2. 双击启动
-scripts\启动音乐工作台.bat
+:: 2. 双击「启动音乐工作台.bat」（根目录或 scripts/ 下均可）
 
 :: 3. 浏览器自动打开工作台 → 填风格和歌词 → 点「生成歌曲」
 ```
@@ -84,22 +115,25 @@ py312\python.exe scripts\download_models.py --q8     :: q8_0（约4GB，质量�
 浏览器 ── 3081 一体化工作台（dsh-plugin）
               │ /lab-api/* 反代
               ▼
-        7863 FastAPI 网关（app.py：任务托管/批量队列/终止/换声/音色训练）
+        7863 FastAPI 网关（app.py：任务托管/批量队列/终止/换声/音色训练/歌词对齐）
               │
-              ▼
-        8080 audio.cpp 推理引擎（YuE2 GGUF，CUDA/CPU 自适应）
+              ├── 8080 audio.cpp 推理引擎（YuE2 GGUF，CUDA/CPU 自适应）
+              ├── faster-whisper（LRC 词级对齐）
+              ├── RVC（换声 / 音色训练）
+              └── watchdog（假死自愈守护）
 ```
 
 | 目录 | 内容 |
 |---|---|
-| `app.py` | 网关扩展路由：任务托管 / 批量排队 / 终止 / 模型切换 / 换声 |
+| `app.py` | 网关扩展路由：任务托管 / 批量排队 / 终止 / 模型切换 / 换声 / 歌词对齐 |
+| `lrc.py` | LRC 滚动歌词生成（faster-whisper 词级时间戳对齐） |
 | `static/` | 创作页前端（明暗主题，刷新不丢状态） |
 | `dsh-plugin/` | 一体化工作台 UI 插件 |
 | `scripts/` | 启动/停止/模型下载脚本、ASR 与降噪辅助 |
-| `watchdog.py` | 网关看门狗（假死自愈、无窗口静默运行） |
+| `watchdog.py` | 看门狗（网关 + 工作台假死自愈，无窗口静默运行） |
 | `cpp/` | YuE2 GGUF 推理引擎与模型（模型不入库，自动下载） |
 | `checkpoints/` | SheetSage2 乐谱提取（含上游许可） |
-| `legacy/` | 历史遗留模块（不再被引用，仅存档） |
+| `pic/` | README 截图 |
 
 ## ❓ 常见问题
 
@@ -118,7 +152,13 @@ full 模式（可编辑旋律 + 和声）+ 32 步 + 长歌词，6GB+ 显存约 6
 <details>
 <summary><b>数据会上传到云端吗？</b></summary>
 
-不会。除首次模型下载走镜像站外，写词、生成、换声、训练全部在本机完成，无任何遥测。
+不会。除首次模型下载走镜像站外，写词、生成、换声、训练、歌词对齐全部在本机完成，无任何遥测。
+</details>
+
+<details>
+<summary><b>生成的歌能带滚动歌词吗？</b></summary>
+
+能。内置 faster-whisper 词级时间戳对齐，一键产出标准 `.lrc` 文件，导入网易云音乐 / QQ 音乐等 App 即可逐行滚动显示。
 </details>
 
 <details>
@@ -131,6 +171,7 @@ full 模式（可编辑旋律 + 和声）+ 32 步 + 长歌词，6GB+ 显存约 6
 
 - [m-a-p/YuE2](https://huggingface.co/m-a-p/YuE2-3B) —— 音乐生成模型
 - [audio.cpp](https://github.com/leejet/audio.cpp) · [GGUF 量化](https://huggingface.co/ngquocvinh/YuE2-3B-GGUF) —— 本地推理引擎
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) —— 词级时间戳，驱动 LRC 滚动歌词
 - RVC / SheetSage2 / SenseVoice —— 换声、乐谱、语音识别
 
 ## 📄 许可
@@ -141,7 +182,7 @@ full 模式（可编辑旋律 + 和声）+ 32 步 + 长歌词，6GB+ 显存约 6
 
 <div align="center">
 
-**如果这个项目帮到了你，请点一个 ⭐ —— 这是给独立开发者最好的鼓励！**
+**如果这个项目帮到了你，请点一个 ⭐ —— 让更多热爱音乐的人看到它！**
 
 [⬆ 回到顶部](#-音乐工作台-yue2)
 
