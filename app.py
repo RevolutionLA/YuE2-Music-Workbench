@@ -304,6 +304,113 @@ def models_current():
 
 
 # --------------------------------------------------------------------------- #
+# 模型完整性校验 + 局部修复（借鉴 YuE2-Studio：目录存在 ≠ 模型可用）
+# 逐文件校验期望文件（主模型/VAE/sidecar/SheetSage2 权重）的最小字节数与
+# GGUF magic；缺哪个修哪个，避免整包重下。
+# --------------------------------------------------------------------------- #
+_GGUF_MAGIC = b"GGUF"
+# (仓库, 仓库内路径, 落地相对路径(相对 ROOT), 最小字节数, 是否 GGUF)
+_MODEL_MANIFEST_MAIN = [
+    ("ngquocvinh/YuE2-3B-GGUF", "yue2-3b-q4_k_m.gguf", "cpp/model/yue2-q4_k_m/yue2-3b-q4_k_m.gguf", 2_000_000_000, True),
+    ("audio-cpp/Yue2-3B-GGUF", "yue2-vae-f16.gguf", "cpp/model/yue2-q4_k_m/yue2-vae-f16.gguf", 100_000_000, True),
+    ("ngquocvinh/YuE2-3B-GGUF", "sidecars/yue2-model-config.json", "cpp/model/yue2-q4_k_m/sidecars/yue2-model-config.json", 10, False),
+    ("ngquocvinh/YuE2-3B-GGUF", "sidecars/yue2-generation-config.json", "cpp/model/yue2-q4_k_m/sidecars/yue2-generation-config.json", 10, False),
+    ("ngquocvinh/YuE2-3B-GGUF", "sidecars/yue2-qwen.tiktoken", "cpp/model/yue2-q4_k_m/sidecars/yue2-qwen.tiktoken", 100_000, False),
+    ("ngquocvinh/YuE2-3B-GGUF", "sidecars/yue2-vae-config.json", "cpp/model/yue2-q4_k_m/sidecars/yue2-vae-config.json", 10, False),
+    ("m-a-p/SheetSage2", "model.safetensors", "checkpoints/model.safetensors", 100_000_000, False),
+]
+_REPAIR_LOCK = threading.Lock()
+_REPAIR_STATE: dict = {"running": False, "ts": None, "repaired": [], "failed": [], "message": ""}
+
+
+def _model_verify_one(rel: str, min_size: int, is_gguf: bool) -> tuple[bool, str]:
+    """校验单个文件：存在 + 字节数达标 +（GGUF 时）头部 magic 正确。"""
+    p = ROOT / rel
+    if not p.is_file():
+        return False, "缺失"
+    size = p.stat().st_size
+    if size < min_size:
+        return False, f"不完整（{size} 字节 < 期望 ≥{min_size}）"
+    if is_gguf:
+        try:
+            with open(p, "rb") as f:
+                if f.read(4) != _GGUF_MAGIC:
+                    return False, "GGUF 头无效"
+        except OSError as e:
+            return False, f"读取失败：{e}"
+    return True, "ok"
+
+
+@router.get("/models/verify")
+def models_verify():
+    """逐文件校验模型完整性，返回各文件状态与整体结论。"""
+    files = []
+    ok_all = True
+    for repo, rel_remote, rel, min_size, is_gguf in _MODEL_MANIFEST_MAIN:
+        ok, reason = _model_verify_one(rel, min_size, is_gguf)
+        ok_all = ok_all and ok
+        files.append({"repo": repo, "remote": rel_remote, "path": rel,
+                      "name": Path(rel).name, "ok": ok, "reason": reason})
+    return {"ok": ok_all, "files": files,
+            "repair_running": _REPAIR_STATE.get("running", False)}
+
+
+@router.post("/models/repair")
+def models_repair():
+    """局部修复：只重下校验失败的文件（断点续传，多镜像回退）。"""
+    with _REPAIR_LOCK:
+        if _REPAIR_STATE.get("running"):
+            raise HTTPException(status_code=409, detail="修复已在进行中")
+        _REPAIR_STATE.update({"running": True, "ts": time.time(),
+                              "repaired": [], "failed": [], "message": "校验中…"})
+    threading.Thread(target=_model_repair_run, daemon=True).start()
+    return {"ok": True, "message": "修复已开始（只补缺失/损坏的文件），可稍后刷新查看。"}
+
+
+def _model_repair_run():
+    sys.path.insert(0, str(ROOT / "scripts"))
+    try:
+        from download_models import download_one, mirrors  # 复用下载脚本的镜像/续传逻辑
+    except Exception as e:
+        with _REPAIR_LOCK:
+            _REPAIR_STATE.update({"running": False, "message": f"加载下载模块失败：{e}"})
+        return
+    repaired, failed = [], []
+    try:
+        for repo, rel_remote, rel, min_size, is_gguf in _MODEL_MANIFEST_MAIN:
+            ok, reason = _model_verify_one(rel, min_size, is_gguf)
+            if ok:
+                continue
+            dest = ROOT / rel
+            with _REPAIR_LOCK:
+                _REPAIR_STATE["message"] = f"修复 {Path(rel).name} …"
+            try:
+                # 只清损坏的主文件；.part 保留给断点续传（download_one 基于其字节数发 Range）
+                dest.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if download_one(repo, rel_remote, dest):
+                ok2, reason2 = _model_verify_one(rel, min_size, is_gguf)
+                (repaired if ok2 else failed).append({"name": Path(rel).name, "reason": reason2})
+            else:
+                failed.append({"name": Path(rel).name, "reason": "全部镜像下载失败"})
+    finally:
+        with _REPAIR_LOCK:
+            _REPAIR_STATE.update({
+                "running": False,
+                "repaired": repaired, "failed": failed,
+                "message": ("修复完成" if not failed and repaired else
+                            "模型本就完整" if not repaired and not failed else
+                            f"完成，{len(failed)} 个文件仍失败") ,
+            })
+
+
+@router.get("/models/repair/status")
+def models_repair_status():
+    return _REPAIR_STATE
+
+
+# --------------------------------------------------------------------------- #
 # 引擎后端模式（cuda / cpu 兜底）
 # --------------------------------------------------------------------------- #
 @router.get("/backend/mode")
@@ -344,11 +451,91 @@ SCORES_DIR = ROOT / "runtime" / "data" / "scores"
 
 
 def _score_save(job_id: str, abc: str) -> dict:
-    """乐谱入库（JSON 文件），返回记录（含 id、时间、ABC）。"""
+    """乐谱入库（JSON 文件），返回记录（含 id、时间、ABC、分析摘要）。"""
     SCORES_DIR.mkdir(parents=True, exist_ok=True)
-    rec = {"id": job_id, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "abc": abc}
+    rec = {"id": job_id, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+           "abc": abc, "analysis": _abc_analyze(abc)}
     (SCORES_DIR / f"{job_id}.json").write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
     return rec
+
+
+# ---------- ABC 乐谱分析（调性 / 拍号 / BPM / 曲式 / 音域，借鉴 YuE2-Studio 转谱分析） ----------
+_KEY_MAP = {"C": "C 大调", "G": "G 大调", "D": "D 大调", "A": "A 大调", "E": "E 大调", "B": "B 大调",
+            "F#": "升 F 大调", "C#": "升 C 大调", "F": "F 大调", "Bb": "降 B 大调", "Eb": "降 E 大调",
+            "Ab": "降 A 大调", "Db": "降 D 大调", "Gb": "降 G 大调",
+            "Am": "A 小调", "Em": "E 小调", "Bm": "B 小调", "F#m": "升 F 小调", "C#m": "升 C 小调",
+            "G#m": "升 G 小调", "Dm": "D 小调", "Gm": "G 小调", "Cm": "C 小调", "Fm": "F 小调",
+            "Bbm": "降 B 小调", "Ebm": "降 E 小调"}
+_PITCH_SEMITONE = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+_SECTION_RE = re.compile(r"^\[([^\]\r\n]{1,32})\]", re.M)
+
+
+def _abc_analyze(abc: str) -> dict:
+    """从 ABC 文本提取调性/拍号/默认速度/曲式段落/音域，供前端展示摘要。"""
+    out: dict = {}
+    m = re.search(r"^K:\s*(\S+)", abc, re.M)
+    if m:
+        raw = m.group(1).strip()
+        out["key_raw"] = raw
+        out["key"] = _KEY_MAP.get(raw, _KEY_MAP.get(raw.rstrip("m").strip() + "m", raw))
+    m = re.search(r"^M:\s*(\S+)", abc, re.M)
+    if m:
+        out["meter"] = m.group(1)
+    m = re.search(r"^Q:\s*(?:\"[^\"]*\"|'[^']*')?\s*(?:\d+\s*/\s*\d+)?\s*=\s*(\d+)", abc, re.M)
+    if m:
+        try:
+            out["bpm"] = int(m.group(1))
+        except ValueError:
+            pass
+    # 曲式：取行首 [xxx] 段落标记，去重保序（Verse/Chorus/Bridge…）
+    sections, seen = [], set()
+    for sm in _SECTION_RE.finditer(abc):
+        name = sm.group(1).strip()
+        if name and name.lower() not in seen:
+            seen.add(name.lower())
+            sections.append(name)
+    if sections:
+        out["sections"] = sections
+    # 音域：V: 声部内的音名。ABC 记谱：大写 A-G=中音区，小写=高八度；
+    # 数字跟在音名后是时值（如 C2=四分音符），八度只用 , 和 ' 表示。
+    pitches: list[int] = []
+    in_music = False
+    for line in abc.splitlines():
+        s = line.strip()
+        if s.startswith(("K:", "M:", "Q:", "L:", "T:", "C:", "W:", "w:", "%%", "X:")):
+            continue
+        if s.upper().startswith("V:") or (s and not s[:1].isalpha()):
+            in_music = True
+        if in_music:
+            for pm in re.finditer(r"(_|\^|=)?([A-Ga-g])([',]*)", s):
+                acc, letter, octs = pm.groups()
+                semi = _PITCH_SEMITONE[letter.upper()] + ({"_": -1, "^": 1}.get(acc, 0))
+                if letter.islower():
+                    semi += 12  # 小写 = 高八度
+                for ch in octs:
+                    semi += 12 if ch == "'" else -12
+                pitches.append(semi)
+    if pitches:
+        names_sharp = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+        lo, hi = min(pitches), max(pitches)
+        def name(s: int) -> str:
+            # 基准：未加八度记号的大写音 = 第四八度（C4=中央 C），与 ABC 惯例一致
+            return names_sharp[s % 12] + str(s // 12 + 4)
+        out["range"] = f"{name(lo)} → {name(hi)}（{hi - lo} 个半音）"
+    return out
+
+
+@router.get("/abc/analyze")
+def abc_analyze(abc: str = ""):
+    """对任意 ABC 文本做分析（前端输入乐谱框的实时摘要）。"""
+    return {"analysis": _abc_analyze(abc[:200_000])}
+
+
+@router.post("/abc/analyze")
+def abc_analyze_post(payload: dict):
+    """POST 版分析：规避 GET query 请求行上限（16KB），中长乐谱也能安全分析。"""
+    abc = payload.get("abc") or ""
+    return {"analysis": _abc_analyze(abc[:200_000])}
 
 
 @router.get("/score/status")
@@ -370,7 +557,8 @@ def _score_run(job_id: str, src: Path, melody_only: bool):
         abc = sheetsage_pt.transcribe_abc(str(src), melody_only=melody_only)
         rec = _score_save(job_id, abc)  # 落盘：刷新/重启不丢，可复用回填
         with _SCORE_LOCK:
-            _SCORE_JOBS[job_id].update({"done": True, "abc": abc, "score_id": rec["id"]})
+            _SCORE_JOBS[job_id].update({"done": True, "abc": abc,
+                                        "analysis": rec.get("analysis"), "score_id": rec["id"]})
         _win_toast("🎼 乐谱提取完成", f"耗时 {int(time.time()-started)//60} 分 {int(time.time()-started)%60} 秒，已入库可回填")
     except Exception as e:
         with _SCORE_LOCK:
@@ -417,11 +605,13 @@ def score_result(job_id: str):
             try:
                 rec = json.loads(p.read_text(encoding="utf-8"))
                 return {"done": True, "abc": rec.get("abc"), "error": None,
+                        "analysis": rec.get("analysis"),
                         "score_id": rec.get("id") or job_id}
             except Exception:
                 pass
         raise HTTPException(status_code=404, detail="任务不存在或已过期")
     return {"done": job["done"], "abc": job.get("abc"), "error": job.get("error"),
+            "analysis": job.get("analysis"),
             "score_id": job.get("score_id")}
 
 

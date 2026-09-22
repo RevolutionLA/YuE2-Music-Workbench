@@ -16,6 +16,7 @@ window.__ModuleLoader__.load({
     var LAB_TABS = [
       { id: "compose",   name: "创作",  glyph: "♪" },
       { id: "batch",     name: "批量",  glyph: "▦" },
+      { id: "ailab",     name: "AI 工作台", glyph: "✦" },
       { id: "rvc",       name: "换声",  glyph: "⇄" },
       { id: "voice",     name: "音色库", glyph: "🎙" },
       { id: "templates", name: "模板",  glyph: "📁" },
@@ -48,6 +49,7 @@ window.__ModuleLoader__.load({
                   mode: j ? (j.mode === "cuda" ? "GPU" : j.mode === "cpu" ? "CPU" : String(j.mode || "…")) : p.mode,
                   vram: j && j.vram_free_mb != null ? (j.vram_free_mb / 1024).toFixed(1) + "G 空闲" : p.vram,
                   alive: true,
+                  tick: (p.tick || 0) + 1,   // 轮询计数：供依赖 s.tick 的下游（模型校验）定时刷新
                 });
               });
             });
@@ -89,8 +91,17 @@ window.__ModuleLoader__.load({
     }
     var modeText = switching[0] ? "切换中…" : s.alive ? s.mode + " 模式" : "离线";
     var vramText = s.alive && s.vram ? " · 显存 " + s.vram.replace(" 空闲", "") : "";
+    // 模型完整性：校验失败时状态点转红并提示（点击修复走 iframe 内创作页/侧栏修复按钮）
+    var vBad = react.useState(null), setVBad = vBad[1];
+    react.useEffect(function () {
+      if (!s.alive) return;
+      fetch("/lab-api/models/verify").then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (j) { if (j) setVBad(j.ok ? false : (j.files || []).filter(function (f) { return !f.ok; }).length); })
+        .catch(function () {});
+    }, [s.alive, s.tick]);
+    var badText = vBad[0] ? " · 模型缺件 " + vBad[0] + " 项" : "";
     return react.createElement("button", {
-      onClick: switchMode, title: "点击切换 GPU/CPU 模式",
+      onClick: switchMode, title: "点击切换 GPU/CPU 模式" + (vBad[0] ? "；模型缺件请到工作台侧栏点「修复」" : ""),
       "data-yue2-status": "1",
       style: {
         position: "absolute", left: 12, right: 12, bottom: 46, zIndex: 10,
@@ -103,9 +114,9 @@ window.__ModuleLoader__.load({
     },
       react.createElement("span", {
         style: { width: 7, height: 7, borderRadius: 4, flexShrink: 0, display: "inline-block",
-          background: s.alive ? "#1d9b57" : "#d64545" },
+          background: !s.alive ? "#d64545" : vBad[0] ? "#e0705f" : "#1d9b57" },
       }),
-      react.createElement("span", null, modeText + vramText)
+      react.createElement("span", null, modeText + vramText + badText)
     );
   }
 
@@ -117,6 +128,8 @@ window.__ModuleLoader__.load({
       // iframe 内实验室页程序化切页（如历史页「回填」跳创作）时，同步点亮本侧栏页签
       react.useEffect(function () {
         function onMsg(e) {
+          // origin 校验：只接受同源 iframe（本插件自身）的页签同步消息
+          if (e.origin && e.origin !== location.origin) return;
           var d = e.data || {};
           if (d.type === "yue2-lab-tab" && d.tab) {
             var ok = LAB_TABS.some(function (t) { return t.id === d.tab; });
@@ -215,18 +228,17 @@ window.__ModuleLoader__.load({
     function MusicStudio() {
       var ref = react.useRef(null);
       var dark = useLabStatus().dark;
-      // 浏览器标签页：LA 音乐工作台 + 乐符 favicon
+      // 浏览器标签页：音乐工作台 + 琥珀铜 favicon（与主界面主题色一致，避免 AI 味蓝紫）
       react.useEffect(function () {
         document.title = "音乐工作台";
         var svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
-          // 深紫→蓝渐变底、大圆角
-          + "<defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>"
-          + "<stop offset='0' stop-color='%237c5cff'/><stop offset='1' stop-color='%233b82f6'/>"
+          + "<defs><linearGradient id='g' x1='0' y1='0' x2='0' y2='1'>"
+          + "<stop offset='0' stop-color='%23c4762a'/><stop offset='1' stop-color='%2396501a'/>"
           + "</linearGradient></defs>"
-          + "<rect width='64' height='64' rx='16' fill='url(%23g)'/>"
-          // 柔光高光
-          + "<circle cx='18' cy='14' r='22' fill='white' opacity='0.12'/>"
-          // 双音符：斜置琴杆 + 双音头，带投影
+          + "<rect width='64' height='64' rx='14' fill='url(%23g)'/>"
+          // 顶缘高光：拟物质感
+          + "<rect x='8' y='4' width='48' height='3' rx='1.5' fill='white' opacity='0.35'/>"
+          // 双音符
           + "<path d='M27 46V16l20-5v29' fill='none' stroke='white' stroke-width='4.5' stroke-linecap='round' stroke-linejoin='round'/>"
           + "<ellipse cx='21' cy='46' rx='6.5' ry='5.5' fill='white'/>"
           + "<ellipse cx='41' cy='40' rx='6.5' ry='5.5' fill='white'/></svg>";
@@ -247,6 +259,8 @@ window.__ModuleLoader__.load({
         var win = ref.current && ref.current.contentWindow;
         if (win && win.document && win.document.documentElement) {
           win.document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+          // 通知 iframe 内页面重算主题色派生变量（applyTheme 只写 data-theme 不会触发 applyAccent）
+          try { win.postMessage({ type: "yue2-theme", theme: dark ? "dark" : "light" }, "*"); } catch (e) {}
         }
       }, [dark]);
       react.useEffect(function () {
@@ -283,7 +297,7 @@ window.__ModuleLoader__.load({
       return react.createElement("iframe", {
         ref: ref,
         title: "音乐工作台",
-        style: { width: "100%", height: "100%", border: "0", display: "block", background: "#f6f7f9" },
+        style: { width: "100%", height: "100%", border: "0", display: "block", background: "#e9e4da" },
       });
     }
 
