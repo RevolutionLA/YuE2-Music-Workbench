@@ -1,7 +1,7 @@
 """Official PyTorch SheetSage2 used by /api/score.
 
 SheetSage2 weights: <project>/checkpoints
-Hub downloads (MERT-v2-FullSong etc.): <project>/hf_download
+Hub downloads (MERT-v2-FullSong etc.): <project>/runtime/hf_download
 """
 
 from __future__ import annotations

@@ -10,8 +10,9 @@ echo ================================================
 
 set GATEWAY_UP=0
 set DSH_UP=0
-netstat -ano | findstr ":7863" | findstr "LISTENING" >nul && set GATEWAY_UP=1
-netstat -ano | findstr ":3081" | findstr "LISTENING" >nul && set DSH_UP=1
+rem findstr /R ":PORT " 行尾精确匹配，避免 :7863 误命中 :78630/:17863
+netstat -ano | findstr /R /C:":7863 .*LISTENING" >nul && set GATEWAY_UP=1
+netstat -ano | findstr /R /C:":3081 .*LISTENING" >nul && set DSH_UP=1
 
 set GRADIO_TEMP_DIR=%cd%\tmp\
 set PYTHON_PATH=%cd%\py312\
@@ -52,7 +53,7 @@ echo [1/3] 启动网关 :7863（WMI 无窗口启动）...
 powershell -NoProfile -Command "$sw=([wmiclass]'Win32_ProcessStartup').CreateInstance(); $sw.ShowWindow=0; $p=([wmiclass]'Win32_Process').Create('%cd%\py312\python.exe -s %cd%\app.py','%cd%',$sw); if($p.ReturnValue -ne 0){exit 1}"
 
 :watchdog
-rem 看门狗：网关假死（health 无响应）自动重启；pythonw 无窗口，日志写 runtime\watchdog.log
+rem 看门狗：网关假死（health 无响应）自动重启；pythonw 无窗口，日志写 runtime\data\logs\watchdog.log
 tasklist /FI "IMAGENAME eq pythonw.exe" /V 2>nul | findstr /C:"watchdog" >nul
 if not errorlevel 1 goto dsh
 if exist "runtime\_watchdog.pid" (
@@ -81,9 +82,15 @@ ping -n 3 127.0.0.1 >nul
 "%SystemRoot%\System32\curl.exe" -s --noproxy "*" -m 3 http://127.0.0.1:7863/api/health >nul 2>&1
 if not errorlevel 1 goto ready
 set /a TRIES+=1
-if %TRIES% geq 20 goto ready
+if %TRIES% geq 20 goto notready
 echo     等待网关就绪... %TRIES%/20
 goto waitloop
+
+:notready
+echo.
+echo   [警告] 网关 7863 未就绪（启动可能失败），请查看 runtime\data\logs\ 与 _gateway 日志
+echo   常见原因：显存不足、模型缺失、端口被占用
+goto dshwait
 
 :ready
 echo.

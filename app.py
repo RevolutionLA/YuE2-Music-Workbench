@@ -1051,14 +1051,16 @@ def generate_stop():
     _CANCEL_EVENT.set()
     _kill_audiocpp_now()
     # 批量队列一并叫停：未开始的全部取消（读-改-写整体持锁，防止与批量 worker 互相覆盖）
+    # 注意：锁内必须用无锁的 _batch_read()/_batch_write()；
+    # _batch_snapshot()/_batch_store() 会重复加同一把非重入锁导致死锁
     with _BATCH_LOCK:
-        state = _batch_snapshot()
+        state = _batch_read()
         if state.get("running"):
             state["running"] = False
             for it in state["items"]:
                 if it["status"] in ("pending", "running"):
                     it["status"] = "cancelled"
-            _batch_store(state)
+            _batch_write(state)
     return {"ok": True, "cancelled": cancelled_any,
             "message": "已终止当前任务" + ("，引擎将自动恢复" if cancelled_any else "")}
 
