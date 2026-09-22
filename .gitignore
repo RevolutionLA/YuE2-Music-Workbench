@@ -124,3 +124,6 @@ runtime/models/
 # 本地调试日志（不入库）
 _boot.log
 _gateway.log
+
+# voices 为指向 runtime/voices 的目录联接（Windows junction），不入库
+voices/
