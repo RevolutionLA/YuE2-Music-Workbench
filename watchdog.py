@@ -71,7 +71,7 @@ def log(msg: str) -> None:
     line = f"[{time.strftime('%m-%d %H:%M:%S')}] {msg}"
     print(line, flush=True)
     try:
-        log_dir = ROOT / "data" / "logs"
+        log_dir = ROOT / "runtime" / "data" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         with open(log_dir / "watchdog.log", "a", encoding="utf-8") as f:
             f.write(line + "\n")
@@ -87,7 +87,7 @@ def kill_pid(pid: int) -> None:
 
 def main() -> None:
     # 单实例互斥：pid 文件存在且进程存活则退出，防止双 watchdog 互相竞争误杀
-    pid_file = ROOT / "_watchdog.pid"
+    pid_file = ROOT / "runtime" / "_watchdog.pid"
     try:
         if pid_file.is_file():
             old = int(pid_file.read_text(encoding="utf-8").strip() or 0)

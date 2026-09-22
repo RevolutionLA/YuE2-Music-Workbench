@@ -19,7 +19,7 @@ _device: str = "cpu"
 
 
 def hf_download_dir() -> Path:
-    return (ROOT / "hf_download").resolve()
+    return (ROOT / "runtime" / "hf_download").resolve()
 
 
 def configure_hf_home() -> Path:

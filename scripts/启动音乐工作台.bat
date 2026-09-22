@@ -22,7 +22,7 @@ set FFMPEG_PATH=%cd%\py312\ffmpeg\bin
 set SOX_PATH=%cd%\py312\sox-14-4-2
 set TORCH_HOME=%cd%\cache
 set HF_ENDPOINT=https://hf-mirror.com
-set HF_HOME=%cd%\hf_download
+set "HF_HOME=%cd%\runtime\hf_download"
 set NO_PROXY=127.0.0.1,localhost,::1
 set no_proxy=127.0.0.1,localhost,::1
 rem 静默启动器调用时禁止网关自行开浏览器（由 vbs 统一开 3081）
@@ -52,19 +52,19 @@ echo [1/3] 启动网关 :7863（WMI 无窗口启动）...
 powershell -NoProfile -Command "$sw=([wmiclass]'Win32_ProcessStartup').CreateInstance(); $sw.ShowWindow=0; $p=([wmiclass]'Win32_Process').Create('%cd%\py312\python.exe -s %cd%\app.py','%cd%',$sw); if($p.ReturnValue -ne 0){exit 1}"
 
 :watchdog
-rem 看门狗：网关假死（health 无响应）自动重启；pythonw 无窗口，日志写 watchdog.log
+rem 看门狗：网关假死（health 无响应）自动重启；pythonw 无窗口，日志写 runtime\watchdog.log
 tasklist /FI "IMAGENAME eq pythonw.exe" /V 2>nul | findstr /C:"watchdog" >nul
 if not errorlevel 1 goto dsh
-if exist "_watchdog.pid" (
-  powershell -NoProfile -Command "if(Get-Process -Id (Get-Content '_watchdog.pid' -ErrorAction SilentlyContinue) -ErrorAction SilentlyContinue){exit 1}else{exit 0}" >nul 2>&1
-  if not errorlevel 1 del /q "_watchdog.pid" 2>nul
+if exist "runtime\_watchdog.pid" (
+  powershell -NoProfile -Command "if(Get-Process -Id (Get-Content 'runtime\_watchdog.pid' -ErrorAction SilentlyContinue) -ErrorAction SilentlyContinue){exit 1}else{exit 0}" >nul 2>&1
+  if not errorlevel 1 del /q "runtime\_watchdog.pid" 2>nul
 )
-if exist "_watchdog.pid" (
+if exist "runtime\_watchdog.pid" (
   echo [2/3] 看门狗已在运行，跳过
   goto dsh2
 )
 echo [2/3] 启动网关看门狗（假死自愈，无窗口）...
-powershell -NoProfile -Command "$p = Start-Process -WindowStyle Hidden '%PYTHON_PATH%pythonw.exe' -WorkingDirectory '%cd%' -ArgumentList 'watchdog.py' -PassThru; $p.Id | Out-File -Encoding ascii '_watchdog.pid'"
+powershell -NoProfile -Command "$p = Start-Process -WindowStyle Hidden '%PYTHON_PATH%pythonw.exe' -WorkingDirectory '%cd%' -ArgumentList 'watchdog.py' -PassThru; $p.Id | Out-File -Encoding ascii 'runtime\_watchdog.pid'"
 goto dsh2
 :dsh
 echo [2/3] 看门狗已在运行，跳过

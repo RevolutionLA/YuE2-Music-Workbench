@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 import settings
 
-AI_DIR = Path(settings.DATA_DIR if hasattr(settings, "DATA_DIR") else "data")
+AI_DIR = Path(settings.DATA_DIR if hasattr(settings, "DATA_DIR") else "runtime/data")
 AI_SESSION_DIR = AI_DIR / "ai_sessions"
 
 BASE_URL = os.environ.get("AI_BASE_URL", "https://api.deepseek.com")

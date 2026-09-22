@@ -25,7 +25,7 @@ class Settings:
     default_semantic_top_p: float = 0.95
     default_semantic_top_k: int = 100
 
-    voices_dir: str = "voices"
+    voices_dir: str = "runtime/voices"
     sensevoice_model_dir: str = "py312/SenseVoiceSmall"
     sensevoice_device: str = "cpu"
     sensevoice_language: str = "auto"

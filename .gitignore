@@ -1,6 +1,8 @@
+# ===== 运行时（runtime/ 整体不入库） =====
+runtime/
 # ===== 运行时/环境（不入库） =====
 py312/
-hf_download/
+runtime/hf_download/
 cache/
 tmp/
 __pycache__/
@@ -11,8 +13,8 @@ secrets/local_env.bat
 *.env
 
 # ===== 看门狗/引擎运行时产物 =====
-_watchdog.pid
-watchdog.log
+runtime/_watchdog.pid
+runtime/watchdog.log
 _engine.log
 _dbg*.log
 
@@ -23,10 +25,10 @@ legacy_scripts/
 docs/体检报告_*.md
 
 # ===== 生成产物（不入库） =====
-output/
+runtime/output/
 results/
 history_data/
-voices/
+runtime/voices/
 *.wav
 *.mp3
 *.flac
@@ -39,14 +41,14 @@ voices/
 *.pt
 
 # ===== 运行时数据（不入库） =====
-data/
+runtime/data/
 
 # ===== RVC 换声/训练运行时产物（不入库） =====
-rvc/logs/
-rvc/trains/
-rvc/jobs/
-rvc/_manual*.log
-rvc/_manual_trace.log
+runtime/rvc/logs/
+runtime/rvc/trains/
+runtime/rvc/jobs/
+runtime/rvc/_manual*.log
+runtime/rvc/_manual_trace.log
 *.npy
 *.tfevents*
 
@@ -117,4 +119,4 @@ checkpoints/model.safetensors
 yue2-q4_k_m/
 
 # ===== 本地 ASR/对齐模型权重（1.6GB，运行时放置，不入库） =====
-models/
+runtime/models/

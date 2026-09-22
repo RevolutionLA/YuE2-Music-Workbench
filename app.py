@@ -187,7 +187,7 @@ def available_models() -> list[dict]:
 # 注意：不用引擎的 --min-free-memory-mb 守卫——它同时检查主机内存且预估极度悲观
 # （把 mmap 权重+最大 KV cache 全算满，12GB+），在 16GB 内存的机器上会拦掉所有加载。
 # 显存预检由 _gpu_free_mb()（nvidia-smi）完成，只看显存。
-_ENGINE_STATE = ROOT / "data" / "engine_state.json"
+_ENGINE_STATE = ROOT / "runtime" / "data" / "engine_state.json"
 _VRAM_HEADROOM_MB = 700   # 生成时显存需预留的余量（Q4 实测峰值约 4.6GB + 系统占用）
 
 
@@ -340,7 +340,7 @@ def backend_mode_set(payload: dict):
 _SCORE_JOBS: dict[str, dict] = {}
 _SCORE_LOCK = threading.Lock()
 # 乐谱持久化：转谱结果落盘 data/scores/，刷新/重启不丢，可复用回填
-SCORES_DIR = ROOT / "data" / "scores"
+SCORES_DIR = ROOT / "runtime" / "data" / "scores"
 
 
 def _score_save(job_id: str, abc: str) -> dict:
@@ -464,7 +464,7 @@ def scores_delete(score_id: str):
 # --------------------------------------------------------------------------- #
 # 生成历史（服务端留存音频，可回放 / 回填 / 下载）
 # --------------------------------------------------------------------------- #
-HIST_DIR = ROOT / "data" / "records"
+HIST_DIR = ROOT / "runtime" / "data" / "records"
 HIST_JSON = HIST_DIR / "history.json"
 HIST_KEEP = 1000
 
@@ -663,7 +663,7 @@ def models_switch(payload: dict):
 # --------------------------------------------------------------------------- #
 # 服务端托管生成任务：output/ 自动落盘，成败都保存（前端刷新不丢任务）
 # --------------------------------------------------------------------------- #
-OUTPUT_DIR = ROOT / "output"
+OUTPUT_DIR = ROOT / "runtime" / "output"
 
 
 def _output_meta_path(rid: str) -> Path:
@@ -1272,7 +1272,7 @@ def generate_delete(rid: str):
 # --------------------------------------------------------------------------- #
 # 批量生成队列：顺序执行，单个失败不影响后续；任务与结果全部落盘
 # --------------------------------------------------------------------------- #
-_BATCH_STATE = ROOT / "data" / "batch_state.json"
+_BATCH_STATE = ROOT / "runtime" / "data" / "batch_state.json"
 
 
 def _batch_read() -> dict:
@@ -1486,7 +1486,7 @@ def batch_delete(rid: str):
 # --------------------------------------------------------------------------- #
 # RVC 换声（音色转换）：进程调用 rvc/infer/cli.py，不污染网关进程
 # --------------------------------------------------------------------------- #
-RVC_DIR = ROOT / "rvc"
+RVC_DIR = ROOT / "runtime" / "rvc"
 RVC_PY = ROOT / "py312" / "python.exe"
 RVC_MODELS_DIR = RVC_DIR / "assets" / "weights"
 RVC_JOB_DIR = RVC_DIR / "jobs"
