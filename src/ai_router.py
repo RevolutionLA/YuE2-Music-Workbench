@@ -22,7 +22,7 @@ import ai_lab
 
 router = APIRouter(prefix="/api/ai")
 
-DSH_RUNNER = Path(__file__).parent / "dsh-plugin" / "src" / "runner.mjs"
+DSH_RUNNER = Path(__file__).parent.parent / "dsh-plugin" / "src" / "runner.mjs"
 
 
 class ChatBody(BaseModel):
@@ -55,7 +55,7 @@ def ai_web():
     import time as _t
     from fastapi.responses import RedirectResponse
 
-    log = Path(__file__).parent / "dsh-plugin" / "_dsh_web.log"
+    log = Path(__file__).parent.parent / "dsh-plugin" / "_dsh_web.log"
 
     def _read_token() -> str | None:
         if not log.is_file():
@@ -96,7 +96,7 @@ def ai_web():
         # 自动拉起（分离进程，DSH_HOME 隔离，端口 3081）。
         # 用 env 字典传密钥，不走 cmd/PowerShell 字符串拼接：
         # 避免特殊字符注入命令行，也避免密钥出现在进程命令行（WMI 可见）。
-        root = Path(__file__).parent
+        root = Path(__file__).parent.parent
         env = {**os.environ,
                "DEEPSEEK_API_KEY": ai_lab.ai_key() or "",
                "DSH_HOME": str(root / "dsh-plugin" / "_dsh_home"),

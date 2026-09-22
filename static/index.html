@@ -857,16 +857,17 @@ $("themeBtn").onclick = () => {
 };
 
 // ---------- tabs ----------
-// 点击页签：同步 hash（供 dsh 侧栏/刷新恢复），相同 hash 重复点击也能再次切换
-$$(".tab").forEach(t => t.onclick = () => {
-  const target = "#" + t.dataset.tab;
-  if (location.hash === target) switchTab(t.dataset.tab);  // hashchange 不触发，手动切
-  else location.hash = target;
-});
+// 点击页签：立即严格切换（不被任何状态阻挡）。
+// hash 同步收在 switchTab 内部：无论是点页签还是程序化跳转（回填/播放/去换声…），
+// 界面状态与 hash 始终一致，避免 stale hash 触发 hashchange 把页面拽回旧页签。
+$$(".tab").forEach(t => t.onclick = () => switchTab(t.dataset.tab));
 function switchTab(name) {
   curTab = name;
   $$(".tab").forEach(x => x.classList.toggle("active", x.dataset.tab === name));
   $$(".panel-tab").forEach(p => p.style.display = p.id === "tab-" + name ? "" : "none");
+  try { if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name); } catch {}
+  // 内嵌模式（dsh iframe）：通知父窗口同步侧栏页签高亮
+  try { if (window.parent && window.parent !== window) window.parent.postMessage({ type: "yue2-lab-tab", tab: name }, "*"); } catch {}
   // 进入历史页时自动刷新，确保看到的是最新列表
   if (name === "history" && typeof renderHistory === "function") renderHistory();
 }
@@ -1573,7 +1574,8 @@ async function renderHistory() {
           ${h.assets.full_song ? '<button class="ghost" data-part-dl="full_song">🎵 完整歌曲</button>' : ''}
         </div>` : ''}`;
       // 回填：style/歌词/参数 + 从 style 反解歌手性别（与刷新恢复共用一套逻辑）
-      const restore = () => {
+      // jump=true 时切到创作页（「回填」按钮）；播放路径传 false，留在当前页只回填参数。
+      const restore = (jump = true) => {
         $("style").value = h.style || ""; $("lyrics").value = h.lyrics || ""; $("cot").value = h.cot || "full"; $("abc").value = h.abc || "";
         const gm = (h.style || "").match(/clear\s+(female|male)\s+vocal/i);
         if (gm) $("gender").value = "clear " + gm[1].toLowerCase() + " vocal";
@@ -1581,12 +1583,13 @@ async function renderHistory() {
         if (p.seed !== undefined && p.seed !== null) $("seed").value = p.seed;
         if (p.cfg_scale !== undefined && p.cfg_scale !== null) $("cfg").value = p.cfg_scale;
         if (p.num_inference_steps) $("steps").value = p.num_inference_steps;
-        switchTab("compose");
+        if (jump) switchTab("compose");
       };
       // 播放 + 回填二合一：整条记录可点；失败/进行中的记录点击仅回填参数。
+      // 播放不跳页：留在历史页，音频在底部播放坞播放。
       // 换声任务且合成过完整歌曲时，播放优先用「换声人声+伴奏」合成版，而非纯人声。
       const playAndRestore = async () => {
-        if (h.status !== "done") { restore(); toast("已回填该次生成参数", "ok"); return; }
+        if (h.status !== "done") { restore(false); toast("已回填该次生成参数", "ok"); return; }
         const wantFull = isRvc && h.assets && h.assets.full_song;
         const rr = await fetch("/api/generate/audio/" + h.id);
         if (rr.ok) {
@@ -1594,16 +1597,16 @@ async function renderHistory() {
             const fr = await fetch("/api/rvc/audio/" + h.id + "?part=full_song");
             if (fr.ok) {
               loadAudio(await fr.blob(), h.id + "_full_song.wav", h.task_name + " · 完整歌曲");
-              restore();
+              restore(false);
               toast("已回填参数并播放完整歌曲（换声人声+伴奏）", "ok");
               return;
             }
           }
           loadAudio(await rr.blob(), h.id + ".wav", h.task_name);
-          restore();
+          restore(false);
           toast("已回填参数并开始播放", "ok");
         }
-        else { toast("音频文件缺失，仅回填参数", "err"); restore(); }
+        else { toast("音频文件缺失，仅回填参数", "err"); restore(false); }
       };
       d.onclick = playAndRestore;
       // 错误详情：点击展开/收起完整错误信息（不触发行点击的回填）

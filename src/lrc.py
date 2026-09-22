@@ -20,7 +20,7 @@ _lock = threading.Lock()
 _model = None
 
 # 项目内自带的 faster-whisper CT2 模型（整体分享项目文件夹即可用，无需外部依赖）
-_WHISPER_DIR = Path(__file__).resolve().parent / "models" / "faster-whisper-large-v3-turbo"
+_WHISPER_DIR = Path(__file__).resolve().parent.parent / "models" / "faster-whisper-large-v3-turbo"
 
 
 def _snapshot_dir() -> Path:

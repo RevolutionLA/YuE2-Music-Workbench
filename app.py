@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import base64
 import re
 import secrets
@@ -21,6 +22,9 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+
+# 业务模块已归档到 src/，注入路径让下方 import 无需改动
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 # 本地回环直连，绕过系统代理（如 Clash/V2Ray 的 127.0.0.1:7890）。
 # 必须在 import main 之前设置：编译网关内部的 httpx 客户端默认 trust_env=True，
@@ -1603,11 +1607,11 @@ def _run_vocal_separation(src: Path, in_dir: Path, job: dict) -> tuple[Path, dic
                    if not any(k in v.stem.lower() for k in ("other", "instrument"))), None)
     if not vocals:
         raise RuntimeError("人声分离（伴奏分离）未找到人声轨道")
-    # 伴奏：BS-RoFormer 的 <stem>_other.wav（与人声同批产物）。
+    # 伴奏：BS-RoFormer 的 <输入stem>_other.wav（注意：不含 vocals 后缀，与产物同名规则一致）。
     # 注意 HP5 的 instrument_*.wav 是去和声副产品（无和声时≈静音），不能当伴奏。
-    accompaniment = sep_dir / f"{vocals.stem}_other.wav"
+    accompaniment = sep_dir / f"{src.stem}_other.wav"
     if not accompaniment.is_file():
-        accompaniment = next((v for v in sorted(sep_dir.glob(f"{src.stem}_*_other.wav"))
+        accompaniment = next((v for v in sorted(sep_dir.glob("*_other.wav"))
                               if not v.name.startswith(("vocal_", "instrument_"))), None)
     if accompaniment is None or not accompaniment.is_file():
         raise RuntimeError("人声分离（伴奏分离）未找到伴奏轨道")
@@ -1963,8 +1967,11 @@ def _rvc_run_step(cmd: list[str], job: dict, step: str) -> None:
            "OPENBLAS_NUM_THREADS": "1",
            # 同上：CUDA Graph 与常驻 audiocpp 引擎冲突会死锁，训练进程一并关闭
            "RVC_CUDA_GRAPH": "0"}
+    # 超时按训练规模动态计算：每轮约 2.5-4 分钟（素材量相关），留 1 小时启动/落盘余量。
+    # 固定 6 小时曾把大素材长训练（1358 切片 × 200 轮 ≈ 8 小时）在健康跑到一半时误杀。
+    est_sec = int(job.get("epochs") or 200) * 240 + 3600
     proc = subprocess.run(
-       [cmd[0], "-P", *cmd[1:]], cwd=str(RVC_DIR), env=env, capture_output=True, timeout=21600,
+       [cmd[0], "-P", *cmd[1:]], cwd=str(RVC_DIR), env=env, capture_output=True, timeout=est_sec,
        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
    )
     tail = ((proc.stderr or b"") + (proc.stdout or b""))[-600:].decode("utf-8", "replace")
@@ -2432,7 +2439,12 @@ def _serve_index():
                    "<title>音乐工作台</title></head><body>"
                    "<h1>index.html 缺失</h1>"
                    "<p>请确认 static/index.html 存在。</p></body></html>").encode("utf-8")
-    return Response(content=content, media_type="text/html; charset=utf-8")
+    # 禁缓存：前端页面迭代频繁，避免浏览器用旧版 JS 导致"改了不生效"
+    return Response(
+        content=content,
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
 
 
 _INDEX_ROUTE = APIRouter()

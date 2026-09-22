@@ -20,7 +20,7 @@ _model = None
 
 
 def _root() -> Path:
-    return Path(__file__).resolve().parent
+    return Path(__file__).resolve().parent.parent
 
 
 def _load_model():

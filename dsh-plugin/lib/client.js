@@ -114,6 +114,18 @@ window.__ModuleLoader__.load({
     // ------------------------------------------------------------------ //
     function LabNav(props) {
       var st = react.useState(null), set = st[1];
+      // iframe 内实验室页程序化切页（如历史页「回填」跳创作）时，同步点亮本侧栏页签
+      react.useEffect(function () {
+        function onMsg(e) {
+          var d = e.data || {};
+          if (d.type === "yue2-lab-tab" && d.tab) {
+            var ok = LAB_TABS.some(function (t) { return t.id === d.tab; });
+            if (ok) set(d.tab);
+          }
+        }
+        window.addEventListener("message", onMsg);
+        return function () { window.removeEventListener("message", onMsg); };
+      }, []);
       // 跟随原生侧栏收起态（rail 模式）：收起时页签缩为图标列、隐藏状态卡
       var col = react.useState(false), collapsed = col[0], setCollapsed = col[1];
       react.useEffect(function () {
@@ -245,6 +257,28 @@ window.__ModuleLoader__.load({
         }
         window.addEventListener("yue2-lab-tab", onTab);
         return function () { window.removeEventListener("yue2-lab-tab", onTab); };
+      }, []);
+      // iframe 看门狗：长任务（如换声）执行中反代请求可能超时/断连，导致 iframe 内会话
+      // 失效呈整页空白。每 10s 探测一次实验室页健康状态，连续失败则自动重载 iframe 恢复，
+      // 不再需要用户手动刷新整页。探测走主文档（dsh 同源），不受 iframe 内状态影响。
+      react.useEffect(function () {
+        var fails = 0;
+        var timer = setInterval(function () {
+          fetch("/lab/?embed=1&ping=" + Date.now(), { cache: "no-store" })
+            .then(function (r) {
+              // 任意 HTTP 响应（含 502/504）都说明 dsh 反代层活着；只有网络层失败才计数
+              fails = 0;
+            })
+            .catch(function () {
+              fails++;
+              if (fails >= 3 && ref.current) {
+                fails = 0;
+                var tab = window.__yue2LabTab || "compose";
+                ref.current.src = "/lab/?embed=1&reloaded=" + Date.now() + (tab ? "#" + tab : "");
+              }
+            });
+        }, 10000);
+        return function () { clearInterval(timer); };
       }, []);
       return react.createElement("iframe", {
         ref: ref,

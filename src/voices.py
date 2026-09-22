@@ -18,7 +18,7 @@ _SAFE = re.compile(r"[^a-zA-Z0-9_\-\u4e00-\u9fff]+")
 def voices_dir() -> Path:
     path = Path(settings.voices_dir)
     if not path.is_absolute():
-        path = Path(__file__).resolve().parent / path
+        path = Path(__file__).resolve().parent.parent / path
     path.mkdir(parents=True, exist_ok=True)
     return path
 
