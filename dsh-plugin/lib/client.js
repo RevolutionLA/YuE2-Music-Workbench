@@ -15,8 +15,6 @@ window.__ModuleLoader__.load({
     // ------------------------------------------------------------------ //
     var LAB_TABS = [
       { id: "compose",   name: "创作",  glyph: "♪" },
-      { id: "batch",     name: "批量",  glyph: "▦" },
-      { id: "ailab",     name: "AI 工作台", glyph: "✦" },
       { id: "rvc",       name: "换声",  glyph: "⇄" },
       { id: "voice",     name: "音色库", glyph: "🎙" },
       { id: "templates", name: "模板",  glyph: "📁" },
@@ -297,7 +295,7 @@ window.__ModuleLoader__.load({
       return react.createElement("iframe", {
         ref: ref,
         title: "音乐工作台",
-        style: { width: "100%", height: "100%", border: "0", display: "block", background: "#e9e4da" },
+        style: { width: "100%", height: "100%", border: "0", display: "block", background: "#e8e7e4" },
       });
     }
 
