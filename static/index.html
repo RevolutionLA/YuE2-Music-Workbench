@@ -80,7 +80,6 @@
   html[data-theme="dark"] .chip:hover { border-color: #4a443a; background: #353028; }
   html[data-theme="dark"] .ghost:hover:not(:disabled) { background: #353028; }
   html[data-theme="dark"] .hist-item:hover,
-  html[data-theme="dark"] .tpl-card:hover { background: #353028; }
   html[data-theme="dark"] .dock { background: rgba(23,20,16,.85); }
   html[data-theme="dark"] .toast { background: rgba(43,38,32,.96); }
   html[data-theme="dark"] .spinner { border-color: rgba(255,255,255,.2); border-top-color: currentColor; }
@@ -94,8 +93,8 @@
   .primary, .ghost, .danger, .chip { will-change: transform; }
 
   textarea, input, select { transition: border-color .18s ease, box-shadow .18s ease, background .18s ease; }
-  .hist-item, .tpl-card { transition: background .18s ease, transform .18s ease; }
-  .hist-item:hover, .tpl-card:hover { transform: translateY(-1px); }
+  .hist-item { transition: background .18s ease, transform .18s ease; }
+  .hist-item:hover { transform: translateY(-1px); }
 
   .card-sec-gap { }
   main { animation: pagein .25s ease; }
@@ -335,7 +334,7 @@
   .hint b { color: var(--text); font-weight: 600; }
   .hint-xs { font: 10.5px var(--sans); color: var(--dim); margin-top: 4px; min-height: 14px; }
 
-  /* 列表行（历史 / 音色 / 模板） */
+  /* 列表行（历史 / 音色） */
   .row-list { display: flex; flex-direction: column; gap: 7px; }
   .empty { color: var(--dim); font: 12px var(--sans); padding: 28px 0; text-align: center; background: var(--panel-2); border: 1px dashed var(--line); border-radius: 10px; box-shadow: var(--inset); }
 
@@ -348,16 +347,24 @@
   .subtab.active span { color: var(--acc); }
 
   .hist-item {
-    display: flex; gap: 12px; align-items: center; padding: 10px 14px; border-radius: 10px;
-    background: linear-gradient(180deg, var(--bg-2), var(--panel-2)); border: 1px solid var(--line-soft);
+    display: grid; align-items: center; padding: 10px 14px; border-radius: 10px;
+    /* 列式均匀布局：任务名 | 状态 | 第一句歌词 | 时长/耗时 | 操作（窄屏自动换行） */
+    grid-template-columns: minmax(140px, 1.4fr) 92px minmax(120px, 2fr) 150px auto;
+    gap: 12px; background: linear-gradient(180deg, var(--bg-2), var(--panel-2)); border: 1px solid var(--line-soft);
     box-shadow: var(--key-edge); cursor: pointer; transition: background .15s, box-shadow .15s;
   }
   .hist-item:hover { box-shadow: var(--inset); background: var(--panel-2); }
-  .hist-item .h-body { flex: 1; min-width: 0; }
+  .hist-item .h-col { min-width: 0; display: flex; flex-direction: column; justify-content: center; }
   .hist-item .h-title { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .hist-item .h-sub { font: 11px var(--mono); color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .hist-item .h-time { font: 10.5px var(--sans); color: var(--dim); white-space: nowrap; }
-  .hist-item .h-actions { display: flex; gap: 6px; }
+  .hist-item .h-actions { display: flex; gap: 6px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
+  .hist-item .h-col-st { font: 12px var(--sans); font-weight: 600; white-space: nowrap; }
+  .hist-item .h-col-meta { font: 11px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  @media (max-width: 1180px) {
+    .hist-item { grid-template-columns: minmax(120px, 1.4fr) 92px minmax(100px, 2fr) auto; }
+    .hist-item .h-col-meta { display: none; }
+  }
 
   .voice-card { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 10px; background: linear-gradient(180deg, var(--bg-2), var(--panel-2)); border: 1px solid var(--line-soft); box-shadow: var(--key-edge); }
   .voice-card .v-name { font-weight: 600; font-size: 13px; }
@@ -367,12 +374,6 @@
   .voice-card .v-actions button { padding: 4px 10px; font-size: 12px; }
   .voice-card .preview { height: 30px; margin-top: 2px; }
 
-  .tpl-card { display: flex; flex-direction: column; gap: 5px; padding: 12px 14px; border-radius: 10px; background: linear-gradient(180deg, var(--bg-2), var(--panel-2)); border: 1px solid var(--line-soft); box-shadow: var(--key-edge); cursor: pointer; transition: box-shadow .15s; }
-  .tpl-card:hover { box-shadow: var(--inset); background: var(--panel-2); }
-  .tpl-card .t-name { font-weight: 600; font-size: 13px; }
-  .tpl-card .t-prev { font: 11px var(--mono); color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .tpl-card .t-actions { display: flex; gap: 6px; margin-top: 4px; }
-  .tpl-card .t-actions button { padding: 4px 10px; font-size: 12px; }
 
   .head-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; width: 100%; max-width: 1680px; margin-left: auto; margin-right: auto; }
   .head-row .sec { margin: 0; padding-bottom: 0; }
@@ -385,15 +386,18 @@
   .spinner { width: 12px; height: 12px; border: 1.5px solid rgba(0,0,0,.15); border-top-color: currentColor; border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* 底部播放坞（常驻，暖毛玻璃 + 金属上缘） */
+  /* 底部播放坞（常驻，与侧栏同源暖灰基材 + 键缘上光；高度对齐侧栏设置按钮 ~44px） */
   .dock {
     position: fixed; left: 210px; right: 0; bottom: 0; z-index: 40;
-    background: rgba(246, 243, 236, .88); -webkit-backdrop-filter: saturate(160%) blur(18px); backdrop-filter: saturate(160%) blur(18px);
+    background: linear-gradient(180deg, #eceae7 0%, #e8e7e4 100%);
     border-top: 1px solid var(--line);
     box-shadow: 0 -1px 0 rgba(255,255,255,.65) inset, 0 -8px 24px rgba(58,48,34,.08);
-    display: flex; gap: 14px; align-items: center; padding: 9px 28px;
+    display: flex; gap: 14px; align-items: center; padding: 6px 28px; min-height: 44px;
   }
-  html[data-theme="dark"] .dock { background: rgba(23,20,16,.85); box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 -8px 24px rgba(0,0,0,.3); }
+  html[data-theme="dark"] .dock {
+    background: linear-gradient(180deg, #1c1b1e 0%, #17171a 100%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 -8px 24px rgba(0,0,0,.3);
+  }
   .dock .dock-file { display: flex; flex-direction: column; gap: 2px; width: 230px; flex-shrink: 0; }
   .dock .dock-name { font: 10.5px var(--sans); color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 230px; }
   .dock audio { flex: 1; min-width: 160px; height: 32px; }
@@ -481,10 +485,10 @@
   <nav>
     <button class="tab active" data-tab="compose"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 12.7V3.6l7-1.6v9.1"/><circle cx="4.2" cy="12.7" r="1.8"/><circle cx="11.2" cy="11.1" r="1.8"/></svg>创作</button>
     <button class="tab" data-tab="ailab"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l1.7 3.5 3.8.5-2.8 2.7.7 3.8L8 10.5l-3.4 1.8.7-3.8L2.5 5.8l3.8-.5z"/></svg>AI 工作台</button>
-    <button class="tab" data-tab="rvc"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 10V6a5 5 0 0 1 10 0v4"/><rect x="2" y="9.5" width="3" height="4.5" rx="1.2"/><rect x="11" y="9.5" width="3" height="4.5" rx="1.2"/></svg>换声</button>
+    <button class="tab" data-tab="rvc"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 10V6a5 5 0 0 1 10 0v4"/><rect x="2" y="9.5" width="3" height="4.5" rx="1.2"/><rect x="11" y="9.5" width="3" height="4.5" rx="1.2"/></svg>歌曲换声</button>
+    <button class="tab" data-tab="rvcTrain"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5" r="2.6"/><path d="M2.8 13.5c.6-2.8 2.7-4.3 5.2-4.3s4.6 1.5 5.2 4.3"/></svg>音色制作</button>
     <button class="tab" data-tab="voice"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="6" y="1.8" width="4" height="7.2" rx="2"/><path d="M3.8 7.6a4.2 4.2 0 0 0 8.4 0M8 11.8v2.4"/></svg>音色库<span class="badge" id="voiceCount">0</span></button>
-    <button class="tab" data-tab="templates"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.4c0-.6.4-1 1-1h3l1.5 1.5H13c.6 0 1 .4 1 1v6.1c0 .6-.4 1-1 1H3c-.6 0-1-.4-1-1z"/></svg>模板</button>
-    <button class="tab" data-tab="history"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.3 2.3"/></svg>历史<span class="badge" id="histCount">0</span></button>
+    <button class="tab" data-tab="history"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.3 2.3"/></svg>任务管理<span class="badge" id="histCount">0</span></button>
   </nav>
   <div class="side-foot">
     <div class="foot-row loading" id="health">
@@ -670,17 +674,18 @@ We will sing beyond the night</textarea>
     </div>
     <div class="subtabs" id="histTabs" style="margin-top:10px;">
       <button class="subtab active" data-kind="all">全部 <span id="histN_all">0</span></button>
-      <button class="subtab" data-kind="generate">🎵 歌曲 <span id="histN_generate">0</span></button>
-      <button class="subtab" data-kind="rvc">🎙 换声 <span id="histN_rvc">0</span></button>
-      <button class="subtab" data-kind="train">🎨 音色 <span id="histN_train">0</span></button>
+      <button class="subtab" data-kind="running">⏳ 进行中 <span id="histN_running">0</span></button>
+      <button class="subtab" data-kind="done">✓ 已完成 <span id="histN_done">0</span></button>
+      <button class="subtab" data-kind="error">✕ 失败 <span id="histN_error">0</span></button>
     </div>
-    <div class="sec" id="histQueueSec" style="display:none; margin-top:14px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="5.2" height="5.2" rx="1.2"/><rect x="8.8" y="2" width="5.2" height="5.2" rx="1.2"/><rect x="2" y="8.8" width="5.2" height="5.2" rx="1.2"/><path d="M11.4 9v4.6M9.1 11.3h4.6"/></svg>生成队列</div>
-    <div class="row-list" id="histQueueList" style="width:100%;max-width:1680px; display:none;"></div>
-    <div class="sec" id="histActiveSec" style="display:none; margin-top:14px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.3 2.3"/></svg>进行中的任务</div>
-    <div class="row-list" id="histActiveList" style="width:100%;max-width:1680px; display:none;"></div>
-    <div class="sec" style="margin-top:14px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 8.5l3.5 3.5L14 3.5"/></svg>已完成</div>
-    <div class="row-list" id="histList" style="width:100%;max-width:1680px;">
-      <div class="empty">暂无历史记录。生成歌曲后会自动保存，点击行回填参数。</div>
+    <div class="subtabs" id="histKindTabs" style="margin-top:6px;">
+      <button class="subtab active" data-kind="all">🎵 歌曲</button>
+      <button class="subtab" data-kind="rvc">🎙 换声任务</button>
+      <button class="subtab" data-kind="train">🎨 音色制作任务</button>
+    </div>
+    <button class="ghost" id="batchResume" style="display:none; padding:3px 12px; font-size:12px; margin-top:10px;" title="把意外终止/已停止/失败的队列任务重新入队继续执行">▶ 一键继续</button>
+    <div class="row-list" id="histList" style="width:100%;max-width:1680px; margin-top:14px;">
+      <div class="empty">暂无任务记录。</div>
     </div>
   </section>
 
@@ -752,13 +757,16 @@ We will sing beyond the night</textarea>
       <div>
         <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 8.5l3.5 3.5L14 3.5"/></svg>转换结果</div>
         <div class="row-list" id="rvcList">
-          <div class="empty">暂无换声任务。结果也会出现在「历史」页（标注 RVC 换声）。</div>
+          <div class="empty">暂无换声任务。结果也会出现在「任务管理」页（标注 RVC 换声）。</div>
         </div>
       </div>
 
     </div>
+  </section>
 
-    <div class="grid" style="margin-top:18px;">
+  <!-- ============ 音色制作 ============ -->
+  <section class="panel-tab" id="tab-rvcTrain" style="display:none;">
+    <div class="grid">
       <div>
         <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5" r="2.6"/><path d="M2.8 13.5c.6-2.8 2.7-4.3 5.2-4.3s4.6 1.5 5.2 4.3"/></svg>音色制作（用干声样本训练新音色）</div>
         <label for="rvcTrainName">音色名称（英文/拼音，训练完成后出现在上方音色下拉框）</label>
@@ -788,34 +796,6 @@ We will sing beyond the night</textarea>
     </div>
   </section>
 
-  <!-- ============ 模板 ============ -->
-  <section class="panel-tab" id="tab-templates" style="display:none;">
-    <div class="grid">
-
-      <div>
-        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.4c0-.6.4-1 1-1h3l1.5 1.5H13c.6 0 1 .4 1 1v6.1c0 .6-.4 1-1 1H3c-.6 0-1-.4-1-1z"/></svg>我的模板</div>
-        <div class="row-list" id="tplList">
-          <div class="empty">暂无模板。</div>
-        </div>
-      </div>
-
-      <div>
-        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M5.5 2v8.2M5.5 2l-2 2M5.5 2l2 2M10.5 14V5.8M10.5 14l-2-2M10.5 14l2-2"/></svg>导入 / 导出</div>
-        <label for="tplName">模板名称</label>
-        <input id="tplName" placeholder="例如：我的民谣风" />
-        <div class="actions">
-          <button class="primary" id="tplSave">保存当前输入为模板</button>
-          <button class="ghost" id="tplExport">导出文件</button>
-          <button class="ghost" id="tplImport">从文件导入</button>
-          <button class="ghost" id="tplCopy">复制 JSON</button>
-        </div>
-        <label for="tplBox" style="margin-top:14px;">JSON 内容</label>
-        <textarea id="tplBox" placeholder="导出/导入的 JSON 内容会显示在这里，可复制分享。" style="font:12px var(--mono);"></textarea>
-        <div class="status" id="tplStatus"></div>
-      </div>
-
-    </div>
-  </section>
 </main>
 
 <!-- ============ 底部播放坞 ============ -->
@@ -970,12 +950,76 @@ function applyTheme(t) {
   // 通知父窗口（dsh 侧栏切换主题时）同步主题色派生
   try { if (window.parent && window.parent !== window) window.parent.postMessage({ type: "yue2-theme", theme: t }, "*"); } catch {}
 }
+// 初始化主题：若内嵌在 dsh 里（同源 iframe），优先按父窗口 body 的实际背景亮度判定——
+// 与运行时轮询（syncFromParent）同一地面真相，硬刷新也不会先闪旧主题。
+// 不用属性猜测（dsh 浅色时可能误判）也不用 localStorage（存的是上次会话的旧值）。
 applyTheme((() => {
+  try {
+    if (window.parent && window.parent !== window) {
+      const pdoc = window.parent.document;
+      const pb = pdoc && pdoc.body;
+      if (pb && pdoc.defaultView) {
+        const bg = pdoc.defaultView.getComputedStyle(pb).backgroundColor;
+        const m = bg.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+        if (m) return (0.2126 * +m[1] + 0.7152 * +m[2] + 0.0722 * +m[3]) / 255 < 0.5 ? "dark" : "light";
+      }
+    }
+  } catch {}
   try { return localStorage.getItem(THEME_KEY) || "light"; } catch { return "light"; }
 })());
 $("themeBtn").onclick = () => {
   applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
 };
+// 监听 dsh 侧栏的主题通知（postMessage）：仅独立访问时生效。
+// 内嵌 dsh 时忽略——顶层轮询（syncFromParent）读父窗口真实背景色才是地面真相，
+// 若 client.js 侧判定（属性猜测）与实际不符，两源会来回打架。
+if (!(window.parent && window.parent !== window)) {
+  window.addEventListener("message", (e) => {
+    const d = e.data || {};
+    if (d.type === "yue2-theme" && (d.theme === "dark" || d.theme === "light")) {
+      applyTheme(d.theme);  // applyTheme 内部会重算 applyAccent，并同步持久化与主题色
+    }
+  });
+}
+
+// 终极兜底：iframe 内主动轮询父窗口（dsh）的实际主题并跟随。
+// 前置事实（已实测确认）：/lab/ 与 dsh 主文档同源（同 127.0.0.1:3081），
+// 因此可直接读 parent.document，不依赖 dsh 侧 client.js 是否发 postMessage。
+(function () {
+  if (!(window.parent && window.parent !== window)) return;  // 独立打开时不轮询
+  let last = null;
+  function syncFromParent() {
+    try {
+      const pd = window.parent.document;
+      const pb = pd && pd.body;
+      let t = null;
+      // 首选地面真相：父窗口 body 的实际背景亮度（对任何主题机制都成立，
+      // 不依赖对 dsh 属性名的猜测）。注意必须用父窗口自身的 getComputedStyle——
+      // iframe 的 getComputedStyle 对跨文档元素拿不到样式
+      if (pb && pd.defaultView) {
+        const bg = pd.defaultView.getComputedStyle(pb).backgroundColor;
+        const m = bg.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+        if (m) {
+          const lum = (0.2126 * +m[1] + 0.7152 * +m[2] + 0.0722 * +m[3]) / 255;
+          t = lum < 0.5 ? "dark" : "light";
+        }
+      }
+      // 回退：属性检查（背景拿不到时）
+      if (!t) {
+        const ph = pd && pd.documentElement;
+        const dark = (ph && (ph.classList.contains("dark") || ph.dataset.theme === "dark"))
+          || (pb && pb.hasAttribute("data-ds-dark-theme"));
+        t = dark ? "dark" : "light";
+      }
+      if (t !== last) {
+        last = t;
+        if (document.documentElement.dataset.theme !== t) applyTheme(t);
+      }
+    } catch {}
+  }
+  syncFromParent();
+  setInterval(syncFromParent, 800);   // 轻量属性读取，800ms 足够跟手
+})();
 
 // ---------- 主题色自选：取色器 → 派生一组强调色变量（localStorage 持久化） ----------
 const ACCENT_KEY = "la_accent";
@@ -1114,6 +1158,9 @@ function switchTab(name) {
   try { if (window.parent && window.parent !== window) window.parent.postMessage({ type: "yue2-lab-tab", tab: name }, "*"); } catch {}
   // 进入历史页时自动刷新，确保看到的是最新列表
   if (name === "history" && typeof renderHistory === "function") renderHistory();
+  // 进入换声/音色制作页时刷新任务列表与音色下拉
+  if (name === "rvc" && typeof renderRvc === "function") renderRvc();
+  if (name === "rvcTrain" && typeof renderRvcTrainList === "function") renderRvcTrainList();
 }
 
 // ---------- presets ----------
@@ -1482,7 +1529,7 @@ function stickyNotify(title, body, isOk) {
 }
 
 function applyFinishedJob(job) {
-  const name = (job.style || "").split(",")[0] || job.id;
+  const name = job.task_name || (job.style || "").split(",")[0] || job.id;
   if (job.status === "done") {
     $("progressBar").style.width = "100%";
     $("status").className = "status ok";
@@ -1492,7 +1539,7 @@ function applyFinishedJob(job) {
       if (b) loadAudio(b, job.id + ".wav", job.task_name || (job.style || "").split(",")[0]);
     });
     toast("歌曲生成完成，已保存到 output/", "ok");
-    stickyNotify("🎵 生成完成：" + name, "已保存到 output/，可在历史页回放。" + (job.batch ? "批量队列将继续下一首。" : ""), true);
+    stickyNotify(name + " 成功", "已保存到 output/，可在历史页回放。" + (job.batch ? "批量队列将继续下一首。" : ""), true);
     renderHistory();
   } else {
     $("status").className = "status err";
@@ -1502,7 +1549,7 @@ function applyFinishedJob(job) {
     toast("生成失败", "err");
     Favicon.set("error");
     setTimeout(() => Favicon.set("idle"), 8000);  // 红叉停留 8 秒后回到空闲图标
-    stickyNotify("✕ 生成失败：" + name, (job.batch ? "批量队列将自动继续下一首。" : "") + "点击本条回创作页查看。", false);
+    stickyNotify(name + " 失败", (job.batch ? "批量队列将自动继续下一首。" : "") + "点击本条回创作页查看。", false);
   }
   setGenerating(false);
   setTimeout(() => $("progress").classList.remove("show"), 1500);
@@ -1774,6 +1821,15 @@ let histQueuePoll = null; // 历史页队列区轮询句柄
 const _KIND_LABEL = { generate: "🎵 生成", rvc: "🎙 换声", train: "🎨 音色制作" };
 // 历史页当前子页签（all/generate/rvc/train）
 let histKind = "all";
+// 类型筛选（歌曲/换声/音色制作）与状态筛选（全部/进行中/已完成/失败）双维组合
+let histType = "all";
+$("histKindTabs").querySelectorAll(".subtab").forEach(btn => {
+  btn.onclick = () => {
+    histType = btn.dataset.kind || "all";
+    $("histKindTabs").querySelectorAll(".subtab").forEach(b => b.classList.toggle("active", b === btn));
+    renderHistory();
+  };
+});
 $("histTabs").querySelectorAll(".subtab").forEach(btn => {
   btn.onclick = () => {
     histKind = btn.dataset.kind || "all";
@@ -1782,103 +1838,72 @@ $("histTabs").querySelectorAll(".subtab").forEach(btn => {
   };
 });
 
-function renderHistoryActive() {
-  // 并入批量队列进度（原批量页「队列进度」迁移至此）：独立容器渲染，避免与下方 innerHTML 竞态
-  fetch("/api/batch/status").then(r => r.ok ? r.json() : null).then(b => {
-    const sec = $("histQueueSec"), el = $("histQueueList");
-    if (!sec || !el) return;
-    const items = (b && b.items || []).filter(x => x.status !== "cancelled" || b.running);
-    if (!items.length) { sec.style.display = "none"; el.style.display = "none"; el.innerHTML = ""; return; }
-    sec.style.display = ""; el.style.display = "";
-    const icon = { pending: "⏳", running: "🎵", done: "✓", error: "✕", cancelled: "—" };
-    const label = { pending: "等待", running: "生成中", done: "完成", error: "失败", cancelled: "已取消" };
-    el.innerHTML = "";
-    const doneN = items.filter(x => x.status === "done").length;
-    const sum = document.createElement("div");
-    sum.className = "h-sub";
-    sum.style.margin = "0 0 6px";
-    sum.textContent = `共 ${items.length} 首 · 完成 ${doneN} · 失败 ${items.filter(x => x.status === "error").length}` + (b && b.running ? " · 队列执行中" : "");
-    el.appendChild(sum);
-    items.forEach(it => {
-      const d = document.createElement("div");
-      d.className = "hist-item";
-      d.innerHTML = `
-        <div class="h-body">
-          <div class="h-title">${escapeHtml(it.name)} · ${icon[it.status] || ""} ${label[it.status] || it.status}</div>
-          <div class="h-sub truncate">${escapeHtml((it.payload?.lyrics || "").split("\n").filter(s => s.trim() && !s.startsWith("["))[0] || "")}</div>
-        </div>
-        ${it.status === "done" ? '<button class="ghost" data-play>播放</button>' : ''}
-        ${it.status === "error" ? `<span class="h-time" title="${escapeHtml(it.error || "")}">失败</span>` : ''}`;
-      const pb = d.querySelector("[data-play]");
-      if (pb) pb.onclick = async (e) => {
-        e.stopPropagation();
-        const rr = await fetch("/api/generate/audio/" + it.id);
-        if (rr.ok) loadAudio(await rr.blob(), it.id + ".wav", it.name); else toast("音频文件缺失", "err");
-      };
-      el.appendChild(d);
+async function fetchExtraTasks() {
+  // 队列 + 活跃两个数据源，归一化成与历史记录同构的条目，由 renderHistory 合并渲染
+  const out = [];
+  try {
+    const b = await (await fetch("/api/batch/status")).json();
+    const it0 = (b && b.items || []).filter(x => x.status !== "cancelled" || b.running);
+    // 一键继续按钮显隐：队列没在跑且有未完成任务
+    const un = (b && b.items || []).filter(x => ["pending", "running", "error", "cancelled"].includes(x.status)).length;
+    const resumeBtn = $("batchResume");
+    if (resumeBtn) resumeBtn.style.display = b && !b.running && un > 0 ? "" : "none";
+    it0.forEach(it => {
+      const p = it.payload || {};
+      out.push({
+        id: it.id, kind: "generate", status: it.status,
+        ts: it.started_ts || it.ts || "", task_name: it.name || "未命名",
+        style: p.style || "", lyrics: p.lyrics || "", cot: p.cot || "full", abc: p.abc || "",
+        params: p, error: it.error || "", sec: it.sec, bytes: it.bytes,
+        isQueue: true,
+      });
     });
-    // 队列执行中保持轮询刷新（离开历史页即停）
+    // 队列执行中保持轮询刷新（离开任务管理页即停）
     if (b && b.running && !histQueuePoll) {
       histQueuePoll = setInterval(() => {
         if (curTab !== "history") { clearInterval(histQueuePoll); histQueuePoll = null; return; }
         renderHistory();
       }, 5000);
     }
-  }).catch(() => {});
-  fetch("/api/history/active").then(r => r.ok ? r.json() : { items: [] }).then(d => {
-    const items = (d.items || []).filter(j => j.id);
-    const sec = $("histActiveSec"), el = $("histActiveList");
-    if (!sec || !el) return;
-    if (!items.length) { sec.style.display = "none"; el.style.display = "none"; el.innerHTML = ""; return; }
-    sec.style.display = ""; el.style.display = "";
-    el.innerHTML = "";
-    items.forEach(j => {
+  } catch {}
+  try {
+    const d = await (await fetch("/api/history/active")).json();
+    (d.items || []).filter(j => j.id).forEach(j => {
       const kind = j.kind || (j.step !== undefined ? "train" : (j.model && j.src_duration !== undefined ? "rvc" : "generate"));
-      const d = document.createElement("div");
-      d.className = "hist-item";
-      let title = "", sub = "", pct = null;
-      if (kind === "train") {
-        title = `${_KIND_LABEL.train} · ${j.name || ""}`;
-        const total = j.epochs_total || j.epochs || 0;
-        sub = j.step === "训练中" && j.epoch && total
-          ? `训练轮次 ${j.epoch}/${total}（${Math.round(j.epoch / total * 100)}%）`
-          : (j.step || "排队中") + ` · ${j.samples || "?"} 个样本`;
-        if (j.step === "训练中" && j.epoch && total) pct = Math.round(j.epoch / total * 100);
-      } else if (kind === "rvc") {
-        title = `${_KIND_LABEL.rvc} · ${(j.task_name || (j.model || "").replace(/\.pth$/i, "")).slice(0, 30)}`;
-        sub = `源音频 ${Math.round(j.src_duration || 0)}s · 转换中`;
-      } else {
-        title = `${_KIND_LABEL.generate} · ${(j.task_name || (j.style || "").split(",")[0] || "未命名").slice(0, 30)}`;
-        sub = `cot:${j.cot || "full"} · ${j.params?.num_inference_steps || "?"} 步 · 生成中`;
-      }
-      d.innerHTML = `
-        <div class="h-body">
-          <div class="h-title">${escapeHtml(title)}</div>
-          <div class="h-sub">${escapeHtml(sub)} · <span style="color:var(--acc);">⏳ 进行中</span></div>
-          ${pct !== null ? `<div class="progress show" style="margin-top:6px;"><div style="width:${Math.min(100, pct)}%;"></div></div>` : ""}
-        </div>
-        <div class="h-time">${timeAgo(j.ts)}</div>`;
-      d.onclick = () => { switchTab(kind === "train" || kind === "rvc" ? "rvc" : "compose"); };
-      el.appendChild(d);
+      out.push({
+        id: j.id, kind, status: "running", ts: j.ts || "",
+        task_name: j.task_name || j.name || (j.model || "").replace(/\.pth$/i, "") || "未命名",
+        style: j.style || "", lyrics: j.lyrics || "", cot: j.cot || "full", abc: j.abc || "",
+        params: j.params || {}, sec: j.sec, bytes: j.bytes,
+      });
     });
-  }).catch(() => {});
+  } catch {}
+  return out;
 }
 
 async function renderHistory() {
-  renderHistoryActive();
   try {
     const r = await fetch("/api/generate/list");
     const j = await r.json();
-    const list = Array.isArray(j.items) ? j.items : [];
+    let list = Array.isArray(j.items) ? j.items : [];
+    // 队列 + 活跃条目并入统一列表（按 id 去重：历史里已完结的优先）
+    const extra = await fetchExtraTasks();
+    const seen = new Set(list.map(h => h.id));
+    extra.forEach(x => { if (!seen.has(x.id)) list.push(x); });
     $("histCount").textContent = list.length;
-    // 按子页签过滤 kind（all 显示全部时间线）
-    const kindOf = h => h.kind === "train" || h.kind === "rvc" ? h.kind : "generate";
-    const counts = { all: list.length, generate: 0, rvc: 0, train: 0 };
-    list.forEach(h => counts[kindOf(h)]++);
-    for (const k of ["all", "generate", "rvc", "train"]) {
+    // 状态标签过滤：全部/进行中(running+pending)/已完成(done)/失败(error+cancelled)
+    const stateOf = h => h.status === "done" ? "done"
+      : (h.status === "error" || h.status === "cancelled") ? "error"
+      : "running";
+    const counts = { all: list.length, running: 0, done: 0, error: 0 };
+    list.forEach(h => counts[stateOf(h)]++);
+    for (const k of ["all", "running", "done", "error"]) {
       const n = $("histN_" + k); if (n) n.textContent = counts[k];
     }
-    const shown = histKind === "all" ? list : list.filter(h => kindOf(h) === histKind);
+    if (histKind !== "all") list = list.filter(h => stateOf(h) === histKind);
+    // 类型双维筛选：队列条目 kind 固定 generate；历史条目按 kind 字段
+    if (histType !== "all") list = list.filter(h => (h.kind || "generate") === histType);
+    const shown = list;
     const el = $("histList");
     if (!shown.length) { el.innerHTML = `<div class="empty">${histKind === "all" ? "暂无历史记录。生成歌曲后会自动保存（含音频与参数）。" : "该分类下暂无记录。"}</div>`; return; }
     el.innerHTML = "";
@@ -1889,33 +1914,49 @@ async function renderHistory() {
       const size = h.bytes ? " · " + fmtBytes(h.bytes) : "";
       const isTrain = h.kind === "train";
       const isRvc = h.kind === "rvc";
-      const st = h.status === "done" ? "" : (h.status === "error" ? " · ❌ 失败" : h.status === "cancelled" ? " · ⏹ 已终止" : " · ⏳ 进行中");
+      const stMap = { done: "✓ 成功", error: "✕ 失败", cancelled: "⏹ 已终止" };
+      const stTxt = h.status === "done" ? stMap.done : stMap[h.status] || "⏳ 进行中";
+      const stColor = h.status === "done" ? "#2c8a4b" : (h.status === "error" || h.status === "cancelled") ? "#c33" : "var(--acc)";
+      const firstLyric = (h.lyrics || "").split("\n").map(s => s.trim()).find(s => s && !s.startsWith("[")) || "";
+      const dur = h.sec ? (typeof h.sec === "number" ? Math.round(h.sec) + "s" : h.sec) : "";
+      // 生成耗时：服务端未记录时（历史旧数据）留空
+      const elapsed = h.elapsed_sec ? Math.round(h.elapsed_sec * 10) / 10 + "s" : "";
       const kindTag = isTrain ? " · 🎨 音色" : isRvc ? " · 🎙 换声" : "";
       d.innerHTML = `
-        <div class="h-body">
-          <div class="h-title">${escapeHtml(title)}${kindTag}${st}</div>
-          <div class="h-sub">cot:${escapeHtml(h.cot || "full")} · seed:${escapeHtml(String(h.seed_actual ?? (h.params||{}).seed ?? ""))}${size}${h.sec ? " · " + h.sec + "s" : ""}</div>
-          <div class="h-sub truncate">${escapeHtml((h.lyrics||"").slice(0,60))}</div>
+        <div class="h-col">
+          <div class="h-title">${escapeHtml(title)}${kindTag}</div>
+          ${h.ts ? '<div class="h-sub">' + timeAgo(h.ts) + '</div>' : ''}
           ${h.status === "error" && h.error ? `<div class="h-sub" style="color:#d33; cursor:pointer;" data-err title="点击展开/收起">⚠ ${escapeHtml(String(h.error).slice(0, 120))}${String(h.error).length > 120 ? " …（点击查看全部）" : ""}</div>` : ""}
         </div>
-        <div class="h-time">${timeAgo(h.ts)}</div>
-        <div class="h-actions">
-          ${h.status === "done" && !isTrain ? '<button class="ghost" data-play>▶ 播放</button><button class="ghost" data-dl>⬇ 下载</button>' : ''}
-          ${h.status === "done" && isTrain ? '<button class="ghost" data-use>去使用</button>' : ''}
-          ${h.status === "done" && !isTrain && !isRvc ? '<button class="ghost" data-rvc>送去换声</button>' : ''}
-          ${!isTrain && !isRvc && (h.lyrics || "").trim() ? '<button class="ghost" data-lyrics>⬇ LRC歌词</button>' : ''}
-          ${!isTrain && !isRvc ? '<button class="ghost" data-restore>回填</button>' : ''}
-          <button class="ghost" data-rename>✏ 改名</button>
-          <button class="danger" data-del>删除</button>
+        <div class="h-col h-col-st" style="color:${stColor};">${stTxt}</div>
+        <div class="h-col">
+          <div class="h-sub" style="margin-top:0; font-size:12px; color:var(--fg-2, inherit);">${firstLyric ? escapeHtml(firstLyric) : '<span style="color:var(--dim)">—</span>'}</div>
         </div>
-        ${h.status === "done" && isRvc && h.assets && Object.keys(h.assets).length ? `
-        <div class="h-sub" style="grid-column:1/-1; display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
-          <span style="color:var(--muted);">多产物下载：</span>
-          <button class="ghost" data-part-dl="">🎙 换声人声</button>
-          ${h.assets.vocals_original ? '<button class="ghost" data-part-dl="vocals_original">🎤 原人声</button>' : ''}
-          ${h.assets.accompaniment ? '<button class="ghost" data-part-dl="accompaniment">🎹 伴奏</button>' : ''}
-          ${h.assets.full_song ? '<button class="ghost" data-part-dl="full_song">🎵 完整歌曲</button>' : ''}
-        </div>` : ''}`;
+        <div class="h-col h-col-meta">
+          ${[dur && '🎵 ' + dur, elapsed && '⏱ ' + elapsed, h.bytes && fmtBytes(h.bytes)].filter(Boolean).join(' · ') || '—'}
+        </div>
+        <div class="h-actions">
+          ${h.status === "done" && !isTrain ? '<button class="ghost" data-play>▶ 播放</button>' : ''}
+          ${h.status === "done" && isTrain ? '<button class="ghost" data-use>去使用</button>' : ''}
+          ${h.status === "done" && !isTrain ? '<button class="ghost" data-dl>⬇ 下载</button>' : ''}
+          ${(h.status === "done" && isRvc && h.assets && Object.keys(h.assets).length) || (h.status !== "done" && h.status !== "pending") || (!isTrain && !isRvc) || isTrain ? '<button class="ghost" data-more>⋯ 更多</button>' : ''}
+          <div class="h-more" data-more-menu style="display:none;">
+            ${h.status === "running" ? '<button class="danger" data-stop>⏹ 终止</button><button class="ghost" data-restart>↻ 重启任务</button>' : ''}
+            ${h.status === "done" && !isTrain && !isRvc ? '<button class="ghost" data-rvc>🎙 送去换声</button>' : ''}
+            ${!isTrain && !isRvc && (h.lyrics || "").trim() ? '<button class="ghost" data-lyrics>⬇ LRC歌词</button>' : ''}
+            ${!isTrain && !isRvc ? '<button class="ghost" data-restore>↩ 回填创作</button>' : ''}
+            ${h.status === "done" && isTrain ? '<button class="ghost" data-use>去使用</button>' : ''}
+            <button class="ghost" data-rename>✏ 任务改名</button>
+            <button class="danger" data-del>🗑 删除</button>
+          </div>
+          ${h.status === "done" && isRvc && h.assets && Object.keys(h.assets).length ? `
+          <div class="h-more" data-dl-menu style="display:none;">
+            <button class="ghost" data-part-dl="full_song">🎵 完整歌曲</button>
+            <button class="ghost" data-part-dl="">🎙 换声人声</button>
+            ${h.assets.vocals_original ? '<button class="ghost" data-part-dl="vocals_original">🎤 原人声</button>' : ''}
+            ${h.assets.accompaniment ? '<button class="ghost" data-part-dl="accompaniment">🎹 伴奏</button>' : ''}
+          </div>` : ''}
+        </div>`;
       // 回填：style/歌词/参数 + 从 style 反解歌手性别（与刷新恢复共用一套逻辑）
       // jump=true 时切到创作页（「回填」按钮）；播放路径传 false，留在当前页只回填参数。
       const restore = (jump = true) => {
@@ -1967,12 +2008,51 @@ async function renderHistory() {
       };
       const pb = d.querySelector("[data-play]");
       if (pb) pb.onclick = (e) => { e.stopPropagation(); playAndRestore(); };
-      // 直接下载该条 WAV
+      // 进行中任务的终止/重启（仅队列条目有这两个按钮）
+      const sb = d.querySelector("[data-stop]");
+      if (sb) sb.onclick = async (e) => {
+        e.stopPropagation();
+        sb.disabled = true;
+        try {
+          const r = await fetch("/api/generate/stop", { method: "POST" });
+          if (!r.ok) throw new Error("终止失败");
+          toast("已请求终止，正在生成的任务将停止", "ok");
+          setTimeout(renderHistory, 1200);
+        } catch (err) { sb.disabled = false; toast(err.message, "err"); }
+      };
+      const rsBtn = d.querySelector("[data-restart]");
+      if (rsBtn) rsBtn.onclick = async (e) => {
+        e.stopPropagation();
+        rsBtn.disabled = true;
+        try {
+          // 先终止当前执行，再把该条目复位为 pending 重新入队
+          await fetch("/api/generate/stop", { method: "POST" }).catch(() => {});
+          const r = await fetch("/api/batch/retry", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: h.id }) });
+          const j = await r.json();
+          if (!r.ok || !j.ok) throw new Error(j.detail || j.message || "重启失败");
+          toast("已重新入队：" + (h.task_name || h.id), "ok");
+          renderHistory();
+        } catch (err) { rsBtn.disabled = false; toast(err.message, "err"); }
+      };
+      // 「⋯ 更多」/下载下拉：切换菜单显隐；点条目其他区域时收起
+      const moreBtn = d.querySelector("[data-more]");
+      const moreMenu = d.querySelector("[data-more-menu]");
+      const dlMenu = d.querySelector("[data-dl-menu]");
+      if (moreBtn) moreBtn.onclick = (e) => {
+        e.stopPropagation();
+        const open = moreMenu && moreMenu.style.display !== "none";
+        if (moreMenu) moreMenu.style.display = open ? "none" : "";
+        if (dlMenu) dlMenu.style.display = open ? "" : "none";  // RVC：更多与下载产物互斥展开
+      };
+      // 直接下载该条 WAV；换声任务默认下载完整歌曲（产物下拉可选其他部分）
       const dl = d.querySelector("[data-dl]");
       if (dl) dl.onclick = async (e) => {
         e.stopPropagation();
+        const url = (isRvc && h.assets && Object.keys(h.assets).length)
+          ? "/api/rvc/audio/" + h.id + "?part=full_song"
+          : "/api/generate/audio/" + h.id;
         try {
-          const rr = await fetch("/api/generate/audio/" + h.id);
+          const rr = await fetch(url);
           if (!rr.ok) { toast("音频文件缺失", "err"); return; }
           const blob = await rr.blob();
           const a = document.createElement("a");
@@ -2118,6 +2198,17 @@ async function renderHistory() {
   } catch { $("histList").innerHTML = '<div class="empty">后端未连接。</div>'; }
 }
 $("histRefresh").onclick = () => { renderHistory(); renderVoices(); toast("已刷新", "ok"); };
+// 一键继续：把意外终止/停止/失败的队列任务重新入队执行
+$("batchResume").onclick = async () => {
+  const btn = $("batchResume");
+  btn.disabled = true;
+  try {
+    const r = await jfetch("/api/batch/resume", { method: "POST" });
+    toast(r.message || "已恢复队列", "ok");
+    renderHistory();
+  } catch (e) { toast(e.message, "err"); }
+  finally { btn.disabled = false; }
+};
 $("histClear").onclick = async () => {
   if (!confirm("清空历史只保留记录列表清理，需逐条删除；确定清空所有已完成的记录（不含进行中任务）？")) return;
   const j = await (await fetch("/api/generate/list")).json();
@@ -2230,112 +2321,6 @@ $("vDenoise").onclick = async () => {
   finally { $("vDenoise").disabled = false; }
 };
 
-// ---------- templates（服务端持久化）----------
-async function loadTpls() {
-  try { return (await (await fetch("/api/templates")).json()).templates || []; }
-  catch { return []; }
-}
-function currentConfig() {
-  return {
-    task_name: $("taskName").value,
-    style: $("style").value, lyrics: $("lyrics").value, cot: $("cot").value, abc: $("abc").value,
-    seed: $("seed").value, cfg: $("cfg").value, steps: $("steps").value, gender: $("gender").value, bpm: $("bpm").value,
-    abc_temperature: $("abc_temperature").value, abc_top_p: $("abc_top_p").value, abc_top_k: $("abc_top_k").value,
-    semantic_temperature: $("semantic_temperature").value, semantic_top_p: $("semantic_top_p").value, semantic_top_k: $("semantic_top_k").value,
-  };
-}
-function applyConfig(c) {
-  if (c.task_name !== undefined && c.task_name !== null) $("taskName").value = c.task_name;
-  if (c.style) $("style").value = c.style;
-  if (c.lyrics) $("lyrics").value = c.lyrics;
-  if (c.cot) $("cot").value = c.cot;
-  if (c.abc) $("abc").value = c.abc;
-  if (c.gender) $("gender").value = c.gender;
-  if (c.seed !== undefined && c.seed !== null && c.seed !== "") $("seed").value = c.seed;
-  if (c.cfg !== undefined && c.cfg !== null && c.cfg !== "") $("cfg").value = c.cfg;
-  if (c.steps) $("steps").value = c.steps;
-  if (c.bpm !== undefined && c.bpm !== null) $("bpm").value = c.bpm;
-  for (const k of ["abc_temperature","abc_top_p","abc_top_k","semantic_temperature","semantic_top_p","semantic_top_k"]) {
-    if (c[k] !== undefined && c[k] !== null && c[k] !== "") $(k).value = c[k];
-  }
-  switchTab("compose");
-}
-async function renderTemplates() {
-  const list = await loadTpls();
-  const el = $("tplList");
-  if (!list.length) { el.innerHTML = '<div class="empty">暂无模板。</div>'; return; }
-  el.innerHTML = "";
-  list.forEach(t => {
-    const c = document.createElement("div");
-    c.className = "tpl-card";
-    c.innerHTML = `
-      <div class="t-name">${escapeHtml(t.name)}</div>
-      <div class="t-prev">${escapeHtml((t.style||"").split(",")[0])} · ${escapeHtml((t.lyrics||"").split("\n")[0]||"")}</div>
-      <div class="t-actions">
-        <button class="ghost" data-load>载入</button>
-        <button class="ghost" data-export>导出</button>
-        <button class="danger" data-del>删除</button>
-      </div>`;
-    c.querySelector("[data-load]").onclick = (e) => { e.stopPropagation(); applyConfig(t); toast("已载入模板：" + t.name, "ok"); };
-    c.querySelector("[data-export]").onclick = (e) => { e.stopPropagation(); exportOne(t); };
-    c.querySelector("[data-del]").onclick = async (e) => {
-      e.stopPropagation();
-      if (!confirm("删除模板？")) return;
-      const rr = await fetch("/api/templates/" + t.id, { method: "DELETE" });
-      if (rr.ok) { toast("已删除", "ok"); renderTemplates(); }
-    };
-    c.onclick = () => { applyConfig(t); toast("已载入模板：" + t.name, "ok"); };
-    el.appendChild(c);
-  });
-}
-$("tplSave").onclick = async () => {
-  const name = $("tplName").value.trim();
-  if (!name) { $("tplStatus").className = "status err"; $("tplStatus").textContent = "请填写模板名称。"; return; }
-  const body = Object.assign({ name }, currentConfig());
-  $("tplSave").disabled = true;
-  try {
-    const r = await jfetch("/api/templates", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
-    const j = await r.json();
-    $("tplName").value = ""; renderTemplates();
-    $("tplStatus").className = "status ok"; $("tplStatus").textContent = "已保存模板：" + (j.template?.name || name);
-    toast("模板已保存", "ok");
-  } catch (e) { $("tplStatus").className = "status err"; $("tplStatus").textContent = "保存失败：" + e.message; }
-  finally { $("tplSave").disabled = false; }
-};
-$("tplCopy").onclick = async () => {
-  const json = JSON.stringify(currentConfig(), null, 2);
-  try { await navigator.clipboard.writeText(json); toast("已复制到剪贴板", "ok"); }
-  catch { $("tplBox").value = json; toast("已显示在下方，可手动复制", "ok"); }
-};
-$("tplExport").onclick = () => {
-  const json = JSON.stringify(currentConfig(), null, 2);
-  const blob = new Blob([json], { type: "application/json" });
-  const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
-  a.download = "yue2-export.json"; a.click();
-  $("tplStatus").className = "status ok"; $("tplStatus").textContent = "已导出为文件 yue2-export.json";
-};
-$("tplImport").onclick = () => {
-  const fileInput = document.createElement("input"); fileInput.type = "file"; fileInput.accept = ".json,application/json";
-  fileInput.onchange = () => {
-    const f = fileInput.files && fileInput.files[0]; if (!f) return;
-    const rd = new FileReader();
-    rd.onload = () => {
-      try {
-        const obj = JSON.parse(rd.result);
-        applyConfig(obj);
-        $("tplBox").value = rd.result;
-        $("tplStatus").className = "status ok"; $("tplStatus").textContent = "已导入配置";
-        toast("配置已导入", "ok");
-      } catch { $("tplStatus").className = "status err"; $("tplStatus").textContent = "文件格式无效，不是 JSON。"; }
-    };
-    rd.readAsText(f);
-  };
-  fileInput.click();
-};
-function exportOne(t) {
-  const blob = new Blob([JSON.stringify(t, null, 2)], { type: "application/json" });
-  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = (t.name||"template") + ".json"; a.click();
-}
 
 // ---------- rvc（换声）----------
 const rvcPolls = new Set();  // 每个任务独立轮询，互不影响
@@ -2785,7 +2770,6 @@ renderRvc();
 renderRvcModels();
 restoreRvcActive();
 restoreRvcTrainActive();
-renderTemplates();
 renderVoices();
 refreshHealth();
 refreshModelVerify();

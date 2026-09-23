@@ -145,8 +145,6 @@ def generate_lrc(wav_path: Path, lyrics: str, title: str = "") -> str:
             wi += max(consumed, 1)
         out.append(f"[{_fmt_ts(line_start)}]{ln}")
 
-    header = []
-    if title:
-        header.append(f"[ti:{title}]")
-    header.append("[re:YuE2 音乐工作台]")
-    return "\n".join(header + out) + "\n"
+    # 纯净输出：只保留 [时间]歌词 行与结构段标记，不写标题/作者/制作等冗余头，
+    # 便于直接导入播放器
+    return "\n".join(out) + "\n"

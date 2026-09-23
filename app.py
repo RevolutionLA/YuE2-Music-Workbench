@@ -1624,6 +1624,24 @@ def batch_start(payload: dict):
 @router.get("/batch/status")
 def batch_status():
     state = _batch_snapshot()
+    # 僵尸队列自愈：running=True 但 worker 线程已死（进程内异常退出/重启后标志未清）
+    # 且当前没有真实任务在跑——复位标志并把卡死条目放回 pending，重新拉起 worker。
+    worker_alive = _BATCH_WORKER is not None and _BATCH_WORKER.is_alive()
+    gen_running = (_gen_get_job() or {}).get("status") == "running"
+    if state.get("running") and not worker_alive and not gen_running:
+        restored = 0
+        for it in state["items"]:
+            if it["status"] == "running":
+                it["status"] = "pending"
+                restored += 1
+        state["current"] = None
+        # 仍有待跑条目则保持 running=True 再拉起 worker（worker 只在 running 时工作）；
+        # 否则清除假死标志
+        state["running"] = any(it["status"] == "pending" for it in state["items"])
+        _batch_store(state)
+        if state["running"]:
+            _CANCEL_EVENT.clear()
+            _batch_ensure_worker()
     if not state.get("running"):
         # 服务重启或工作线程死亡时，把遗留的 running 任务标记为中断
         changed = False
@@ -1659,6 +1677,63 @@ def batch_stop():
             it["status"] = "cancelled"
     _batch_store(state)
     return {"ok": True, "message": "已停止队列（当前歌曲会算完）"}
+
+
+@router.post("/batch/resume")
+def batch_resume():
+    """一键继续：把意外终止遗留的卡死条目重新入队并拉起 worker。
+
+    应用崩溃/被杀时，正在跑的条目会永远停在 running（重启后 worker 只取
+    pending，不会碰它）；stop 停掉的 pending 则变成 cancelled。这里把
+    running 与 cancelled 一并复位为 pending，从头重跑这些条目（已完成的
+    done 条目不动），然后确保 worker 线程在跑。
+    """
+    state = _batch_snapshot()
+    if state.get("running"):
+        raise HTTPException(status_code=409, detail="队列正在运行，无需继续")
+    restored = 0
+    for it in state["items"]:
+        if it["status"] in ("running", "cancelled", "error"):
+            it["status"] = "pending"
+            it.pop("current", None)
+            restored += 1
+    # 有 pending（含本就等待中的假死队列）就拉起 worker——
+    # 不能因 restored==0 提前返回，否则"等待中却没在跑"的队列永远无法手动启动
+    has_pending = any(it["status"] == "pending" for it in state["items"])
+    if not has_pending:
+        return {"ok": True, "message": "没有可继续的任务（队列全部完成或为空）", "restored": 0}
+    state["running"] = True
+    state["current"] = None
+    _batch_store(state)
+    _CANCEL_EVENT.clear()
+    _batch_ensure_worker()
+    msg = f"已恢复 {restored} 个未完成任务，继续执行" if restored else "队列已在等待中，继续执行"
+    return {"ok": True, "message": msg, "restored": restored}
+
+
+@router.post("/batch/retry")
+def batch_retry(payload: dict):
+    """单条重试：把一个 error/cancelled 条目复位为 pending 并拉起 worker。"""
+    rid = os.path.basename(str(payload.get("id") or ""))
+    if not rid:
+        raise HTTPException(status_code=400, detail="缺少任务 id")
+    with _BATCH_LOCK:
+        state = _batch_read()
+        if state.get("running"):
+            raise HTTPException(status_code=409, detail="队列正在运行，稍后再试")
+        it = next((x for x in state["items"] if x["id"] == rid), None)
+        if it is None:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        if it["status"] not in ("error", "cancelled", "running"):
+            raise HTTPException(status_code=409, detail="仅失败/已取消/卡死的任务可重试")
+        it["status"] = "pending"
+        it.pop("error", None)
+        state["running"] = True
+        state["current"] = None
+        _batch_write(state)
+    _CANCEL_EVENT.clear()
+    _batch_ensure_worker()
+    return {"ok": True, "message": "已重新入队"}
 
 
 @router.delete("/batch/{rid}")
@@ -2618,6 +2693,25 @@ def _orphan_cleanup_on_startup() -> None:
                                   encoding="utf-8")
                 except Exception:
                     pass
+    # 3) 批量队列自恢复：进程被杀时正在跑的条目会永远卡在 running（worker 只取
+    # pending），重启后整个队列假死、等待中的条目也没法手动启动。这里把卡死的
+    # running 复位为 pending；若还有待跑条目则自动拉起 worker 继续执行。
+    try:
+        bs = _batch_snapshot()
+        restored = 0
+        for it in bs.get("items", []):
+            if it.get("status") == "running":
+                it["status"] = "pending"
+                restored += 1
+        bs["running"] = False
+        bs["current"] = None
+        _batch_store(bs)
+        has_pending = any(it.get("status") == "pending" for it in bs.get("items", []))
+        if restored or has_pending:
+            _CANCEL_EVENT.clear()
+            _batch_ensure_worker()
+    except Exception:
+        pass  # 队列文件损坏时不应阻断启动；前端可手动重试
 
 
 # 孤儿清理仅在真实启动服务时执行；模块导入（如 dsh 桥子进程 import app）不得触发，

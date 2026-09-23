@@ -14,16 +14,34 @@ window.__ModuleLoader__.load({
     // 实验室页签（与原版 data-tab 一致，点击经 hash 直达对应页）
     // ------------------------------------------------------------------ //
     var LAB_TABS = [
-      { id: "compose",   name: "创作",  glyph: "♪" },
-      { id: "rvc",       name: "换声",  glyph: "⇄" },
-      { id: "voice",     name: "音色库", glyph: "🎙" },
-      { id: "templates", name: "模板",  glyph: "📁" },
-      { id: "history",   name: "历史",  glyph: "🕘" },
+      { id: "compose",   name: "创作",  glyph: "♪", short: "创作" },
+      { id: "rvc",       name: "歌曲换声",  glyph: "⇄", short: "换声" },
+      { id: "rvcTrain",  name: "音色制作",  glyph: "🎨", short: "制作" },
+      { id: "voice",     name: "音色库", glyph: "🎙", short: "音色" },
+      { id: "history",   name: "任务管理",  glyph: "🕘", short: "任务" },
     ];
 
     // ------------------------------------------------------------------ //
     // 状态卡：引擎模式 / 显存 / 主题
     // ------------------------------------------------------------------ //
+    // 读取 dsh 当前深/浅色：只认 dsh 自己的主题标记（body[data-ds-dark-theme]、
+    // html class/data-theme）。不读 prefers-color-scheme——OS 深色 ≠ dsh 浅色设置，
+    // 混入会让 iframe 在 dsh 浅色时被误判成深色。
+    function readDark() {
+      var root = document.documentElement;
+      var body = document.body;
+      return root.classList.contains("dark") || root.dataset.theme === "dark"
+        || (body && body.hasAttribute("data-ds-dark-theme"));
+    }
+    // 把一个主题同步到实验室 iframe（写 data-theme + postMessage 通知其重算派生色）
+    function pushThemeToIframe(win, dark) {
+      if (!win) return;
+      try {
+        var d = win.document;
+        if (d && d.documentElement) d.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+        try { win.postMessage({ type: "yue2-theme", theme: dark ? "dark" : "light" }, "*"); } catch (e) {}
+      } catch (e) {}
+    }
     function useLabStatus() {
       var st = react.useState({ mode: "…", vram: "", alive: false, theme: "" });
       var set = st[1];
@@ -59,14 +77,24 @@ window.__ModuleLoader__.load({
             }
           });
           // 检测 dsh 当前深/浅色（不再展示，仅用于 iframe 跟随变色）
-          var root = document.documentElement;
-          var dark = root.classList.contains("dark") || root.dataset.theme === "dark"
-            || (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          var dark = readDark();
           if (!stop) set(function (p) { return p.dark === dark ? p : Object.assign({}, p, { dark: dark }); });
         }
         tick();
         var t = setInterval(tick, 5000);
-        return function () { stop = true; clearInterval(t); };
+        // 即时联动：dsh 切换主题时 body[data-ds-dark-theme] / html data-theme 属性会变，
+        // MutationObserver 立即捕获并更新 dark，无需等下一次 5s 轮询。
+        var mo = new MutationObserver(function () {
+          var dark = readDark();
+          set(function (p) { return p.dark === dark ? p : Object.assign({}, p, { dark: dark }); });
+        });
+        if (document.body) mo.observe(document.body, { attributes: true, attributeFilter: ["data-ds-dark-theme", "data-theme", "class"] });
+        else document.addEventListener("DOMContentLoaded", function () { mo.observe(document.body, { attributes: true, attributeFilter: ["data-ds-dark-theme", "data-theme", "class"] }); });
+        // 系统跟随变化也即时响应
+        var mq = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+        var onMq = function () { set(function (p) { var d = readDark(); return p.dark === d ? p : Object.assign({}, p, { dark: d }); }); };
+        if (mq && mq.addEventListener) mq.addEventListener("change", onMq); else if (mq && mq.addListener) mq.addListener(onMq);
+        return function () { stop = true; clearInterval(t); if (mo) mo.disconnect(); if (mq && mq.removeEventListener) mq.removeEventListener("change", onMq); else if (mq && mq.removeListener) mq.removeListener(onMq); };
       }, []);
       return st[0];
     }
@@ -75,6 +103,12 @@ window.__ModuleLoader__.load({
   function StatusCard() {
     var s = useLabStatus();
     var switching = react.useState(false), setSwitching = switching[1];
+    // 收起态（rail）：侧栏变窄，绝对定位的状态卡会被裁切——切紧凑竖排固定在底部
+    var rail = document.documentElement.className.indexOf("collapsed") >= 0
+      || (document.querySelector('[class*="hHd-Xa_root"]') || {}).className
+      && String(document.querySelector('[class*="hHd-Xa_root"]').className).indexOf("collapsed") >= 0;
+    // rail 收起态：状态卡直接不渲染（窄栏放不下，且用户要求隐藏；折叠按钮独占顶部）
+    if (rail) return null;
     function switchMode(ev) {
       ev.stopPropagation();
       if (switching[0] || !s.alive) return;
@@ -102,10 +136,13 @@ window.__ModuleLoader__.load({
       onClick: switchMode, title: "点击切换 GPU/CPU 模式" + (vBad[0] ? "；模型缺件请到工作台侧栏点「修复」" : ""),
       "data-yue2-status": "1",
       style: {
-        position: "absolute", left: 12, right: 12, bottom: 46, zIndex: 10,
-        display: "flex", alignItems: "center", gap: 6, padding: "5px 10px",
-        boxSizing: "border-box", justifyContent: "flex-start",
-        border: "1px solid var(--dsw-specific-divider, rgba(127,127,127,.2))", borderRadius: 16,
+        // 文档流内联（不再绝对定位）：footer 槽里的正常块级元素，
+        // 展开/收起都跟随布局，物理上不可能遮挡折叠按钮或设置按钮。
+        // 与侧栏其他条目同圆角/同内边距，视觉对齐；rail 窄栏时文字居中
+        display: "flex", alignItems: "center", gap: 6,
+        width: "100%", margin: "10px 0 4px", padding: "6px 10px",
+        boxSizing: "border-box", justifyContent: rail ? "center" : "flex-start",
+        border: "1px solid var(--dsw-specific-divider, rgba(127,127,127,.2))", borderRadius: 12,
         cursor: "pointer", fontSize: 11, background: "transparent",
         color: "var(--dsw-alias-label-secondary, #888)", whiteSpace: "nowrap", overflow: "hidden",
       },
@@ -114,7 +151,8 @@ window.__ModuleLoader__.load({
         style: { width: 7, height: 7, borderRadius: 4, flexShrink: 0, display: "inline-block",
           background: !s.alive ? "#d64545" : vBad[0] ? "#e0705f" : "#1d9b57" },
       }),
-      react.createElement("span", null, modeText + vramText + badText)
+      // 单行内联文本：模式 + 显存（收起态窄栏自动省略号截断，悬停 title 看全）
+      react.createElement("span", null, (s.alive ? s.mode : "离线") + " " + (s.vram || "") + badText)
     );
   }
 
@@ -141,12 +179,24 @@ window.__ModuleLoader__.load({
       var col = react.useState(false), collapsed = col[0], setCollapsed = col[1];
       react.useEffect(function () {
         var root = document.querySelector('[class*="hHd-Xa_root"]');
-        if (!root) return;
+        // 「工作区」→「歌词和曲风工作台」：dsh 原生渲染的分组标题文本，
+        // 用运行时替换 + MutationObserver 守卫（React 重渲染会改回去）
+        var rename = function () {
+          var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+          var n;
+          while ((n = walker.nextNode())) {
+            if (n.nodeValue === "工作区") n.nodeValue = "歌词和曲风工作台";
+          }
+        };
+        rename();
+        var rmo = new MutationObserver(rename);
+        if (document.body) rmo.observe(document.body, { childList: true, subtree: true });
+        if (!root) return function () { rmo.disconnect(); };
         var sync = function () { setCollapsed(root.className.indexOf("collapsed") >= 0); };
         sync();
         var mo = new MutationObserver(sync);
         mo.observe(root, { attributes: true, attributeFilter: ["class"] });
-        return function () { mo.disconnect(); };
+        return function () { mo.disconnect(); rmo.disconnect(); };
       }, []);
       // 切到音乐工作台主面板：走官方机制——点击 panellist 里隐藏的
       // 「音乐工作台」入口按钮（面板可达性由它保证；selectPanel 受白名单校验不可靠）。
@@ -161,9 +211,10 @@ window.__ModuleLoader__.load({
         } catch (e) {}
       }
       var layout = props.layout;
-      // 收起态（rail）：分组标题与状态卡隐藏，页签缩成图标列，对齐原生 iconButton 36px 规格
+      // 收起态（rail）：页签缩成「图标+短字」竖排列（仅 glyph 用户认不出含义）；
+      // 状态卡切紧凑竖排完整显示（原绝对定位在窄栏会被裁切）
       if (collapsed) {
-        return react.createElement("div", { style: { display: "flex", flexDirection: "column", flex: 1, minHeight: 0, alignItems: "center", paddingTop: 8, borderTop: "1px solid var(--dsw-specific-divider, rgba(127,127,127,.15))" } },
+        return react.createElement("div", { style: { display: "flex", flexDirection: "column", flex: 1, minHeight: 0, alignItems: "center", paddingTop: 48, borderTop: "1px solid var(--dsw-specific-divider, rgba(127,127,127,.15))" } },
           LAB_TABS.map(function (t) {
             var on = st[0] === t.id;
             return react.createElement("button", {
@@ -176,25 +227,29 @@ window.__ModuleLoader__.load({
                 window.dispatchEvent(new CustomEvent("yue2-lab-tab", { detail: t.id }));
               },
               style: {
-                display: "flex", alignItems: "center", justifyContent: "center",
-                width: 36, height: 36, margin: "2px 0", padding: 0,
-                border: 0, borderRadius: 8, cursor: "pointer", fontSize: 15,
+                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                gap: 1, width: 44, height: 46, margin: "3px 0", padding: 0,
+                border: 0, borderRadius: 8, cursor: "pointer",
                 background: on ? "var(--dsw-specific-secondary-fill, rgba(127,127,127,.12))" : "transparent",
                 color: "var(--dsw-alias-label-primary, inherit)",
               },
-            }, t.glyph);
+            },
+              react.createElement("span", { style: { fontSize: 14, lineHeight: "16px" } }, t.glyph),
+              react.createElement("span", { style: { fontSize: 10, lineHeight: "12px", color: "var(--dsw-alias-label-secondary, #999)" } }, t.short)
+            );
           })
         );
       }
-      // 对齐原生工作区风格：分组标题 + 素色行（14px/行高34px，与原生会话行一致）
-      return react.createElement("div", { style: { display: "flex", flexDirection: "column", flex: 1, minHeight: 0 } },
+      // 对齐原生工作区风格：分组标题 + 素色行（14px/行高34px，与原生会话行一致）；
+      // 容器底部 margin 与「工作区」分隔开
+      return react.createElement("div", { style: { display: "flex", flexDirection: "column", flex: 1, minHeight: 0, marginBottom: 18 } },
         react.createElement("div", {
           style: {
             fontSize: 14, fontWeight: 400, color: "var(--dsw-alias-label-secondary, #adb2b8)",
             padding: "0 0 0 4px", margin: "2px 0 4px", height: 36, display: "flex", alignItems: "center",
             borderTop: "1px solid var(--dsw-specific-divider, rgba(127,127,127,.15))", marginTop: 4,
           },
-        }, "音乐工作台"),
+        }, "声音创作工作台"),
         LAB_TABS.map(function (t) {
           var on = st[0] === t.id;
           return react.createElement("button", {
@@ -208,6 +263,8 @@ window.__ModuleLoader__.load({
             style: {
               display: "flex", alignItems: "center", margin: "1px 8px", padding: "0 12px",
               height: 34, border: 0, borderRadius: 8, cursor: "pointer", fontSize: 14, textAlign: "left",
+              width: "calc(100% - 16px)", boxSizing: "border-box", flexShrink: 0,
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
               background: on ? "var(--dsw-specific-secondary-fill, rgba(127,127,127,.12))" : "transparent",
               color: "var(--dsw-alias-label-primary, inherit)",
               fontWeight: on ? 600 : 400,
@@ -228,7 +285,12 @@ window.__ModuleLoader__.load({
       var dark = useLabStatus().dark;
       // 浏览器标签页：音乐工作台 + 琥珀铜 favicon（与主界面主题色一致，避免 AI 味蓝紫）
       react.useEffect(function () {
-        document.title = "音乐工作台";
+        // 标签栏文字固定为「音乐工作台」：MutationObserver 守卫，
+        // dsh 框架或其他脚本改动 title 时立即改回
+        var fixTitle = function () { if (document.title !== "音乐工作台") document.title = "音乐工作台"; };
+        fixTitle();
+        var titleMo = new MutationObserver(fixTitle);
+        titleMo.observe(document.querySelector("title") || document.head, { childList: true, characterData: true, subtree: true });
         var svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
           + "<defs><linearGradient id='g' x1='0' y1='0' x2='0' y2='1'>"
           + "<stop offset='0' stop-color='%23c4762a'/><stop offset='1' stop-color='%2396501a'/>"
@@ -244,6 +306,39 @@ window.__ModuleLoader__.load({
         if (!link) { link = document.createElement("link"); link.rel = "icon"; document.head.appendChild(link); }
         link.type = "image/svg+xml";
         link.href = "data:image/svg+xml," + svg;
+        // favicon 任务状态：空闲=琥珀铜音符；有任务进行中=绿色圆点角标（右上）。
+        // iframe 内的 favicon 在 dsh 环境不可见（标签页图标取顶层文档），故在顶层轮询切换。
+        var busySvg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
+          + "<defs><linearGradient id='g' x1='0' y1='0' x2='0' y2='1'>"
+          + "<stop offset='0' stop-color='%23c4762a'/><stop offset='1' stop-color='%2396501a'/>"
+          + "</linearGradient></defs>"
+          + "<rect width='64' height='64' rx='14' fill='url(%23g)'/>"
+          + "<path d='M27 46V16l20-5v29' fill='none' stroke='white' stroke-width='4.5' stroke-linecap='round' stroke-linejoin='round'/>"
+          + "<ellipse cx='21' cy='46' rx='6.5' ry='5.5' fill='white'/>"
+          + "<ellipse cx='41' cy='40' rx='6.5' ry='5.5' fill='white'/>"
+          // 忙碌角标：右上大号琥珀橙圆点（一眼与空闲铜色音符区分）
+          + "<circle cx='49' cy='15' r='13' fill='%23ff9d2e' stroke='white' stroke-width='4'/>"
+          + "<circle cx='49' cy='15' r='5' fill='white'/></svg>";
+        var idleHref = link.href;
+        var busyHref = "data:image/svg+xml," + busySvg;
+        var favBusy = false;
+        setInterval(function () {
+          var running = false;
+          try {
+            var x1 = new XMLHttpRequest();
+            x1.open("GET", "/lab-api/batch/status", false); x1.send();
+            if (x1.ok) { var j = JSON.parse(x1.responseText); running = !!j.running; }
+            if (!running) {
+              var x2 = new XMLHttpRequest();
+              x2.open("GET", "/lab-api/history/active", false); x2.send();
+              if (x2.ok) { running = (JSON.parse(x2.responseText).items || []).length > 0; }
+            }
+          } catch (e) {}
+          if (running !== favBusy) {
+            favBusy = running;
+            link.href = running ? busyHref : idleHref;
+          }
+        }, 8000);
       }, []);
       react.useEffect(function () {
         if (!ref.current) return;
@@ -252,14 +347,18 @@ window.__ModuleLoader__.load({
         var tab = window.__yue2LabTab || "compose";
         ref.current.src = "/lab/?embed=1" + (tab ? "#" + tab : "");
       }, []);
-      // 跟随 dsh 深浅色：写实验室页的 html[data-theme]（其已有完整深色样式体系）
+      // 跟随 dsh 深浅色：写实验室页的 html[data-theme] + postMessage 通知其重算派生色
       react.useEffect(function () {
-        var win = ref.current && ref.current.contentWindow;
-        if (win && win.document && win.document.documentElement) {
-          win.document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
-          // 通知 iframe 内页面重算主题色派生变量（applyTheme 只写 data-theme 不会触发 applyAccent）
-          try { win.postMessage({ type: "yue2-theme", theme: dark ? "dark" : "light" }, "*"); } catch (e) {}
-        }
+        pushThemeToIframe(ref.current && ref.current.contentWindow, dark);
+      }, [dark]);
+      // iframe 加载/重载完成后再推一次主题：useEffect([dark]) 只在 dark 变化时跑，
+      // 若加载时 dark 已固定则写入会丢——onLoad 补上这一发。
+      react.useEffect(function () {
+        var fr = ref.current;
+        if (!fr) return;
+        var onload = function () { pushThemeToIframe(fr.contentWindow, dark); };
+        fr.addEventListener("load", onload);
+        return function () { fr.removeEventListener("load", onload); };
       }, [dark]);
       react.useEffect(function () {
         function onTab(e) {
@@ -359,9 +458,14 @@ window.__ModuleLoader__.load({
         // 侧栏下半段：实验室页签 + 状态卡（footer 槽在列表之后、原生底栏之前）
         disposers.push(slots.inject("sidebar.footer.action", function () {
           return slots.register({ name: "sidebar.footer.action", id: "yue2-lab-nav" }, function () {
-            return react.createElement(react.Fragment, null,
-              react.createElement(LabNav, { layout: layout }),
-              react.createElement(StatusCard, null)
+            // 关键：footer 槽容器本身是横排 flex，LabNav 与 StatusCard 直接并排会
+            // 互相挤压（页签被挤成竖排文字、状态卡撑成大方块）。包一层纵向 flex
+            // 容器强制上下堆叠，两者各占整行宽度。
+            return react.createElement("div", {
+              style: { display: "flex", flexDirection: "column", width: "100%", minWidth: 0 },
+            },
+              react.createElement(StatusCard, null),
+              react.createElement(LabNav, { layout: layout })
             );
           });
         }));
@@ -382,6 +486,30 @@ window.__ModuleLoader__.load({
         ".hHd-Xa_collapsed .hHd-Xa_settingsArea{left:auto;right:auto;}",
         // 底部留白，避免会话列表滚动到设置区之下被遮挡
         ".hHd-Xa_root{padding-bottom:64px !important;}",
+
+        // 左上角品牌标识（DeepSeek Harness 文字/图形）隐藏，保留折叠按钮；
+        // 原位置由「GPU模式·显存」状态按钮接管（StatusCard 绝对定位 top:12）
+        ".hHd-Xa_logoRow > *:first-child{display:none !important;}",
+        // 彻底禁止收起侧栏：隐藏折叠按钮，只保留展开态（rail 布局问题不再出现）
+        ".hHd-Xa_logoRow button{display:none !important;}",
+        // logoRow 内品牌/按钮均已移除，整行只剩空白占位——直接隐藏，
+        // 「声音创作工作台」模块随之顶到侧栏最上方
+        ".hHd-Xa_logoRow{display:none !important;}",
+
+        // ---- 侧栏拟物材质对齐音乐工作台 UI：中性暖灰 + 键缘高光/内阴影，明暗跟随 dsh ----
+        // 浅色：暖灰基材 #e8e7e4；深色：#17171a 系（与工作台 --bg 同源）
+        ".hHd-Xa_root{background:linear-gradient(180deg,#eceae7 0%,#e8e7e4 100%) !important;}",
+        "body[data-ds-dark-theme] .hHd-Xa_root{background:linear-gradient(180deg,#1c1b1e 0%,#17171a 100%) !important;}",
+        // 原生按钮/页签行：拟物键缘（顶缘高光+底部投影），hover 轻浮起
+        ".hHd-Xa_root button{border-radius:9px;transition:box-shadow .15s,background .15s;}",
+        ".hHd-Xa_root button:not([data-yue2-status]){box-shadow:inset 0 1px 0 rgba(255,255,255,.55),0 1px 2px rgba(0,0,0,.06);}",
+        "body[data-ds-dark-theme] .hHd-Xa_root button:not([data-yue2-status]){box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 1px 2px rgba(0,0,0,.35);}",
+        ".hHd-Xa_root button:hover{box-shadow:inset 0 1px 0 rgba(255,255,255,.6),0 2px 5px rgba(0,0,0,.1);}",
+        "body[data-ds-dark-theme] .hHd-Xa_root button:hover{box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 2px 6px rgba(0,0,0,.45);}",
+        // 选中态页签（创作等 active 行）：下沉内嵌感，与工作台 chip 选中一致
+        ".hHd-Xa_root button[aria-current='true'],.hHd-Xa_root button[class*='active']{box-shadow:var(--dsw-specific-inset-shadow,inset 0 2px 4px rgba(0,0,0,.14)) !important;}",
+        // 输入/滚动区隔线淡化，让材质统一
+        ".hHd-Xa_root hr,.hHd-Xa_root [class*='divider']{border-color:rgba(127,127,127,.14) !important;}",
       ].join("\n");
       document.head.appendChild(st0);
       disposers.push(function () { st0.remove(); });
