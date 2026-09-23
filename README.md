@@ -25,6 +25,8 @@ _写词 + 写曲 + 演唱 + 滚动歌词，全流程在你自己的电脑上完�
 
 [快速开始](#-三步开唱) · [功能一览](#-它能做什么) · [界面预览](#-界面预览) · [架构](#-架构) · [常见问题](#-常见问题) · [致谢](#-致谢)
 
+**🌐 English**: [README_EN.md](README_EN.md) — *local Suno alternative / YuE2 GUI / offline AI music workstation*
+
 **⭐ 觉得有用就点个 Star —— 这是给独立开发者最好的鼓励！**
 
 </div>
