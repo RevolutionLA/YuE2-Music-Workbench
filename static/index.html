@@ -1890,6 +1890,11 @@ async function renderHistory() {
     const extra = await fetchExtraTasks();
     const seen = new Set(list.map(h => h.id));
     extra.forEach(x => { if (!seen.has(x.id)) list.push(x); });
+    // 排序：进行中（running/pending）置顶，其余按时间由近及远（新→旧）；
+    // ts 是 ISO 字符串可直接字典序比较，缺失的排最后
+    const rankOf = h => (h.status === "running" || h.status === "pending") ? 0 : 1;
+    const tsOf = h => h.ts || "";
+    list.sort((a, b) => rankOf(a) - rankOf(b) || (tsOf(a) < tsOf(b) ? 1 : tsOf(a) > tsOf(b) ? -1 : 0));
     $("histCount").textContent = list.length;
     // 状态标签过滤：全部/进行中(running+pending)/已完成(done)/失败(error+cancelled)
     const stateOf = h => h.status === "done" ? "done"
@@ -1961,6 +1966,8 @@ async function renderHistory() {
       // jump=true 时切到创作页（「回填」按钮）；播放路径传 false，留在当前页只回填参数。
       const restore = (jump = true) => {
         $("style").value = h.style || ""; $("lyrics").value = h.lyrics || ""; $("cot").value = h.cot || "full"; $("abc").value = h.abc || "";
+        // 任务名也回填：历史里存的是当时实际用的名字（可能被改名过）
+        if ($("taskName")) $("taskName").value = h.task_name || "";
         const gm = (h.style || "").match(/clear\s+(female|male)\s+vocal/i);
         if (gm) $("gender").value = "clear " + gm[1].toLowerCase() + " vocal";
         const p = h.params || {};

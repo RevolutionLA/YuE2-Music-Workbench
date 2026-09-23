@@ -1299,8 +1299,13 @@ async def generate_start(payload: dict):
             "chain_total": count,
         }
 
-    # 连发 N 次：参数完全一致，仅种子不同（用户填了种子则依次 +1，否则完全随机）
+    # 连发 N 次：参数完全一致，仅种子不同（用户填了种子则依次 +1，否则完全随机）。
+    # 无效 seed（-1/None，即"随机"）在这里就定成真实随机数——历史记录存下
+    # 引擎实际用的种子，回填时才能复现同一结果，而不是把 -1 填回表单
     base_seed = payload.get("seed")
+    if not (isinstance(base_seed, int) and base_seed >= 0):
+        base_seed = secrets.randbelow(2**31)
+    payload = {**payload, "seed": base_seed}
 
     def _chain_runner():
         _CANCEL_EVENT.clear()
@@ -1456,6 +1461,14 @@ def generate_delete(rid: str):
         if p.is_file():
             p.unlink()
             removed = True
+    # 批量队列条目兜底：其产物可能已被清理（output 无文件），但队列记录还在
+    # batch_state.json 里——不清理的话列表里永远删不掉（实测「冒烟测试」）
+    state = _batch_read()
+    items = state.get("items") or []
+    if any(it.get("id") == rid for it in items):
+        state["items"] = [it for it in items if it["id"] != rid]
+        _batch_store(state)
+        removed = True
     if not removed:
         raise HTTPException(status_code=404, detail="not found")
     return {"ok": True}
