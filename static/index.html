@@ -1939,7 +1939,7 @@ async function renderHistory() {
           ${h.status === "done" && !isTrain ? '<button class="ghost" data-play>▶ 播放</button>' : ''}
           ${h.status === "done" && isTrain ? '<button class="ghost" data-use>去使用</button>' : ''}
           ${h.status === "done" && !isTrain ? '<button class="ghost" data-dl>⬇ 下载</button>' : ''}
-          ${(h.status === "done" && isRvc && h.assets && Object.keys(h.assets).length) || (h.status !== "done" && h.status !== "pending") || (!isTrain && !isRvc) || isTrain ? '<button class="ghost" data-more>⋯ 更多</button>' : ''}
+          ${h.status !== "pending" ? '<button class="ghost" data-more>⋯ 更多</button>' : ''}
           <div class="h-more" data-more-menu style="display:none;">
             ${h.status === "running" ? '<button class="danger" data-stop>⏹ 终止</button><button class="ghost" data-restart>↻ 重启任务</button>' : ''}
             ${h.status === "done" && !isTrain && !isRvc ? '<button class="ghost" data-rvc>🎙 送去换声</button>' : ''}
