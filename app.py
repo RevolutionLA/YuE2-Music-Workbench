@@ -2024,6 +2024,39 @@ def _pymss_creationflags() -> int:
     return flags
 
 
+def _commit_headroom_mb() -> int:
+    """当前提交内存余量（MB）。Windows 提交超 Commit Limit 会整系统 OOM。"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD),
+                        ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
+                        ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
+                        ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
+                        ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+
+        st = MEMORYSTATUSEX()
+        st.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st))
+        # ullAvailPageFile ≈ Commit Limit - Commit Charge
+        return int(st.ullAvailPageFile // (1024 * 1024))
+    except Exception:
+        return 1 << 30  # 查询失败时不拦截
+
+
+def _require_headroom_for_preview(need_mb: int = 2600) -> None:
+    """试听/转换的前置内存闸门（df77 OOM 教训：试听子进程加载 800MB 模型撞上
+    训练进程，提交内存耗尽把训练挤死——试听必须自证有余量才准跑）。"""
+    avail = _commit_headroom_mb()
+    if avail < need_mb:
+        raise HTTPException(
+            status_code=503,
+            detail=f"内存余量不足（剩 {avail}MB，试听需约 {need_mb}MB）——训练正在吃内存，"
+                   f"现在试听会把训练挤死。等训练完成后再试，或重启网关后试。")
+
+
 def _run_vocal_separation(src: Path, in_dir: Path, job: dict) -> tuple[Path, dict]:
     """人声分离：首选官方 PyMSS 一步分离（人声+伴奏）；PyMSS 不可用时降级旧两步链。
 
@@ -2364,6 +2397,8 @@ def rvc_train_preview(rid: str):
         raise HTTPException(status_code=404, detail="任务不存在")
     if job.get("status") not in ("running", "pending", "done", "error"):
         raise HTTPException(status_code=409, detail="任务状态异常")
+    # 训练运行中试听 = 最危险的内存撞车窗口（df77 OOM 教训），前置闸门自证余量
+    _require_headroom_for_preview()
     name = job.get("name", "")
     logs = RVC_DIR / "logs" / name
     ckpts = sorted(logs.glob("G_*.pth"), key=lambda p: p.stat().st_mtime)
@@ -2394,7 +2429,7 @@ def rvc_train_preview(rid: str):
                 env={**os.environ, "weight_root": str(wroot),
                      "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1",
                      "CUDA_VISIBLE_DEVICES": ""},
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                creationflags=_pymss_creationflags())
             produced = wroot / (conv_out.stem + ".pth")
             if conv.returncode != 0 or not produced.is_file():
                 tail = (conv.stderr or b"")[-200:].decode("utf-8", "replace")
@@ -2435,7 +2470,7 @@ def rvc_train_preview(rid: str):
                "RVC_CUDA_GRAPH": "0"}
         try:
             proc = subprocess.run(cmd, cwd=str(RVC_DIR), env=env, capture_output=True,
-                                  timeout=600, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                                  timeout=600, creationflags=_pymss_creationflags())
         except subprocess.TimeoutExpired:
             raise HTTPException(status_code=504, detail="试听生成超时（CPU 推理较慢），请稍后重试")
         if proc.returncode != 0 or not out.is_file():
