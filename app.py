@@ -1802,6 +1802,145 @@ def rvc_models():
     return {"models": [i["name"] for i in items], "items": items}
 
 
+_RVC_CHECK_LOCK = threading.Lock()  # 体检串行化：大模型加载费内存，防连点叠加
+
+
+@router.get("/rvc/models/{name}/check")
+def rvc_model_check(name: str):
+    """模型体检：加载 pth 校验结构完整性、采样率/f0/版本，并检查配套 index 是否存在。"""
+    name = os.path.basename(name)
+    p = RVC_MODELS_DIR / name
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="音色模型不存在")
+    checks, info = {}, {}
+    # 用训练环境子进程读元信息（app.py 不加载 torch，避免常驻显存/内存）。
+    # 单脚本一次 load 输出全部指标；参数走 sys.argv 传路径，杜绝字符串拼接注入。
+    script = (
+        "import sys, json, torch\n"
+        "c = torch.load(sys.argv[1], map_location='cpu')\n"
+        "m = c.get('model', c)\n"
+        "w = m.get('weight', m) if isinstance(m, dict) else m\n"
+        "ks = set(w.keys()) if hasattr(w, 'keys') else set()\n"
+        "print(json.dumps({'sr': str(c.get('sr','?')), 'f0': bool(c.get('f0', True)), "
+        "'version': str(c.get('version','?')), 'epoch': str(c.get('info','?')), "
+        "'struct': bool(any('enc_p' in k for k in ks) and any('dec' in k for k in ks)), "
+        "'n': len(ks)}))"
+    )
+    if not _RVC_CHECK_LOCK.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="上一次体检还在进行中，请稍候")
+    try:
+        r = subprocess.run([str(RVC_PY), "-c", script, str(p)], capture_output=True, timeout=300,
+                           cwd=str(RVC_DIR),
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    finally:
+        _RVC_CHECK_LOCK.release()
+    if r.returncode != 0:
+        raise HTTPException(status_code=422, detail="模型无法加载（可能损坏）：" + r.stderr.decode("utf-8", "ignore")[-200:])
+    try:
+        j = json.loads(r.stdout.decode("utf-8", "ignore").strip().splitlines()[-1])
+    except Exception:
+        j = {}
+    info = {k: j.get(k, "?") for k in ("sr", "f0", "version", "epoch")}
+    checks["结构完整"] = bool(j.get("struct"))
+    checks["权重非空"] = int(j.get("n", 0)) > 50
+    idx = list((RVC_DIR / "logs").glob(f"added_*_{p.stem}_v2.index"))
+    checks["配套索引"] = bool(idx)
+    ok = all(checks.values())
+    return {
+        "name": name, "ok": ok, "checks": checks, "info": info,
+        "index": idx[0].name if idx else None,
+        "size_mb": round(p.stat().st_size / 1e6, 1),
+        "summary": "体检通过" if ok else "存在问题：" + "、".join(k for k, v in checks.items() if not v),
+    }
+
+
+@router.post("/rvc/models/merge")
+def rvc_model_merge(payload: dict):
+    """模型融合：两个成品 pth 按比例插值出新音色。
+
+    不直接调官方 process_ckpt.merge——它按训练检查点格式取权重（ckpt["model"]）、
+    以相对路径落盘、f0 走 i18n 字符串比较，三处都与成品 pth 不匹配；此处内联等价
+    插值：兼容成品/检查点两种格式、绝对路径落盘、f0 直接写 int。"""
+    a = os.path.basename(str(payload.get("a") or ""))
+    b = os.path.basename(str(payload.get("b") or ""))
+    try:
+        alpha = min(1.0, max(0.0, float(payload.get("alpha", 0.5))))  # a 的权重占比
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="比例须为 0-1 的数字")
+    new_name = re.sub(r'[\\/:*?"<>|\s]+', "_", str(payload.get("name") or "").strip())[:40]
+    if not a or not b or not new_name:
+        raise HTTPException(status_code=400, detail="需要 a、b 两个音色名和新名称")
+    pa, pb = RVC_MODELS_DIR / a, RVC_MODELS_DIR / b
+    for p, tag in ((pa, a), (pb, b)):
+        if not p.is_file():
+            raise HTTPException(status_code=404, detail=f"音色不存在：{tag}")
+    # 读 A/B 的元信息校验同源（同版本同采样率才能融合）；argv 传参，主进程不依赖 torch
+    meta_script = (
+        "import sys, json, torch\n"
+        "c = torch.load(sys.argv[1], map_location='cpu')\n"
+        "print(json.dumps({'sr': str(c.get('sr','')), 'f0': bool(c.get('f0', True)), 'version': str(c.get('version',''))}))"
+    )
+    def _meta(p: Path) -> dict:
+        rr = subprocess.run([str(RVC_PY), "-c", meta_script, str(p)], capture_output=True, timeout=300,
+                            cwd=str(RVC_DIR),
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if rr.returncode != 0:
+            raise HTTPException(status_code=422, detail=f"模型无法加载：{p.name}（{rr.stderr.decode('utf-8', 'ignore')[-150:]}）")
+        try:
+            return json.loads(rr.stdout.decode("utf-8", "ignore").strip().splitlines()[-1])
+        except Exception:
+            raise HTTPException(status_code=422, detail=f"模型元信息解析失败：{p.name}")
+    ma, mb = _meta(pa), _meta(pb)
+    if mb["sr"] != ma["sr"] or mb["version"] != ma["version"]:
+        raise HTTPException(status_code=400, detail="两个音色的采样率或版本不同，无法融合")
+    out_name = new_name if new_name.lower().endswith(".pth") else new_name + ".pth"
+    out = RVC_MODELS_DIR / out_name
+    if out.exists():
+        raise HTTPException(status_code=409, detail="同名音色已存在，请换个名字")
+    # 插值本体：官方 process_ckpt.merge 按训练检查点格式（ckpt["model"]）取权重、相对路径
+    # 落盘、f0 走 i18n 字符串比较，三处都与成品 pth 不匹配——故内联等价插值：
+    # 兼容成品（{"weight",...}）与检查点（{"model",...}）两种来源，绝对路径落盘，f0 写 int。
+    # 全部参数走 sys.argv，杜绝字符串拼接注入（裁定 B-1/N-3）。
+    script = (
+        "import sys, json, torch\n"
+        "from collections import OrderedDict\n"
+        "p1, p2 = sys.argv[1], sys.argv[2]\n"
+        "alpha, out_path, info = float(sys.argv[3]), sys.argv[4], sys.argv[5]\n"
+        "def load_w(p):\n"
+        "    c = torch.load(p, map_location='cpu')\n"
+        "    m = c.get('model', c)\n"
+        "    w = m.get('weight', m) if isinstance(m, dict) else m\n"
+        "    return c, {k: v for k, v in w.items() if 'enc_q' not in k}\n"
+        "c1, w1 = load_w(p1)\n"
+        "c2, w2 = load_w(p2)\n"
+        "opt = OrderedDict()\n"
+        "opt['weight'] = {}\n"
+        "for k in w1.keys():\n"
+        "    if k not in w2:\n"
+        "        continue\n"
+        "    va, vb = w1[k], w2[k]\n"
+        "    if hasattr(va, 'float'):\n"
+        "        va, vb = va.float(), vb.float()\n"
+        "        opt['weight'][k] = (alpha * va + (1 - alpha) * vb).half()\n"
+        "    else:\n"
+        "        opt['weight'][k] = va\n"
+        "opt['config'] = c1.get('config')\n"
+        "opt['info'] = info\n"
+        "opt['version'] = str(c1.get('version', ''))\n"
+        "opt['sr'] = str(c1.get('sr', ''))\n"
+        "opt['f0'] = int(c1.get('f0', 1))\n"
+        "torch.save(opt, out_path)\n"
+        "print(json.dumps({'ok': True, 'n': len(opt['weight'])}))"
+    )
+    r = subprocess.run([str(RVC_PY), "-c", script, str(pa), str(pb), str(alpha), str(out),
+                        f"融合 {a} x {b}"], capture_output=True, timeout=600,
+                       cwd=str(RVC_DIR),
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if r.returncode != 0 or not out.is_file():
+        raise HTTPException(status_code=500, detail="融合失败：" + r.stderr.decode("utf-8", "ignore")[-300:])
+    return {"ok": True, "name": out_name}
+
+
 @router.delete("/rvc/models/{name}")
 def rvc_model_delete(name: str):
     name = os.path.basename(name)
@@ -1846,8 +1985,12 @@ def rvc_model_rename(name: str, payload: dict):
     return {"ok": True, "name": new_name}
 
 
-# 人声分离（BS-RoFormer + HP5 去和声）：复用 GPT-SoVITS runtime 与权重，
-# 换声带伴奏的歌曲时先分离出纯净主唱再送 RVC，避免伴奏被当成"人声"转换。
+# 人声分离：官方 RVC23 的 PyMSS 框架（BS-Roformer-Resurrection，onnxruntime 加速，
+# 实测 3.5 分钟歌约 1.5 分钟，比 GPT-SoVITS 的 UVR5 两步链快且人声更干净）。
+# 产物命名与旧链一致（<stem>_vocals.wav / <stem>_other.wav），下游混音/下载逻辑不变。
+PYMSS_ROOT = RVC_DIR / "tools"
+PYMSS_MODEL = "BS-Roformer-Resurrection"
+# 旧链路（GPT-SoVITS 的 BS-RoFormer + HP5）保留作降级
 GSV_ROOT = Path(r"E:\AI\10AIMusic\GPT-SoVITS-v2pro-20250604")
 GSV_PY = GSV_ROOT / "runtime" / "python.exe"
 SEP_ROFORMER = GSV_ROOT / "sep_roformer.py"
@@ -1855,13 +1998,36 @@ SEP_HP5 = GSV_ROOT / "sep_hp5.py"
 
 
 def vocal_sep_available() -> bool:
-    return GSV_PY.is_file() and SEP_ROFORMER.is_file() and SEP_HP5.is_file()
+    return (RVC_DIR / "tools" / "pymss" / "workflow.py").is_file()
+
+
+def _pymss_env() -> dict:
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(PYMSS_ROOT),
+        "HF_ENDPOINT": os.environ.get("HF_ENDPOINT", "https://hf-mirror.com"),
+        "KMP_DUPLICATE_LIB_OK": "TRUE",
+    }
+    # 分离引擎（PyTorch/ONNX）会开满全部核的线程把 CPU 吃满，本机浏览器被饿到
+    # 整页假死（灰底空白）。限制线程数到约 3/4，给系统与界面留出响应能力。
+    cores = os.cpu_count() or 8
+    keep = str(max(1, cores - max(1, cores // 4)))
+    env.setdefault("OMP_NUM_THREADS", keep)
+    env.setdefault("MKL_NUM_THREADS", keep)
+    return env
+
+
+def _pymss_creationflags() -> int:
+    """PyMSS 分离子进程降 CPU 优先级（低于普通程序），浏览器/界面优先拿到算力。"""
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    flags |= getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0x4000)
+    return flags
 
 
 def _run_vocal_separation(src: Path, in_dir: Path, job: dict) -> tuple[Path, dict]:
-    """两步人声分离：BS-RoFormer 分离伴奏 → HP5 去和声。
+    """人声分离：首选官方 PyMSS 一步分离（人声+伴奏）；PyMSS 不可用时降级旧两步链。
 
-    返回 (纯净主唱路径, 产物字典)；产物字典含原人声（含和声）与伴奏，
+    返回 (送 RVC 的人声路径, 产物字典)；产物字典含原人声与伴奏，
     供换声完成后合成完整歌曲与多产物下载。"""
     sep_dir = in_dir / "sep"
     sep_dir.mkdir(parents=True, exist_ok=True)
@@ -1871,13 +2037,41 @@ def _run_vocal_separation(src: Path, in_dir: Path, job: dict) -> tuple[Path, dic
         cands = sorted(sep_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
         return cands[0] if cands else None
 
-    # 步骤 1：BS-RoFormer（人声 + 伴奏）
-    job["sep_stage"] = "分离伴奏（BS-RoFormer，较慢）"
-    r1 = subprocess.run(
-        [str(GSV_PY), str(SEP_ROFORMER), str(src), str(sep_dir)],
-        capture_output=True, timeout=3600,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
+    if vocal_sep_available():
+        # PyMSS 一步分离：产物 <stem>_vocals.wav（含和声）+ <stem>_other.wav（伴奏）
+        job["sep_stage"] = "人声分离（PyMSS BS-Roformer-Resurrection，约 1.5 分钟/3.5 分钟歌）"
+        r = subprocess.run(
+            [str(RVC_PY), "-m", "tools.pymss.cli", "infer", PYMSS_MODEL,
+             "-i", str(src), "-o", str(sep_dir), "--device", "cuda"],
+            capture_output=True, timeout=3600,
+            creationflags=_pymss_creationflags(),
+            cwd=str(RVC_DIR), env=_pymss_env(),
+        )
+        if r.returncode == 0:
+            vocals = _newest(f"{src.stem}_vocals.wav")
+            accompaniment = _newest(f"{src.stem}_other.wav")
+            if vocals is not None and accompaniment is not None:
+                artifacts["vocals_raw"] = vocals.name
+                artifacts["accompaniment"] = accompaniment.name
+                # 人声即送 RVC（不再需要 HP5 二次去和声；PyMSS 一步已足够干净）
+                return vocals, artifacts
+            tail = (r.stderr or r.stdout or b"")[-300:].decode("utf-8", "replace")
+            raise RuntimeError(f"人声分离（PyMSS）未产出完整产物：{tail}")
+        tail = (r.stderr or r.stdout or b"")[-300:].decode("utf-8", "replace")
+        # PyMSS 失败（模型未下载/断网等）→ 降级旧两步链
+        job["sep_stage"] = "PyMSS 失败，降级旧分离链（BS-RoFormer + HP5）"
+        if not (GSV_PY.is_file() and SEP_ROFORMER.is_file() and SEP_HP5.is_file()):
+            raise RuntimeError(f"人声分离（PyMSS）失败且旧链不可用：{tail}")
+        _pymss_err = tail
+    else:
+        _pymss_err = "PyMSS 模块缺失"
+    if True:  # 旧两步链（降级路径）
+        job["sep_stage"] = "分离伴奏（BS-RoFormer，较慢）"
+        r1 = subprocess.run(
+            [str(GSV_PY), str(SEP_ROFORMER), str(src), str(sep_dir)],
+            capture_output=True, timeout=3600,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
     if r1.returncode != 0:
         tail = (r1.stderr or r1.stdout or b"")[-300:].decode("utf-8", "replace")
         raise RuntimeError(f"人声分离（伴奏分离）失败：{tail}")
@@ -2155,6 +2349,113 @@ def rvc_audio(rid: str, part: str = ""):
 
 
 # --------------------------------------------------------------------------- #
+# 训练中试听：用 logs/<name>/ 最新的 G_* 检查点在 CPU 上做 20 秒迷你推理。
+# 设计约束：绝不碰 _GPU_SEM、绝不打断训练进程——训练继续占 GPU，试听走 CPU 慢一点
+# （约 20-40 秒）但零冲突；产物存 trains/<rid>/preview.wav，前端任务卡片直接播放。
+# --------------------------------------------------------------------------- #
+_RVC_PREVIEW_LOCK = threading.Lock()  # 同一时刻只跑一个试听（CPU 推理也吃核）
+
+
+@router.post("/rvc/train/preview/{rid}")
+def rvc_train_preview(rid: str):
+    rid = os.path.basename(rid)
+    job = _rvc_train_read(rid)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if job.get("status") not in ("running", "pending", "done", "error"):
+        raise HTTPException(status_code=409, detail="任务状态异常")
+    name = job.get("name", "")
+    logs = RVC_DIR / "logs" / name
+    ckpts = sorted(logs.glob("G_*.pth"), key=lambda p: p.stat().st_mtime)
+    # 训练已出成品的，优先用成品（weights 下的 pth 才有完整推理结构）
+    final = _rvc_latest_export(name)
+    if final is not None and final.stat().st_mtime >= (ckpts[-1].stat().st_mtime if ckpts else 0):
+        model_path, tag = final, "成品"
+    elif ckpts:
+        model_path = ckpts[-1]
+        step = model_path.stem.split("_")[-1]
+        tag = f"检查点 #{step}（step，非轮次）"
+        # 关键：G_*.pth 是训练检查点（{"model",...}），缺 weight/config 键，直接喂
+        # infer/cli.py 必抛 ValueError——先过官方 extract_small_model 转成推理可用结构。
+        # 产物缓存到任务目录，同一检查点只转换一次；转换走 CPU，不碰训练的 GPU。
+        conv_out = RVC_TRAIN_DIR / rid / "preview_model.pth"
+        if not conv_out.is_file() or conv_out.stat().st_mtime < model_path.stat().st_mtime:
+            conv_script = (
+                "import sys\n"
+                "sys.path.insert(0, '.')\n"
+                "from train.process_ckpt import extract_small_model\n"
+                "extract_small_model(sys.argv[1], sys.argv[2], '40k', True,\n"
+                "                    'preview extract', 'v2')\n"
+            )
+            wroot = RVC_MODELS_DIR
+            conv = subprocess.run(
+                [str(RVC_PY), "-c", conv_script, str(model_path), conv_out.stem],
+                capture_output=True, timeout=600, cwd=str(RVC_DIR),
+                env={**os.environ, "weight_root": str(wroot),
+                     "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1",
+                     "CUDA_VISIBLE_DEVICES": ""},
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            produced = wroot / (conv_out.stem + ".pth")
+            if conv.returncode != 0 or not produced.is_file():
+                tail = (conv.stderr or b"")[-200:].decode("utf-8", "replace")
+                raise HTTPException(status_code=500, detail="检查点转换失败：" + tail)
+            shutil.move(str(produced), str(conv_out))
+        model_path, tag = conv_out, f"第 {step} step 检查点（已转换）"
+    else:
+        raise HTTPException(status_code=404, detail="还没有可试听的检查点（训练尚未产出 G_* 文件），请稍后再试")
+    # 找一段素材切片做源音频（dataset_clean 优先，回退 dataset）
+    src_dir = RVC_TRAIN_DIR / rid / "dataset_clean"
+    if not src_dir.is_dir() or not any(src_dir.iterdir()):
+        src_dir = RVC_TRAIN_DIR / rid / "dataset"
+    wavs = sorted(p for p in src_dir.iterdir() if p.is_file()) if src_dir.is_dir() else []
+    if not wavs:
+        raise HTTPException(status_code=404, detail="找不到源素材切片，无法试听")
+    src = wavs[0]
+    out = RVC_TRAIN_DIR / rid / "preview.wav"
+    if not _RVC_PREVIEW_LOCK.acquire(blocking=False):  # 原子抢锁，杜绝 TOCTOU
+        raise HTTPException(status_code=409, detail="上一次试听还在生成中，请稍候")
+    try:
+        cmd = [
+            str(RVC_PY), str(RVC_DIR / "infer" / "cli.py"),
+            "--model", str(model_path),
+            "--input", str(src), "--output", str(out),
+            "--pitch", "0", "--f0-method", "rmvpe",
+            "--index-rate", "0.75", "--protect", "0.33",
+            "--rms-mix-rate", "1.0", "--overwrite",
+        ]
+        env = {**os.environ,
+               "PYTHONPATH": str(RVC_DIR),
+               "weight_root": str(RVC_MODELS_DIR),
+               "index_root": str(RVC_DIR / "logs"),
+               "rmvpe_root": str(RVC_DIR / "assets" / "rmvpe"),
+               "outside_index_root": str(RVC_DIR / "assets" / "indices"),
+               "OPENBLAS_NUM_THREADS": "1",
+               # 关键：试听强制走 CPU——训练正占着 GPU，绝不能与其抢显存
+               "CUDA_VISIBLE_DEVICES": "",
+               "RVC_CUDA_GRAPH": "0"}
+        try:
+            proc = subprocess.run(cmd, cwd=str(RVC_DIR), env=env, capture_output=True,
+                                  timeout=600, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except subprocess.TimeoutExpired:
+            raise HTTPException(status_code=504, detail="试听生成超时（CPU 推理较慢），请稍后重试")
+        if proc.returncode != 0 or not out.is_file():
+            tail = (proc.stderr or proc.stdout or b"")[-300:].decode("utf-8", "replace")
+            raise HTTPException(status_code=500, detail="试听生成失败：" + tail)
+    finally:
+        _RVC_PREVIEW_LOCK.release()
+    return {"ok": True, "url": f"/api/rvc/train/preview/{rid}/audio", "source": tag,
+            "model": model_path.name}
+
+
+@router.get("/rvc/train/preview/{rid}/audio")
+def rvc_train_preview_audio(rid: str):
+    p = RVC_TRAIN_DIR / os.path.basename(rid) / "preview.wav"
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="试听文件不存在，请先生成")
+    return FileResponse(str(p), media_type="audio/wav", filename="preview.wav")
+
+
+# --------------------------------------------------------------------------- #
 # 音色制作（RVC 训练流水线）：上传样本 → 预处理 → F0/特征 → 训练 → 索引 → 导出
 # --------------------------------------------------------------------------- #
 RVC_TRAIN_DIR = RVC_DIR / "trains"
@@ -2228,9 +2529,10 @@ def _rvc_train_per_epoch_sec(name: str) -> float | None:
 def _rvc_train_write(rid: str, job: dict) -> None:
     d = RVC_TRAIN_DIR / rid
     d.mkdir(parents=True, exist_ok=True)
-    (d / "job.json").write_text(
-        json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    # 原子写（裁定 C-4）：先写临时文件再 os.replace，避免读到半截 JSON
+    tmp = d / "job.json.tmp"
+    tmp.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, d / "job.json")
 
 
 def _rvc_run_step(cmd: list[str], job: dict, step: str) -> None:
@@ -2262,11 +2564,16 @@ def _rvc_run_step(cmd: list[str], job: dict, step: str) -> None:
 
 
 def _rvc_latest_export(name: str) -> Path | None:
-    cands = sorted(RVC_MODELS_DIR.glob(f"{name}*.pth"), key=lambda p: p.stat().st_mtime)
-    return cands[-1] if cands else None
+    # 精确匹配（裁定 N-2）：glob "voc*" 会误选无关的 vocal_x.pth
+    for cand in (f"{name}.pth", f"{name}.pt"):
+        p = RVC_MODELS_DIR / cand
+        if p.is_file():
+            return p
+    return None
 
 
-def _rvc_train_worker(rid: str, name: str, epochs: int) -> None:
+def _rvc_train_worker(rid: str, name: str, epochs: int,
+                      separate_vocal: bool = False, resume: bool = False) -> None:
     job = _rvc_train_read(rid)
     started = time.time()
     exp_logs = RVC_DIR / "logs" / name
@@ -2276,9 +2583,44 @@ def _rvc_train_worker(rid: str, name: str, epochs: int) -> None:
         exp_logs.mkdir(parents=True, exist_ok=True)  # 预处理会往 logs/<name>/ 写日志
         # GPU 全局闸门：整条训练流水线与生成/批量/换声互斥（防 6GB 显存双进程 OOM）
         _GPU_SEM.acquire()
+        # 0) 可选：上传的是完整歌曲（人声+伴奏）时，先用官方 PyMSS 一步分离出干净人声，
+        #    预处理改用净化目录；单个文件分离失败自动回退用原文件，全部失败才报错。
+        train_dir = ds
+        if separate_vocal:
+            clean = RVC_TRAIN_DIR / rid / "dataset_clean"
+            clean.mkdir(parents=True, exist_ok=True)
+            wavs = sorted(p for p in ds.iterdir() if p.is_file())
+            ok_cnt = 0
+            for i, w in enumerate(wavs, 1):
+                dst = clean / f"{w.stem}.wav"
+                if resume and dst.is_file():
+                    ok_cnt += 1  # 续跑：已分离过的直接复用，从断点继续
+                    continue
+                job["step"] = f"人声分离（PyMSS{'·续跑' if resume else ''}）{i}/{len(wavs)}"
+                _rvc_train_write(rid, job)
+                try:
+                    r = subprocess.run(
+                        [str(RVC_PY), "-m", "tools.pymss.cli", "infer", PYMSS_MODEL,
+                         "-i", str(w), "-o", str(clean), "--device", "cuda"],
+                        capture_output=True, timeout=3600,
+                        creationflags=_pymss_creationflags(),
+                        cwd=str(RVC_DIR), env=_pymss_env(),
+                    )
+                    voc = clean / f"{w.stem}_vocals.wav"
+                    if r.returncode == 0 and voc.is_file():
+                        shutil.move(str(voc), str(dst))
+                        (clean / f"{w.stem}_other.wav").unlink(missing_ok=True)  # 伴奏不留
+                        ok_cnt += 1
+                except Exception:
+                    pass  # 单文件失败回退用原文件
+            if ok_cnt == 0:
+                raise RuntimeError("人声分离全部失败（检查 PyMSS 模型缓存/网络）；若上传的本来就是干声，请取消勾选后重新提交")
+            train_dir = clean
+            job["samples_separated"] = ok_cnt
+            _rvc_train_write(rid, job)
         # 1) 预处理切片（40k、3.7s/片）
         _rvc_run_step([str(RVC_PY), str(RVC_TRAIN_DIR.parent / "train" / "preprocess.py"),
-                       str(ds), "40000", str(n_p), str(exp_logs), "False", "3.7"], job, "预处理切片")
+                       str(train_dir), "40000", str(n_p), str(exp_logs), "False", "3.7"], job, "预处理切片")
         # 2) F0 提取（rmvpe, cuda）
         _rvc_run_step([str(RVC_PY), str(RVC_DIR / "train" / "dataset" / "extract_f0.py"),
                        "cuda", "1", "0", "0", str(exp_logs), "False"], job, "F0 提取")
@@ -2389,11 +2731,12 @@ async def rvc_train(
     files: list[UploadFile],
     name: str = Form(...),
     epochs: int = Form(200),
+    separate_vocal: str = Form("off"),
 ):
-    """上传若干干声样本 → 创建音色制作任务（独占运行，与换声/生成共用 GPU）。
+    """上传干声样本（或勾选自动分离后直接传完整歌曲）→ 创建音色制作任务（独占运行，与换声/生成共用 GPU）。
 
-    epochs 约束：RVC 底模微调下限 150（低于此音色发虚，实测 50 轮不可用），
-    上限 400（超过收益趋零且过拟合风险上升）。"""
+    separate_vocal: auto=训练前先用官方 PyMSS 逐文件分离出干净人声（上传完整歌曲时勾选）；
+    off=直接训练（上传的已是干声）。"""
     global _RVC_TRAIN_WORKER
     name = re.sub(r'[\\/:*?"<>|\s]+', "_", name.strip())[:40] or "voice"
     if not 150 <= epochs <= 400:
@@ -2429,7 +2772,9 @@ async def rvc_train(
     _rvc_train_write(rid, job)
     with RVC_TRAIN_LOCK:
         RVC_TRAIN_JOBS[rid] = job
-    _RVC_TRAIN_WORKER = threading.Thread(target=_rvc_train_worker, args=(rid, name, epochs), daemon=True)
+    _RVC_TRAIN_WORKER = threading.Thread(target=_rvc_train_worker,
+                                         args=(rid, name, epochs, separate_vocal == "auto"),
+                                         daemon=True)
     _RVC_TRAIN_WORKER.start()
     return {"ok": True, "id": rid, "name": name, "job": job}
 
@@ -2448,18 +2793,29 @@ def rvc_train_status(rid: str):
         pes = _rvc_train_per_epoch_sec(job.get("name", ""))
         if pes:
             job["per_epoch_sec"] = pes
+    # 已生成过试听的回传播放地址（刷新页面后播放器不消失，裁定 F-4）
+    if (RVC_TRAIN_DIR / rid / "preview.wav").is_file():
+        job["preview_url"] = f"/api/rvc/train/preview/{rid}/audio"
     return job
 
 
 @router.get("/rvc/train/active")
 def rvc_train_active():
-    """进行中/排队的音色制作任务（页面刷新后恢复进度条用）。"""
+    """进行中/排队的音色制作任务（页面刷新后恢复进度条用）。
+
+    另返回近 24h 内已结束（done/error）的落盘任务：网关重启会杀掉进行中的
+    worker，任务列表若只回内存态，用户会看到任务"凭空消失"——落盘记录必须可见，
+    error 任务可一键续跑。"""
     out = []
+    cutoff = time.time() - 24 * 3600
     if RVC_TRAIN_DIR.is_dir():
         for d in sorted(RVC_TRAIN_DIR.iterdir(), reverse=True):
             job = _rvc_train_read(d.name)
-            if job.get("status") in ("running", "pending"):
-                if job.get("status") == "running" and job.get("step") == "训练中":
+            if not job:
+                continue
+            st = job.get("status")
+            if st in ("running", "pending"):
+                if st == "running" and job.get("step") == "训练中":
                     cur, total = _rvc_train_epoch(job.get("name", ""), int(job.get("epochs") or 0))
                     if cur:
                         job["epoch"] = cur
@@ -2468,7 +2824,54 @@ def rvc_train_active():
                     if pes:
                         job["per_epoch_sec"] = pes
                 out.append(job)
+            elif st in ("done", "error"):
+                # 落盘时间兜底：job.json 的 mtime 在 24h 内才回显，避免列表无限膨胀
+                try:
+                    if (d / "job.json").stat().st_mtime < cutoff:
+                        continue
+                except OSError:
+                    continue
+                out.append(job)
     return {"items": out}
+
+
+@router.post("/rvc/train/resume/{rid}")
+def rvc_train_resume(rid: str, confirm: str = Form("no")):
+    """续跑被中断的音色制作任务：复用已上传样本与已分离产物，从断点继续。
+
+    confirm=yes 才允许重跑 done 任务——重跑会覆盖同名成品 pth（裁定 F-1）。"""
+    global _RVC_TRAIN_WORKER
+    rid = os.path.basename(rid)
+    job = _rvc_train_read(rid)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    ds = RVC_TRAIN_DIR / rid / "dataset"
+    if not ds.is_dir() or not any(ds.iterdir()):
+        raise HTTPException(status_code=404, detail="原始样本已丢失，无法续跑（请重新提交）")
+    # 检查+置 pending 必须原子完成（裁定 C-2）：否则两个并发 resume 都能通过检查，
+    # 双 worker 对同一 rid 双写；done 任务重跑会覆盖同名成品，需显式确认
+    if job.get("status") == "done" and confirm != "yes":
+        raise HTTPException(status_code=409, detail="该任务已完成。重跑会覆盖现有成品音色，前端需传 confirm=yes 显式确认")
+    with RVC_TRAIN_LOCK:
+        if job.get("status") in ("running", "pending"):
+            raise HTTPException(status_code=409, detail="任务仍在进行中，无需续跑")
+        busy = any(j.get("status") in ("running", "pending")
+                   for j in RVC_TRAIN_JOBS.values() if j.get("id") != rid)
+        if busy:
+            raise HTTPException(status_code=409, detail="已有音色制作任务在进行中，请等待完成后再续跑")
+        job["status"] = "pending"
+        job["step"] = "排队中（续跑）"
+        job["error"] = None
+        _rvc_train_write(rid, job)
+        RVC_TRAIN_JOBS[rid] = job
+    # 续跑时保留原 separate_vocal 意图：只要存在 dataset_clean 目录即视为需要分离
+    sep_flag = (RVC_TRAIN_DIR / rid / "dataset_clean").is_dir()
+    _RVC_TRAIN_WORKER = threading.Thread(
+        target=_rvc_train_worker, args=(rid, job["name"], int(job.get("epochs") or 200),
+                                        sep_flag, True),
+        daemon=True)
+    _RVC_TRAIN_WORKER.start()
+    return {"ok": True, "id": rid, "job": job}
 
 
 @router.delete("/rvc/train/{rid}")

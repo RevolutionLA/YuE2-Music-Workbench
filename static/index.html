@@ -361,6 +361,17 @@
   .hist-item .h-actions { display: flex; gap: 6px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
   .hist-item .h-col-st { font: 12px var(--sans); font-weight: 600; white-space: nowrap; }
   .hist-item .h-col-meta { font: 11px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* 训练进度卡片：单列自适应布局——标题/元信息/进度条纵向铺满整卡，按钮流式跟随，
+     不再用历史页的 5 列网格（内容会挤在左边、右侧大片留白、标题被截断） */
+  #rvcTrainList .hist-item { grid-template-columns: 1fr; gap: 8px; cursor: default; }
+  #rvcTrainList .hist-item .h-body { min-width: 0; }
+  #rvcTrainList .hist-item .h-title { white-space: normal; word-break: break-all; line-height: 1.5; }
+  #rvcTrainList .hist-item .h-sub { white-space: normal; word-break: break-all; }
+  #rvcTrainList .hist-item .h-actions,
+  #rvcTrainList .hist-item [data-preview],
+  #rvcTrainList .hist-item [data-use],
+  #rvcTrainList .hist-item [data-resume] { justify-content: flex-start; }
+  #rvcTrainList .hist-item audio { width: 100%; }
   @media (max-width: 1180px) {
     .hist-item { grid-template-columns: minmax(120px, 1.4fr) 92px minmax(100px, 2fr) auto; }
     .hist-item .h-col-meta { display: none; }
@@ -742,7 +753,7 @@ We will sing beyond the night</textarea>
           <div style="grid-column: 1 / -1;">
             <label for="rvcSep" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
               <input id="rvcSep" type="checkbox" checked style="width:auto;" />
-              <span>先做人声分离再换声（歌曲带伴奏时必勾；分离耗时较久，一首歌约 10-30 分钟）</span>
+              <span>先做人声分离再换声（歌曲带伴奏时必勾；官方 PyMSS 分离，约 1.5 分钟/3.5 分钟歌）</span>
             </label>
           </div>
           <div class="hint-xs" style="grid-column: 1 / -1;">💡 输入是完整歌曲（人声+伴奏）→ 保持勾选，换声前会自动分离出纯净人声，完成后可下载「换声人声 / 原人声 / 伴奏 / 完整歌曲」四份产物；输入已经是纯干声（录音、清唱）→ 取消勾选直接换声，速度更快。</div>
@@ -771,10 +782,16 @@ We will sing beyond the night</textarea>
         <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5" r="2.6"/><path d="M2.8 13.5c.6-2.8 2.7-4.3 5.2-4.3s4.6 1.5 5.2 4.3"/></svg>音色制作（用干声样本训练新音色）</div>
         <label for="rvcTrainName">音色名称（英文/拼音，训练完成后出现在上方音色下拉框）</label>
         <input id="rvcTrainName" placeholder="例如：myvoice" />
-        <label for="rvcTrainFiles" style="margin-top:10px;">干声样本（可多选，建议 5-10 分钟干净人声、无伴奏无混响）</label>
+        <label for="rvcTrainFiles" style="margin-top:10px;">人声样本（可多选；干声最佳，完整歌曲也可以——勾选下方自动分离即可）</label>
         <input id="rvcTrainFiles" type="file" multiple accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" />
+        <div style="margin-top:8px;">
+          <label for="rvcTrainSep" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input id="rvcTrainSep" type="checkbox" style="width:auto;" />
+            <span>上传的是完整歌曲（含伴奏）→ 自动分离出干净人声再训练（官方 PyMSS，约 1.5 分钟/3.5 分钟歌）</span>
+          </label>
+        </div>
         <div class="hint-xs">🎤 怎么录音：手机自带的录音机即可（m4a 能直接用）——安静房间（关窗、关风扇空调）、离麦 20-30cm 正常说话或唱歌，录 4-6 段每段 1-2 分钟；不要加伴奏、混响、变声特效，不要背景音乐。唱歌音色选唱段、说话音色选说话，或两者混录。手机录的先传到电脑再选文件。</div>
-        <div class="hint-xs">✅ 好素材的判断：回放录音能听清每个字、没有嗡嗡的房间声、音量稳定——素材质量决定音色上限，比任何参数都重要。</div>
+        <div class="hint-xs">✅ 好素材的判断：回放录音能听清每个字、没有嗡嗡的房间声、音量稳定——素材质量决定音色上限，比任何参数都重要。上传完整歌曲时务必勾选自动分离，否则伴奏会被当成"人声"学进去，音色会发糊。</div>
         <div class="pgrid" style="margin-top:10px;">
           <div><label for="rvcTrainEpochs">训练轮数（150-400，推荐 200；约 2.5 分钟/轮）</label><input id="rvcTrainEpochs" type="number" value="200" min="150" max="400" step="10" /></div>
         </div>
@@ -2539,9 +2556,45 @@ async function renderRvcModels() {
           <div class="h-sub">${m.size_mb} MB · ${escapeHtml((m.mtime || "").replace("T", " "))}</div>
         </div>
         <div class="h-actions">
+          <button class="ghost" data-check>体检</button>
+          <button class="ghost" data-merge>融合</button>
           <button class="ghost" data-rename>重命名</button>
           <button class="danger" data-del>删除</button>
         </div>`;
+      d.querySelector("[data-check]").onclick = async (e) => {
+        e.stopPropagation();
+        const btn = e.currentTarget; btn.disabled = true; btn.textContent = "体检中…";
+        try {
+          const rr = await fetch(`/api/rvc/models/${encodeURIComponent(m.name)}/check`);
+          const jj = await rr.json().catch(() => ({}));
+          if (!rr.ok) throw new Error(jj.detail || "体检失败");
+          const rows = Object.entries(jj.checks || {}).map(([k, v]) => `${v ? "✅" : "❌"} ${k}`).join("  ");
+          toast(`${jj.name}：${jj.summary}${jj.info ? "（" + jj.info.sr + " · v" + jj.info.version + " · " + jj.info.epoch + "）" : ""} ${rows}`, jj.ok ? "ok" : "err");
+        } catch (err) { toast(err.message, "err"); }
+        btn.disabled = false; btn.textContent = "体检";
+      };
+      d.querySelector("[data-merge]").onclick = async (e) => {
+        e.stopPropagation();
+        // 融合：让用户按 A x B 比例填参数（简单文本交互，避免弹一堆输入框）
+        const spec = prompt(
+          "模型融合：把两个音色按比例混合成新音色。\n" +
+          "格式：音色B 比例  新名称\n" +
+          "例如：兔裹 0.3  兔裹混合\n" +
+          "（0.3 = 当前音色「" + m.name.replace(/\.pth$/i, "") + "」占 70%、兔裹占 30%）", "");
+        if (!spec) return;
+        const parts = spec.trim().split(/\s+/);
+        if (parts.length !== 3) { toast("格式不对：需要「音色B 比例 新名称」三段", "err"); return; }
+        const [bName, alpha, newName] = parts;
+        if (parseFloat(alpha) !== parseFloat(alpha) || parseFloat(alpha) < 0 || parseFloat(alpha) > 1) { toast("比例须在 0-1 之间", "err"); return; }
+        toast("融合中（约 10-30 秒）…", "ok");
+        const rr = await fetch("/api/rvc/models/merge", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ a: m.name, b: bName.endsWith(".pth") ? bName : bName + ".pth", alpha: parseFloat(alpha), name: newName }),
+        });
+        const jj = await rr.json().catch(() => ({}));
+        if (rr.ok) { toast("融合完成，新音色：" + jj.name, "ok"); renderRvcModels(); renderRvc(); }
+        else toast(jj.detail || "融合失败", "err");
+      };
       d.querySelector("[data-rename]").onclick = async (e) => {
         e.stopPropagation();
         const cur = m.name.replace(/\.pth$/i, "");
@@ -2606,7 +2659,55 @@ function renderRvcTrainList() {
         ${j.status === "error" ? `<div class="h-sub truncate" title="${escapeHtml(j.error || "")}">${escapeHtml((j.error || "").slice(0, 100))}</div>` : ""}
         ${liveLog ? `<div class="h-sub truncate" style="color:var(--acc);" title="${escapeHtml(liveLog)}">${escapeHtml(liveLog)}</div>` : ""}
       </div>
-      ${j.status === "done" ? '<button class="ghost" data-use>去使用</button>' : ''}`;
+      ${j.status === "done" ? '<button class="ghost" data-use>去使用</button>' : ''}
+      ${j.status === "error" ? '<button class="ghost" data-resume>↻ 续跑</button>' : ''}
+      ${(j.status === "running" || j.status === "done") ? '<button class="ghost" data-preview>🎧 试听</button>' : ''}
+      ${j.preview_url ? `<audio controls preload="none" src="${j.preview_url}" style="width:100%;margin-top:6px;height:32px;"></audio>` : ''}`;
+    const rb = d.querySelector("[data-resume]");
+    if (rb) rb.onclick = async (e) => {
+      e.stopPropagation();
+      rb.disabled = true;
+      try {
+        // done 任务重跑会覆盖同名成品，服务端要求显式 confirm=yes（裁定 F-1）
+        const isDone = j.status === "done";
+        if (isDone && !window.confirm("该任务已完成。重跑会用新结果覆盖现有成品音色，确定继续？")) {
+          rb.disabled = false;
+          return;
+        }
+        const r = await fetch("/api/rvc/train/resume/" + j.id, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: isDone ? "confirm=yes" : "",
+        });
+        const x = await r.json();
+        if (!r.ok) throw new Error(x.detail || "续跑失败");
+        const i = rvcTrainJobs.findIndex(t => t.id === j.id);
+        if (i >= 0) rvcTrainJobs[i] = { ...rvcTrainJobs[i], ...x.job };
+        renderRvcTrainList();
+        pollRvcTrain(j.id);
+        toast("任务已从断点续跑（已完成的分离产物会复用）", "ok");
+      } catch (err) {
+        rb.disabled = false;
+        toast("续跑失败：" + err.message, "err");
+      }
+    };
+    const pb = d.querySelector("[data-preview]");
+    if (pb) pb.onclick = async (e) => {
+      e.stopPropagation();
+      pb.disabled = true; pb.textContent = "试听生成中…（CPU 推理约 20-40 秒）";
+      try {
+        const r = await fetch("/api/rvc/train/preview/" + j.id, { method: "POST" });
+        const x = await r.json();
+        if (!r.ok) throw new Error(x.detail || "试听失败");
+        const i = rvcTrainJobs.findIndex(t => t.id === j.id);
+        if (i >= 0) rvcTrainJobs[i] = { ...rvcTrainJobs[i], preview_url: x.url, preview_source: x.source };
+        renderRvcTrainList();
+        toast("试听已生成（" + x.source + "），播放器在任务卡片下方", "ok");
+      } catch (err) {
+        pb.disabled = false; pb.textContent = "🎧 试听";
+        toast(err.message, "err");
+      }
+    };
     const ub = d.querySelector("[data-use]");
     if (ub) ub.onclick = async (e) => {
       e.stopPropagation();
@@ -2691,7 +2792,9 @@ async function restoreRvcTrainActive() {
     (d.items || []).forEach(j => {
       if (rvcTrainJobs.some(x => x.id === j.id)) return;
       rvcTrainJobs.unshift(j);
-      pollRvcTrain(j.id);
+      // 只对进行中的任务启动轮询——done/error 的历史任务若也轮询，
+      // 刷新页面会逐个弹"完成/失败"toast、横幅被旧信息覆盖
+      if (j.status === "running" || j.status === "pending") pollRvcTrain(j.id);
     });
     renderRvcTrainList();
   } catch {}
@@ -2712,9 +2815,12 @@ $("rvcTrainGo").onclick = async () => {
     return;
   }
   fd.append("epochs", String(ep));
+  fd.append("separate_vocal", $("rvcTrainSep").checked ? "auto" : "off");
   $("rvcTrainGo").disabled = true;
   $("rvcTrainStatus").className = "status";
-  $("rvcTrainStatus").textContent = "上传样本并提交训练…";
+  $("rvcTrainStatus").textContent = $("rvcTrainSep").checked
+    ? "上传样本并提交训练…（已勾选自动分离，训练前会先逐文件分离人声，耗时相应增加）"
+    : "上传样本并提交训练…";
   try {
     const r = await fetch("/api/rvc/train", { method: "POST", body: fd });
     const j = await r.json();

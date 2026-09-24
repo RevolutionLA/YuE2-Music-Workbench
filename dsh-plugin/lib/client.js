@@ -282,6 +282,8 @@ window.__ModuleLoader__.load({
     // ------------------------------------------------------------------ //
     function MusicStudio() {
       var ref = react.useRef(null);
+      // 断连状态：连续探测失败时显示提示条（绝不自动重载，恢复由用户手动点击）
+      var offlineSt = react.useState(false), offline = offlineSt[0], setOffline = offlineSt[1];
       var dark = useLabStatus().dark;
       // 浏览器标签页：音乐工作台 + 琥珀铜 favicon（与主界面主题色一致，避免 AI 味蓝紫）
       react.useEffect(function () {
@@ -375,22 +377,37 @@ window.__ModuleLoader__.load({
       react.useEffect(function () {
         var fails = 0;
         var timer = setInterval(function () {
-          fetch("/lab/?embed=1&ping=" + Date.now(), { cache: "no-store" })
+          // 8s 超时：网关假死时 fetch 会永久挂起（既不 resolve 也不 reject），
+          // 不加超时探测会被挂起骗过、状态条永远不会出现。
+          var ac = typeof AbortController !== "undefined" ? new AbortController() : null;
+          var to = ac ? setTimeout(function () { ac.abort(); }, 8000) : null;
+          fetch("/lab/?embed=1&ping=" + Date.now(), { cache: "no-store", signal: ac ? ac.signal : undefined })
             .then(function (r) {
-              // 任意 HTTP 响应（含 502/504）都说明 dsh 反代层活着；只有网络层失败才计数
+              // 任意 HTTP 响应（含 502/504）都说明 dsh 反代层活着；挂起超时/网络层失败才计数
               fails = 0;
+              setOffline(false);
             })
             .catch(function () {
               fails++;
-              if (fails >= 3 && ref.current) {
-                fails = 0;
-                var tab = window.__yue2LabTab || "compose";
-                ref.current.src = "/lab/?embed=1&reloaded=" + Date.now() + (tab ? "#" + tab : "");
-              }
-            });
+              // 连续 3 次失败只点亮提示条，绝不自动重载（用户要求：不自动刷新页面）；
+              // 后台任务在服务端照常运行，恢复连接后刷新即可看到进度。
+              if (fails >= 3) setOffline(true);
+            })
+            .finally(function () { if (to) clearTimeout(to); });
         }, 10000);
         return function () { clearInterval(timer); };
       }, []);
+      if (offline) {
+        return react.createElement("div", {
+          style: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "12px", background: "#e8e7e4", color: "#444", fontFamily: "inherit" },
+        },
+          react.createElement("div", { style: { fontSize: "15px" } }, "⚠ 连接中断——正在制作的任务在服务端照常运行，不受影响"),
+          react.createElement("div", { style: { fontSize: "13px", opacity: 0.75 } }, "网络或服务恢复后，点击下方按钮重新连接"),
+          react.createElement("button", {
+            className: "primary",
+            onClick: function () { setOffline(false); var tab = window.__yue2LabTab || "compose"; if (ref.current) ref.current.src = "/lab/?embed=1&reloaded=" + Date.now() + (tab ? "#" + tab : ""); },
+          }, "重新连接"));
+      }
       return react.createElement("iframe", {
         ref: ref,
         title: "音乐工作台",
