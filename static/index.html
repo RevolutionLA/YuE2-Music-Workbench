@@ -370,7 +370,8 @@
   #rvcTrainList .hist-item .h-actions,
   #rvcTrainList .hist-item [data-preview],
   #rvcTrainList .hist-item [data-use],
-  #rvcTrainList .hist-item [data-resume] { justify-content: flex-start; }
+  #rvcTrainList .hist-item [data-resume],
+  #rvcTrainList .hist-item [data-pause] { justify-content: flex-start; }
   #rvcTrainList .hist-item audio { width: 100%; }
   @media (max-width: 1180px) {
     .hist-item { grid-template-columns: minmax(120px, 1.4fr) 92px minmax(100px, 2fr) auto; }
@@ -842,6 +843,17 @@ We will sing beyond the night</textarea>
 
 <script>
 const $ = (id) => document.getElementById(id);
+// 带超时的 fetch：训练吃满 CPU 时请求可能长时间挂起，
+// 按钮 disabled 后若 fetch 永不返回就永远点不动（只能刷新）——超时兜底必设
+async function fetchT(url, opts = {}, timeoutMs = 45000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const $$ = (sel) => document.querySelectorAll(sel);
 
 // ---------- 反代前缀自适配（经 dsh :3081/lab 访问时生效；7863 直访零影响） ----------
@@ -2625,8 +2637,14 @@ async function renderRvcModels() {
 const rvcTrainPolls = new Set();  // 每个任务独立轮询
 const rvcTrainJobs = [];
 
+let _lastTrainKey = "__init__";
 function renderRvcTrainList() {
   const el = $("rvcTrainList");
+  // 数据没变就不重建 DOM：轮询每 10s 触发一次，重建会闪掉播放器/按钮状态，
+  // 长期闲置时空转消耗也是页面变卡的原因之一
+  const key = JSON.stringify(rvcTrainJobs);
+  if (key === _lastTrainKey) return;
+  _lastTrainKey = key;
   if (!rvcTrainJobs.length) { el.innerHTML = '<div class="empty">暂无音色制作任务。</div>'; return; }
   el.innerHTML = "";
   rvcTrainJobs.forEach(j => {
@@ -2661,6 +2679,8 @@ function renderRvcTrainList() {
       </div>
       ${j.status === "done" ? '<button class="ghost" data-use>去使用</button>' : ''}
       ${j.status === "error" ? '<button class="ghost" data-resume>↻ 续跑</button>' : ''}
+      ${j.status === "paused" ? '<button class="ghost" data-resume>▶ 继续</button>' : ''}
+      ${j.status === "running" ? '<button class="ghost" data-pause>⏸ 暂停</button>' : ''}
       ${(j.status === "running" || j.status === "done") ? '<button class="ghost" data-preview>🎧 试听</button>' : ''}
       ${j.preview_url ? `<audio controls preload="none" src="${j.preview_url}" style="width:100%;margin-top:6px;height:32px;"></audio>` : ''}`;
     const rb = d.querySelector("[data-resume]");
@@ -2674,7 +2694,7 @@ function renderRvcTrainList() {
           rb.disabled = false;
           return;
         }
-        const r = await fetch("/api/rvc/train/resume/" + j.id, {
+        const r = await fetchT("/api/rvc/train/resume/" + j.id, {
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
           body: isDone ? "confirm=yes" : "",
@@ -2691,12 +2711,29 @@ function renderRvcTrainList() {
         toast("续跑失败：" + err.message, "err");
       }
     };
+    const pa = d.querySelector("[data-pause]");
+    if (pa) pa.onclick = async (e) => {
+      e.stopPropagation();
+      pa.disabled = true;
+      try {
+        const r = await fetchT("/api/rvc/train/pause/" + j.id, { method: "POST" }, 60000);
+        const x = await r.json();
+        if (!r.ok) throw new Error(x.detail || "暂停失败");
+        const i = rvcTrainJobs.findIndex(t => t.id === j.id);
+        if (i >= 0) rvcTrainJobs[i] = { ...rvcTrainJobs[i], ...x.job };
+        renderRvcTrainList();
+        toast("任务已暂停（GPU 已释放，可去跑其他任务；随时点「▶ 继续」断点续跑）", "ok");
+      } catch (err) {
+        pa.disabled = false;
+        toast("暂停失败：" + err.message, "err");
+      }
+    };
     const pb = d.querySelector("[data-preview]");
     if (pb) pb.onclick = async (e) => {
       e.stopPropagation();
       pb.disabled = true; pb.textContent = "试听生成中…（CPU 推理约 20-40 秒）";
       try {
-        const r = await fetch("/api/rvc/train/preview/" + j.id, { method: "POST" });
+        const r = await fetchT("/api/rvc/train/preview/" + j.id, { method: "POST" }, 180000);
         const x = await r.json();
         if (!r.ok) throw new Error(x.detail || "试听失败");
         const i = rvcTrainJobs.findIndex(t => t.id === j.id);
@@ -2722,8 +2759,9 @@ function renderRvcTrainList() {
 }
 
 async function pollRvcTrain(rid) {
+  if (document.hidden) return; // 后台标签页跳过请求（浏览器节流下徒增积压），回前台立即补一次
   try {
-    const r = await fetch("/api/rvc/train/status/" + rid);
+    const r = await fetchT("/api/rvc/train/status/" + rid, {}, 15000);
     if (r.ok) {
       const j = await r.json();
       const i = rvcTrainJobs.findIndex(x => x.id === rid);
@@ -2799,6 +2837,12 @@ async function restoreRvcTrainActive() {
     renderRvcTrainList();
   } catch {}
 }
+
+// 回前台立即补一次轮询：后台期间定时器被节流，回来先拿最新状态
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  rvcTrainPolls.forEach((_t, rid) => pollRvcTrain(rid));
+});
 
 $("rvcTrainGo").onclick = async () => {
   const name = $("rvcTrainName").value.trim();

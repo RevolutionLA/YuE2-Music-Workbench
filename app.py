@@ -698,7 +698,8 @@ def history_active():
     if RVC_TRAIN_DIR.is_dir():
         for d in sorted(RVC_TRAIN_DIR.iterdir(), reverse=True):
             job = _rvc_train_read(d.name)
-            if job.get("status") in ("running", "pending"):
+            # 含 paused：暂停任务需在进度列表显示「▶ 继续」，否则重启后找不到入口续跑
+            if job.get("status") in ("running", "pending", "paused"):
                 if job.get("status") == "running" and job.get("step") == "训练中":
                     cur, total = _rvc_train_epoch(job.get("name", ""), int(job.get("epochs") or 0))
                     if cur:
@@ -2497,6 +2498,13 @@ RVC_TRAIN_DIR = RVC_DIR / "trains"
 RVC_TRAIN_LOCK = threading.Lock()
 RVC_TRAIN_JOBS: dict[str, dict] = {}
 _RVC_TRAIN_WORKER: threading.Thread | None = None
+# 当前正在执行的训练/流水线子进程句柄（pause 端点 terminate 它实现优雅停训）
+_RVC_TRAIN_PROC: subprocess.Popen | None = None
+_RVC_TRAIN_PAUSE_REQ: bool = False  # 置位表示已请求暂停，子进程退出不再当错误处理
+
+
+class _RvcTrainPaused(Exception):
+    """内部信号：训练被用户主动暂停（pause 端点 terminate 子进程触发）。"""
 
 
 def _rvc_train_read(rid: str) -> dict:
@@ -2572,6 +2580,9 @@ def _rvc_train_write(rid: str, job: dict) -> None:
 
 def _rvc_run_step(cmd: list[str], job: dict, step: str) -> None:
     """执行一个训练流水线步骤；失败抛异常，日志写进 job.log_tail。"""
+    # 关键：这两个是模块级变量，函数内有赋值必须声明 global，
+    # 否则 Python 按局部变量处理——暂停标志永不生效、句柄永不更新（已踩坑）
+    global _RVC_TRAIN_PROC, _RVC_TRAIN_PAUSE_REQ
     job["step"] = step
     job["status"] = "running"
     _rvc_train_write(job["id"], job)
@@ -2587,15 +2598,39 @@ def _rvc_run_step(cmd: list[str], job: dict, step: str) -> None:
     # 超时按训练规模动态计算：每轮约 2.5-4 分钟（素材量相关），留 1 小时启动/落盘余量。
     # 固定 6 小时曾把大素材长训练（1358 切片 × 200 轮 ≈ 8 小时）在健康跑到一半时误杀。
     est_sec = int(job.get("epochs") or 200) * 240 + 3600
-    proc = subprocess.run(
-       [cmd[0], "-P", *cmd[1:]], cwd=str(RVC_DIR), env=env, capture_output=True, timeout=est_sec,
-       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-   )
-    tail = ((proc.stderr or b"") + (proc.stdout or b""))[-600:].decode("utf-8", "replace")
+    with RVC_TRAIN_LOCK:
+        _RVC_TRAIN_PROC = subprocess.Popen(
+            [cmd[0], "-P", *cmd[1:]], cwd=str(RVC_DIR), env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            # 训练长跑数小时：降 CPU 优先级保浏览器/界面响应（PyMSS 同款，灰屏教训）
+            creationflags=_pymss_creationflags(),
+        )
+        _proc = _RVC_TRAIN_PROC
+        # 暂停请求可能在两步之间到达（此刻无子进程可杀，标志仍置位）：
+        # 立即终止刚拉起的进程，避免"暂停被吞、训练继续跑"的竞态窗口
+        _pause_pending = _RVC_TRAIN_PAUSE_REQ
+        if _pause_pending:
+            try:
+                _proc.terminate()
+            except Exception:
+                pass
+    try:
+        proc_out, proc_err = _proc.communicate(timeout=est_sec)
+    except subprocess.TimeoutExpired:
+        _proc.kill()
+        proc_out, proc_err = _proc.communicate()
+        raise RuntimeError(f"步骤 {step} 超时（超过 {est_sec // 60} 分钟）：{step} 异常")
+    finally:
+        with RVC_TRAIN_LOCK:
+            _RVC_TRAIN_PROC = None
+    tail = ((proc_err or b"") + (proc_out or b""))[-600:].decode("utf-8", "replace")
     job["log_tail"] = tail[-400:]
     _rvc_train_write(job["id"], job)
-    if proc.returncode != 0:
-        raise RuntimeError(f"步骤 {step} 失败（exit {proc.returncode}）：{tail[-300:]}")
+    if _RVC_TRAIN_PAUSE_REQ or _pause_pending:
+        # 用户主动暂停：子进程被 terminate 退出，属预期，抛专用信号让 worker 走 paused 收尾
+        raise _RvcTrainPaused()
+    if _proc.returncode != 0:
+        raise RuntimeError(f"步骤 {step} 失败（exit {_proc.returncode}）：{tail[-300:]}")
 
 
 def _rvc_latest_export(name: str) -> Path | None:
@@ -2665,6 +2700,7 @@ def _rvc_train_worker(rid: str, name: str, epochs: int,
         # 3.5) 生成 filelist.txt + config.json（webui 在启动训练前做同样的事）
         gt_dir = exp_logs / "0_gt_wavs"
         feats_dir = exp_logs / "3_feature768"
+        import soundfile as _sf
         pairs = []
         for wav in sorted(gt_dir.glob("*.wav")):
             base = wav.stem
@@ -2672,6 +2708,13 @@ def _rvc_train_worker(rid: str, name: str, epochs: int,
             f0 = exp_logs / "2a_f0" / f"{base}.wav.npy"
             f0nsf = exp_logs / "2b-f0nsf" / f"{base}.wav.npy"
             if feat.is_file() and f0.is_file() and f0nsf.is_file():
+                # 过滤短于训练段长（12800 采样 ≈ 0.32s）的切片：
+                # 恢复训练重建 DataLoader 后采样到它必崩 slice_segments（exit 1）
+                try:
+                    if _sf.info(wav).frames < 12800:
+                        continue
+                except Exception:
+                    continue  # 读不出的残缺文件同样排除
                 pairs.append((wav.resolve().as_posix(), feat.resolve().as_posix(),
                               f0.resolve().as_posix(), f0nsf.resolve().as_posix()))
         if not pairs:
@@ -2742,6 +2785,12 @@ def _rvc_train_worker(rid: str, name: str, epochs: int,
             "cot": "train", "abc": "", "params": {},
         })
         _win_toast("🎵 音色制作完成：" + name, f"模型 {exported.name} 已可使用，耗时 {round((time.time()-started)/60)} 分钟")
+    except _RvcTrainPaused:
+        # 用户主动暂停：不标 error、不发失败 toast，静默停在 paused 状态（GPU 在 finally 释放）
+        job.update(status="paused", step=job.get("step", "训练中"),
+                   error=None, sec=round(time.time() - started, 1),
+                   paused_at=datetime.now().isoformat(timespec="seconds"))
+        _rvc_train_write(rid, job)
     except Exception as e:
         job.update(status="error", step=job.get("step", ""), error=str(e)[:500],
                    sec=round(time.time() - started, 1))
@@ -2772,7 +2821,7 @@ async def rvc_train(
 
     separate_vocal: auto=训练前先用官方 PyMSS 逐文件分离出干净人声（上传完整歌曲时勾选）；
     off=直接训练（上传的已是干声）。"""
-    global _RVC_TRAIN_WORKER
+    global _RVC_TRAIN_WORKER, _RVC_TRAIN_PAUSE_REQ
     name = re.sub(r'[\\/:*?"<>|\s]+', "_", name.strip())[:40] or "voice"
     if not 150 <= epochs <= 400:
         raise HTTPException(status_code=400,
@@ -2806,6 +2855,8 @@ async def rvc_train(
     }
     _rvc_train_write(rid, job)
     with RVC_TRAIN_LOCK:
+        # 与 resume 同理：清掉上一次运行遗留的暂停标志，防新任务第一步自终止
+        _RVC_TRAIN_PAUSE_REQ = False
         RVC_TRAIN_JOBS[rid] = job
     _RVC_TRAIN_WORKER = threading.Thread(target=_rvc_train_worker,
                                          args=(rid, name, epochs, separate_vocal == "auto"),
@@ -2849,7 +2900,8 @@ def rvc_train_active():
             if not job:
                 continue
             st = job.get("status")
-            if st in ("running", "pending"):
+            if st in ("running", "pending", "paused"):
+                # paused 也须回显：暂停任务需在进度列表显示「▶ 继续」，否则重启后找不到入口续跑
                 if st == "running" and job.get("step") == "训练中":
                     cur, total = _rvc_train_epoch(job.get("name", ""), int(job.get("epochs") or 0))
                     if cur:
@@ -2875,7 +2927,7 @@ def rvc_train_resume(rid: str, confirm: str = Form("no")):
     """续跑被中断的音色制作任务：复用已上传样本与已分离产物，从断点继续。
 
     confirm=yes 才允许重跑 done 任务——重跑会覆盖同名成品 pth（裁定 F-1）。"""
-    global _RVC_TRAIN_WORKER
+    global _RVC_TRAIN_WORKER, _RVC_TRAIN_PAUSE_REQ
     rid = os.path.basename(rid)
     job = _rvc_train_read(rid)
     if not job:
@@ -2897,6 +2949,9 @@ def rvc_train_resume(rid: str, confirm: str = Form("no")):
         job["status"] = "pending"
         job["step"] = "排队中（续跑）"
         job["error"] = None
+        # 暂停标志属于上一次运行：受理续跑时必须复位，否则新 worker 第一步
+        # 读到陈旧 True 会立即自终止——任务"秒回暂停"（隐患，已踩坑）
+        _RVC_TRAIN_PAUSE_REQ = False
         _rvc_train_write(rid, job)
         RVC_TRAIN_JOBS[rid] = job
     # 续跑时保留原 separate_vocal 意图：只要存在 dataset_clean 目录即视为需要分离
@@ -2906,6 +2961,50 @@ def rvc_train_resume(rid: str, confirm: str = Form("no")):
                                         sep_flag, True),
         daemon=True)
     _RVC_TRAIN_WORKER.start()
+    return {"ok": True, "id": rid, "job": job}
+
+
+@router.post("/rvc/train/pause/{rid}")
+def rvc_train_pause(rid: str):
+    """优雅暂停音色制作：terminate 训练子进程（每轮落盘检查点，丢最多一轮损失可接受），
+    状态改 paused；之后 /rvc/train/resume 从检查点断点续跑，可跨网关重启。"""
+    # 关键：模块级变量赋值必须声明 global，否则 UnboundLocalError——
+    # 上一版端点每次都 500 崩溃（空响应），标志/句柄从未生效（已踩坑）
+    global _RVC_TRAIN_PROC, _RVC_TRAIN_PAUSE_REQ
+    rid = os.path.basename(rid)
+    job = _rvc_train_read(rid)
+    if job.get("status") != "running":
+        raise HTTPException(status_code=409,
+                            detail="任务不在运行中，无法暂停（仅训练中可暂停；已完成/排队/失败任务无需暂停）")
+    name = job.get("name", "")
+    with RVC_TRAIN_LOCK:
+        # 置位暂停标志：_rvc_run_step 检测到子进程因 terminate 退出时不报 error
+        _RVC_TRAIN_PAUSE_REQ = True
+        proc = _RVC_TRAIN_PROC
+        _RVC_TRAIN_PROC = None
+    if proc is not None:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    # 兜底强制清理：句柄可能因竞态/时序丢失，但训练进程还活着占着 GPU——
+    # taskkill /T 杀句柄进程树；再按命令行特征（train.py + 音色名）扫杀残留，
+    # 确保显存必释放（绝不能用 /IM python.exe——会连网关一起杀）
+    try:
+        if proc is not None:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True, timeout=15, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"Get-CimInstance Win32_Process | Where-Object {{ $_.CommandLine -match 'train\\.py' -and $_.CommandLine -match '{re.escape(name)}' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}"],
+            capture_output=True, timeout=15, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception:
+        pass
+    job.update(status="paused", step=job.get("step", "训练中"),
+               error=None, paused_at=datetime.now().isoformat(timespec="seconds"))
+    _rvc_train_write(rid, job)
+    RVC_TRAIN_JOBS[rid] = job
     return {"ok": True, "id": rid, "job": job}
 
 
