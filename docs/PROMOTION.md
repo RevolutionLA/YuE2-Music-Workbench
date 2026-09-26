@@ -1,6 +1,9 @@
 # 宣传文案模板（各社区直接复制使用）
 
 > 使用提示：发帖前把「【】」占位符替换成实际内容；最好配 1-2 张截图或 30 秒试听片段，转化率会高很多。
+>
+> 版本号只从 `CHANGELOG.md` 顶部条目取（真源是 git 附注标签，`git tag -l -n` 可查），不要把版本
+> 号写死进文案——文案里留着的数字会在下一次发版后变成假信息。
 
 ---
 
@@ -10,7 +13,7 @@
 I built a fully local AI music workstation on YuE2 — songwriting, AI covers, RVC voice conversion & synced lyrics, 100% offline on Windows
 
 **正文：**
-I've been working on this for a while and it's finally at v1.0: **YuE2 Music Workbench** — a local music workstation built on top of the YuE2 (M-A-P/HKUST) foundation model, running GGUF-quantized inference via audio.cpp.
+I've been working on this for a while and it's finally open-source: **YuE2 Music Workbench** — a local music workstation built on top of the YuE2 (M-A-P/HKUST) foundation model, running GGUF-quantized inference via audio.cpp.
 
 **What it does, all offline:**
 - 🎼 Style + lyrics → full vocal song (auto verse/chorus arrangement), melody editing via ABC notation
@@ -77,7 +80,7 @@ Feedback and PRs welcome — and thank you for open-sourcing YuE! 🙏
 开源了一个本地 AI 音乐工作站：写歌、AI 翻唱、RVC 换声、滚动歌词，全程离线
 
 **正文：**
-折腾了几个月，把自己用的 AI 音乐工具链整合成了一个开箱即用的工作站，v1.0 开源：
+折腾了几个月，把自己用的 AI 音乐工具链整合成了一个开箱即用的工作站，并已开源（当前版本见仓库 `CHANGELOG.md` 顶部条目）：
 
 仓库：https://github.com/RevolutionLA/YuE2-Music-Workbench
 

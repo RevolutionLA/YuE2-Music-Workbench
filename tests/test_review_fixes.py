@@ -252,6 +252,54 @@ class TestQueueMigration(Sandbox):
         self.assertEqual(started, [1], "正常中断要照常续跑")
 
 
+class TestSweepHonesty(Sandbox):
+    """冒烟实测（09-26 22:17）：用户点"停止"后，正在算的那一首十秒内就被轮询写成
+    "服务重启，任务中断"，而网关 PID 从头到尾没变过——这句指控没有证据。
+    状态清扫必须说得出现场能核实的话。"""
+
+    class _Worker:
+        def __init__(self, alive):
+            self._alive = alive
+
+        def is_alive(self):
+            return self._alive
+
+    def _run(self, item, *, worker_alive, current=None):
+        from datetime import datetime
+        item.setdefault("qid", "q1")
+        item.setdefault("status", "running")
+        app._batch_write({"name": "q", "running": False, "current": current,
+                          "items": [item]})
+        saved = app._BATCH_WORKER
+        app._BATCH_WORKER = self._Worker(worker_alive)
+        try:
+            app.batch_status()
+        finally:
+            app._BATCH_WORKER = saved
+        return app._batch_read()["items"][0]
+
+    def test_live_worker_current_item_is_left_alone(self):
+        it = self._run({"id": "20260101_000000_000000a1",
+                        "started_ts": "2020-01-01T00:00:00"},
+                       worker_alive=True, current="20260101_000000_000000a1")
+        self.assertEqual(it["status"], "running", "线程还在算的这一条不能被人代写结局")
+
+    def test_only_pre_start_residue_may_say_service_restarted(self):
+        it = self._run({"id": "20260101_000000_000000a2",
+                        "started_ts": "2020-01-01T00:00:00"}, worker_alive=False)
+        self.assertEqual(it["status"], "error")
+        self.assertIn("服务重启", it["error"])
+
+    def test_in_process_death_says_worker_did_not_report(self):
+        from datetime import datetime
+        after = datetime.fromtimestamp(app._PROC_START_TS + 30).isoformat(timespec="seconds")
+        it = self._run({"id": "20260101_000000_000000a3", "started_ts": after},
+                       worker_alive=False)
+        self.assertNotIn("服务重启", it["error"], "本进程内起的线程，进程没重启过")
+        it2 = self._run({"id": "20260101_000000_000000a4"}, worker_alive=False)
+        self.assertNotIn("服务重启", it2["error"], "缺 started_ts 的旧条目不能凭猜定罪")
+
+
 class TestLocalGuard(Sandbox):
     """蓝军 S3：CORS 挡不住跨站简单请求，守卫中间件补 Host + Origin 两道。"""
 

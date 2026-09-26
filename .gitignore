@@ -131,3 +131,6 @@ _gateway.log
 
 # voices 为指向 runtime/voices 的目录联接（Windows junction），不入库
 voices/
+
+# ===== 运行时用户数据（模板存储，不入库） =====
+/templates.json

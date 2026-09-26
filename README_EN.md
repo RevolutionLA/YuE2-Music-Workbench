@@ -37,8 +37,8 @@ _No cloud. No queue. No subscription. 100% offline._
 | 📦 | **Batch queue** | Queue dozens of songs and walk away; one-click resume after interruption, per-item retry, auto-recovery on restart; each submission gets its own queue identity, so counts never blend into yesterday's batch |
 | 🗂 | **Task manager** | Status × type dual filters; per-task rename / stop / retry / delete; running tasks pinned on top; **every task carries a globally unique ID** (= its on-disk filename, click to copy) so duplicate names never get confused |
 | 🔔 | **Notifications** | Windows toast on completion (with task name); browser favicon shows busy/idle state |
-| ⏸ | **Job persistence** | Refresh the page or close the browser — tasks keep running and results are waiting. After a *service restart* queued items resume and finished artifacts stay intact; the song that was mid-inference is marked "interrupted by restart" (just re-run it) |
-| 🩺 | **Watchdog self-healing** | Stuck gateway/workbench auto-restart; zombie batch entries auto-reset |
+| ⏸ | **Job persistence** | Refresh the page or close the browser — tasks keep running and results are waiting. After a *service restart* queued items resume and finished artifacts stay intact; leftover in-flight items are labelled by what the machine can actually prove: only items that started **before this process began** are marked "interrupted by restart", items whose worker thread never reported back are marked "queue stopped — re-run this item", and the item a live worker still owns is left for that worker to finish. (A 09-26 smoke run caught the old code blaming a restart whose PID never changed.) |
+| 🩺 | **Watchdog self-healing** | Gateway + workbench stuck-detection and auto-restart, tolerant of token-auth 401 probes. Before killing anything it fires one 90 s deep probe: if the service answers, it's *slow*, not dead, and the failure counter just resets. Evidence: 09-26 watchdog log shows two kills (21:40, 21:50) that landed **while the user's own batch was computing** — on a 6 GB card saturated by llama-server, `/api/health` legitimately takes tens of seconds. Respawned gateway stdout/stderr now goes to `runtime/data/logs/gateway.{out,err}.log` instead of the bit bucket, so self-healing stops erasing the scene. |
 | 🖥 | **VRAM adaptive** | GPU when it fits, CPU fallback when it doesn't, automatic switch-back |
 
 ## 🚀 Quick Start
@@ -93,9 +93,26 @@ Browser ── 3081 integrated workbench (dsh-plugin)
 | `dsh-plugin/` | Integrated workbench UI plugin |
 | `scripts/` | Launch/stop/model download, `yue2workbench://` protocol registration |
 | `watchdog.py` | Watchdog (gateway + workbench self-healing) |
-| `tests/` | Regression tests (`py312\python.exe -m unittest discover -s tests`) — tmp dirs and read-only endpoints only, never starts a computation |
+| `tests/` | Regression tests, 52 cases (`py312\python.exe -m unittest discover -s tests`) — tmp dirs and read-only endpoints only, never starts a computation |
 | `LICENSE` | Layered licensing, incl. the third-party assets shipped here |
 | `cpp/` | YuE2 GGUF engine (`audiocpp_server.exe`); engine and models are not committed, models download via `scripts/download_models.py` |
+
+## 🗂 Versioning & releases
+
+Versions follow semver `vMAJOR.MINOR.PATCH`; **the single source of truth is the git annotated tag**
+(`git tag -l -n`), and [CHANGELOG.md](CHANGELOG.md) explains what each one contains. Current baseline:
+
+| Tag | Meaning |
+| --- | --- |
+| `v1.0` | First open-source release (historical starting point, never rewritten) |
+| `v1.1.0` | Unique per-task IDs + chord-aware route pairing + three-round adversarial-review fixes, verified through an authorized restart smoke run |
+
+**Release checklist** — skip one and you may only claim "the code changed", not "it's live":
+
+1. `py312\python.exe -m unittest discover -s tests` fully green;
+2. **Smoke after restarting the gateway** (a resident process never picks up new logic on its own): ① appending to a finished queue merges into the same `queue_id` and the total only grows; ② stop/cancel flips pending to `cancelled` and the item still computing is **not** written by the poller; ③ oversized input returns 400, cross-site `Origin` returns 403;
+3. Both READMEs and `docs/PROMOTION.md` updated for any behaviour change (project rule);
+4. `git tag -a vX.Y.Z -m "..."`, then push tags through the proxy: `git -c http.proxy=http://127.0.0.1:7890 push origin --tags`.
 
 ## ❓ FAQ
 

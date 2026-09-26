@@ -1931,6 +1931,9 @@ _BATCH_WORKER_LOCK = threading.Lock()   # 只护"判活+起线程"，与 _BATCH_
 # 就停在 error 等人工，不再让看门狗陪着它一遍遍重启。
 _REVIVE_WINDOW_SEC = 600
 _REVIVE_MAX = 3
+# 本进程的启动时刻：自愈文案要靠它分清"服务真重启过"与"工作线程自己结束了"。
+# 没有这个基准，任何一条被改写成"服务重启，任务中断"都是没有证据的指控。
+_PROC_START_TS = time.time()
 
 
 def _batch_store(state: dict) -> None:
@@ -2171,13 +2174,26 @@ def batch_status():
             _CANCEL_EVENT.clear()
             _batch_ensure_worker()
     if not state.get("running"):
-        # 服务重启或工作线程死亡时，把遗留的 running 任务标记为中断
+        # 服务重启或工作线程死亡时，把遗留的 running 任务标记为中断。
+        # 冒烟实测（09-26 22:17）：用户点"停止"后，正在算的那一首会在下一次轮询（十秒内）
+        # 被这段代码写成"服务重启，任务中断"，而网关 PID 从头到尾没变过——指控无据。
+        # 两条收口：① worker 线程还活着且这条就是它登记的 current，说明它仍在算，不动它；
+        # ② 只有该条目早于本进程启动才有资格说"服务重启"，否则如实说工作线程没回写。
+        worker_live = _BATCH_WORKER is not None and _BATCH_WORKER.is_alive()
         changed = False
         for it in state["items"]:
-            if it["status"] == "running":
-                it["status"] = "error"
-                it["error"] = "服务重启，任务中断"
-                changed = True
+            if it["status"] != "running":
+                continue
+            if worker_live and state.get("current") == it["id"]:
+                continue
+            try:
+                pre_start = datetime.fromisoformat(str(it.get("started_ts"))).timestamp() < _PROC_START_TS
+            except (TypeError, ValueError):
+                pre_start = False
+            it["status"] = "error"
+            it["error"] = ("服务重启，任务中断" if pre_start
+                           else "队列已停止：该条目的计算线程未回写结果，请重跑这一条")
+            changed = True
         if changed:
             _batch_store(state)
     done = sum(1 for it in state["items"] if it["status"] == "done")
