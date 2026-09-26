@@ -476,6 +476,38 @@ _KEY_MAP = {"C": "C 大调", "G": "G 大调", "D": "D 大调", "A": "A 大调", 
             "Bbm": "降 B 小调", "Ebm": "降 E 小调"}
 _PITCH_SEMITONE = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
 _SECTION_RE = re.compile(r"^\[([^\]\r\n]{1,32})\]", re.M)
+_VOICE_RE = re.compile(r"^V:\s*([A-Za-z0-9_\-]+)", re.M)
+# ABC 和弦记号：双引号包住的和弦名贴在音符前（"Am7"、"F#sus4"）
+_CHORD_RE = re.compile(r'"[A-G](?:#|b)?(?:m|maj|min|dim|aug|sus|add)?[\d]*"')
+
+
+def _abc_has_chords(abc: str) -> bool:
+    """谱面是否带和弦声部/和弦记号（决定 YuE2 该走 full 还是 melody 路线）。"""
+    if any("chord" in v.lower() for v in _VOICE_RE.findall(abc)):
+        return True
+    # 只在正文小节里找：X:/T:/K:/V: 这类信息行里引号包住的标题文字不算和弦记号
+    body = "\n".join(l for l in abc.splitlines() if not re.match(r"^[A-Za-z]:", l.strip()))
+    return bool(_CHORD_RE.search(body))
+
+
+def _resolve_cot(cot: str, abc: str) -> tuple[str, str]:
+    """乐谱非空 ⇒ 必须走「消费这份谱」的路线；乐谱为空 ⇒ 才交给模型自己规划。
+
+    外部 ABC 会绕过符号规划器直接被当成条件，但 melody / full 是两套不同的原生指令：
+    melody 吃旋律谱（无和弦记号），full 吃旋律+和弦谱。用 full 路线喂一份只有旋律声部
+    的谱属于口径不符，谱面条件会走偏，用户听到的就是没照他给的旋律走。
+    另外 cot=off 带谱会被引擎判 400（"external ABC requires cot=melody or cot=full"）。
+    """
+    mode = str(cot or "").strip().lower()
+    mode = mode if mode in ("full", "melody", "off") else "full"
+    if not (abc or "").strip():
+        return mode, ""
+    want = "full" if _abc_has_chords(abc) else "melody"
+    if mode == "off":
+        return want, f"已填写乐谱，规划路线不能是 off，自动改为 {want}（按你的乐谱生成）"
+    if mode == "full" and want == "melody":
+        return "melody", "乐谱只有旋律声部，已改用 melody 路线按谱生成（full 要求带和弦的谱，口径不符谱面条件会走偏）"
+    return mode, ""
 
 
 def _abc_analyze(abc: str) -> dict:
@@ -530,6 +562,12 @@ def _abc_analyze(abc: str) -> dict:
             # 基准：未加八度记号的大写音 = 第四八度（C4=中央 C），与 ABC 惯例一致
             return names_sharp[s % 12] + str(s // 12 + 4)
         out["range"] = f"{name(lo)} → {name(hi)}（{hi - lo} 个半音）"
+    voices = list(dict.fromkeys(_VOICE_RE.findall(abc)))
+    if voices:
+        out["voices"] = voices
+    chords = _abc_has_chords(abc)
+    out["has_chords"] = chords
+    out["cot_suggested"] = "full" if chords else "melody"
     return out
 
 
@@ -1289,6 +1327,10 @@ async def generate_start(payload: dict):
     style = str(payload.get("style") or "").strip()
     if not style:
         raise HTTPException(status_code=400, detail="style is required")
+    # 有谱即按谱：乐谱框非空就必须走消费乐谱的路线，不能让它滑到 off / 形态不符的 full
+    cot_eff, cot_note = _resolve_cot(str(payload.get("cot") or "full"),
+                                     str(payload.get("abc") or ""))
+    payload["cot"] = cot_eff
     # check-and-set 原子化：先占位再放线程，防止并发请求双双通过检查（TOCTOU）
     with _GEN_LOCK:
         cur = _GEN_JOB
@@ -1362,7 +1404,8 @@ async def generate_start(payload: dict):
             if j and j.get("id") is None:
                 _gen_set_job(None)
     threading.Thread(target=_chain_runner, daemon=True).start()
-    return {"ok": True, "count": count, "job": _make_job(1, base_seed if isinstance(base_seed, int) else None)}
+    return {"ok": True, "count": count, "cot": cot_eff, "cot_note": cot_note,
+            "job": _make_job(1, base_seed if isinstance(base_seed, int) else None)}
 
 
 @router.get("/generate/current")
@@ -1634,13 +1677,17 @@ def batch_start(payload: dict):
             raise HTTPException(status_code=400,
                                 detail=f"第 {i} 个任务缺少 style 或 lyrics")
         rid = datetime.now().strftime("%Y%m%d_%H%M%S_") + os.urandom(2).hex()
+        abc_t = str(t.get("abc") or "")[:4000]
+        # 同单首生成：缺省仍是 off（批量以快为先），但只要带了谱就不能让谱子落空
+        cot_t, cot_note = _resolve_cot(str(t.get("cot") or "off"), abc_t)
         items.append({
             "id": rid,
             "name": str(t.get("name") or f"{qname} #{i}")[:100],
             "status": "pending",
+            "cot_note": cot_note,
             "payload": {
                 "lyrics": lyrics[:4000], "style": style[:600],
-                "cot": t.get("cot", "off"), "abc": str(t.get("abc") or "")[:4000],
+                "cot": cot_t, "abc": abc_t,
                 "model": t.get("model", "yue2"),
                 "seed": t.get("seed"), "cfg_scale": t.get("cfg_scale"),
                 "num_inference_steps": t.get("num_inference_steps"),
@@ -1669,7 +1716,8 @@ def batch_start(payload: dict):
     msg = (f"已加入队列（排在第 {total - len(items) + 1}~{total} 位，当前任务完成后依次执行）"
            if appending else f"已开始批量任务（共 {len(items)} 首）")
     return {"ok": True, "queued": appending, "name": state.get("name") or qname,
-            "count": len(items), "total": total, "items": items, "message": msg}
+            "count": len(items), "total": total, "items": items, "message": msg,
+            "cot_note": next((it["cot_note"] for it in items if it.get("cot_note")), "")}
 
 
 @router.get("/batch/status")

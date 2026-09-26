@@ -27,7 +27,7 @@ _No cloud. No queue. No subscription. 100% offline._
 
 | | Feature | Description |
 |---|---|---|
-| 🎼 | **AI Songwriting** | Style + lyrics → full vocal song (auto verse/chorus arrangement); edit melodies via ABC notation |
+| 🎼 | **AI Songwriting** | Style + lyrics → full vocal song (auto verse/chorus arrangement); paste an ABC score and it sings *your* score (melody-only → `melody`, chords → `full`) |
 | 🤖 | **AI lyric & style assistant** | Built-in DeepSeek-powered helper: describe your idea in plain words, get structured lyrics and style tags |
 | 🎤 | **Cover / re-write / re-style** | Drop in a reference clip → lyrics auto-recognized → sing it again with new words or a new style |
 | 🗣 | **Voice conversion** | RVC voice conversion: turn your voice into any singer; exports include converted vocal / original vocal / instrumental / full song |
@@ -84,6 +84,8 @@ Browser ── 3081 integrated workbench (dsh-plugin)
 **No NVIDIA GPU?** It runs CPU-only automatically. Expect slower generation (several minutes per song).
 
 **Commercial use?** YuE2 model weights are CC BY-NC 4.0 (non-commercial); songs you create are yours to use per YuE2's license. This workbench's own code follows the repo license.
+
+**I pasted an ABC score but it sang something else?** A score in the box now always means "sing my score" — you no longer have to line the 规划 CoT dropdown up by hand. Before submitting, the workbench checks the score's shape: a melody-only score goes through `melody` (free accompaniment), a chord-annotated score goes through `full` (melody + harmony), and `off` is corrected back onto a score-consuming route (`off` + score is a hard 400 from the engine). An external ABC bypasses the symbolic planner, but `melody` and `full` are different native instructions, so feeding a melody-only score to `full` is a mismatch and the conditioning drifts. The 🎸 extract-from-reference button yields a melody-only score, so it generates via `melody`. The UI and the history entry both record the route actually used. Note: a score anchors the melodic line only — it does not keep the original singer's timbre or arrangement.
 
 ## 🙏 Credits
 

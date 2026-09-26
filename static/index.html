@@ -592,7 +592,7 @@ We will sing beyond the night</textarea>
           <div><label for="bpm">BPM（留空用 Style 默认）</label><input id="bpm" type="number" value="" min="40" max="220" placeholder="如 88" /></div>
         </div>
 
-        <label for="abc">ABC 乐谱（可选，cot=melody/full 时生效；可从参考歌曲自动提取）</label>
+        <label for="abc">ABC 乐谱（填了=默认按这份谱生成；留空=由模型自己规划乐谱）</label>
         <textarea id="abc" class="abc" placeholder="X:1&#10;M:4/4&#10;K:C&#10;V:Vocal&#10;C2 D2 E2 F2 |"></textarea>
         <div class="hint-xs" id="abcAnalysis" style="margin-top:6px;"></div>
         <div class="actions" style="margin-top:6px;">
@@ -628,6 +628,7 @@ We will sing beyond the night</textarea>
           <b>full</b> 先写带和弦 ABC 再合成，适合改编<br>
           <b>melody</b> 只规划旋律，伴奏自由，适合翻唱<br>
           <b>off</b> 跳过符号规划，速度更快<br>
+          <b>有乐谱</b> 时自动按谱：旋律谱走 melody、带和弦走 full，off 会被纠正（口径不符谱面条件会走偏）<br>
           <b>6GB 显存</b> 推荐 Q4_K_M；失败时减小 Steps 或缩短歌词
         </div>
       </div>
@@ -1666,10 +1667,13 @@ $("go").onclick = async () => {
   $("status").textContent = genCount > 1 ? `已提交 ${genCount} 首连发任务到服务端…` : "任务已提交到服务端…";
   try {
     const r = await fetch("/api/generate/start", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+    const j = await r.json().catch(() => ({}));
     if (!r.ok) {
-      const d = await r.text();
-      throw new Error(r.status === 409 ? "已有生成任务在进行中（刷新页面可恢复进度）" : d.slice(0, 300));
+      const d = j.detail || JSON.stringify(j);
+      throw new Error(r.status === 409 ? "已有生成任务在进行中（刷新页面可恢复进度）" : String(d).slice(0, 300));
     }
+    if (j.cot_note) toast(j.cot_note, "ok");
+    else if (payload.abc.trim()) toast("已按你填写的乐谱生成（cot=" + j.cot + "）", "ok");
     pollJob();
   } catch (err) {
     $("status").className = "status err"; $("status").textContent = "提交失败：" + err.message;
@@ -1704,6 +1708,7 @@ $("queue").onclick = async () => {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.detail || "HTTP " + r.status);
     toast(j.message || "已加入队列", "ok");
+    if (j.cot_note) toast(j.cot_note, "ok");
     $("status").className = "status ok";
     $("status").textContent = j.message || "已加入队列，将在后台依次生成（可在历史页查看进度）。";
   } catch (err) {
@@ -1713,16 +1718,21 @@ $("queue").onclick = async () => {
 
 // ---------- ABC 乐谱分析（调性/拍号/BPM/曲式/音域摘要） ----------
 let abcAnalyzeTimer = null;
+let lastAbcAnalysis = null;
 function renderAbcAnalysis(a) {
   const el = $("abcAnalysis");
   if (!el) return;
-  if (!a || (!a.key && !a.meter && !a.bpm && !(a.sections || []).length)) { el.textContent = ""; return; }
+  lastAbcAnalysis = a || null;
+  if (!a || (!a.key && !a.meter && !a.bpm && !(a.sections || []).length && !a.cot_suggested)) { el.textContent = ""; return; }
   const parts = [];
   if (a.key) parts.push("🎼 调性 " + a.key);
   if (a.meter) parts.push("拍号 " + a.meter);
   if (a.bpm) parts.push(a.bpm + " BPM");
   if (a.range) parts.push("音域 " + a.range);
   if ((a.sections || []).length) parts.push("曲式 " + a.sections.join(" → "));
+  if (a.cot_suggested) parts.push(a.cot_suggested === "full" ? "带和弦谱 → 按 full 生成" : "旋律谱 → 按 melody 生成");
+  const cotSel = $("cot") ? $("cot").value : "";
+  if (cotSel === "off") parts.push("（CoT 选了 off，提交时会自动改回按谱生成）");
   el.textContent = "✓ " + parts.join(" · ");
 }
 function analyzeAbcDebounced() {
@@ -1744,6 +1754,8 @@ function analyzeAbcDebounced() {
   }, 500);
 }
 $("abc").addEventListener("input", analyzeAbcDebounced);
+// 切换 CoT 时即时重算提示（不重新请求分析）：让用户当场看到"会不会按我的谱走"
+$("cot").addEventListener("change", () => { if ($("abc").value.trim() && lastAbcAnalysis) renderAbcAnalysis(lastAbcAnalysis); });
 
 // ---------- 从参考歌曲提取乐谱（SheetSage2：音频 → ABC，填入创作页直接改词翻唱） ----------
 // 异步任务模式：提交后立即拿 job_id，轮询取结果（真实歌曲转谱常超 1 分钟，
