@@ -1,8 +1,26 @@
+import sys
+from pathlib import Path
+
+# src/ 可能尚未在 sys.path 上（如编译网关先于 app.py 导入本模块），这里兜底插入
+_src = str(Path(__file__).resolve().parent / "src")
+if _src not in sys.path:
+    sys.path.insert(0, _src)
+from ports import get as _port  # noqa: E402
+
+
 class Settings:
     app_host: str = "127.0.0.1"  # 仅本机使用：不暴露到局域网（如需 LAN 访问改回 0.0.0.0 并配套加鉴权）
-    app_port: int = 7863
+    app_port: int = _port("gateway")
 
-    audiocpp_base_url: str = "http://127.0.0.1:8080"
+    # dsh 工作台（UI 宿主）端口：UI 归属 3081，网关只在 gateway_serve_ui=False 时
+    # 退化成纯 API；此处保留端口供网关侧拼 3081 链接与看门狗共用。
+    dsh_port: int = _port("dsh")
+    # True：7863 的 / 仍直出页面（应急/调试入口）。False：7863 纯 API，/ 只返回
+    # 指向 3081 的引导页 —— 想彻底消除双入口就置 False。
+    # 现置 False：UI 唯一入口为 3081，7863 只暴露 /api/*。
+    gateway_serve_ui: bool = False
+
+    audiocpp_base_url: str = f"http://127.0.0.1:{_port('audiocpp')}"
     audiocpp_timeout_sec: float = 86400.0  # 24h：不限时长，生成多久等多久
     audiocpp_autostart: bool = True
     audiocpp_bin: str = "cpp/audiocpp_server.exe"

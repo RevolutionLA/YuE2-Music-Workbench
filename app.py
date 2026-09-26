@@ -47,6 +47,12 @@ import asr
 import denoise
 import lrc as lrc_mod
 
+# 强制对齐（已知歌词 → 精确时间轴）：可选依赖，缺失时自动退回 lrc_mod 旧链路
+try:
+    import lrc_align as lrc_align_mod
+except Exception:  # funasr 未安装 / 模型缺失
+    lrc_align_mod = None
+
 router = APIRouter(prefix="/api")
 app = main.app  # 复用编译网关的 FastAPI 应用
 
@@ -97,11 +103,13 @@ AUDIOCPP_BIN = ROOT / settings.audiocpp_bin
 
 # 允许前端跨域访问（本地页面与接口同源，默认即可；此处为安全兜底）。
 # 本机使用：仅放行本机来源，杜绝任意网页经 CORS 打内网接口。
+_P_GW = settings.app_port
+_P_DSH = settings.dsh_port
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://127.0.0.1:7863", "http://localhost:7863",
-        "http://127.0.0.1:3081", "http://localhost:3081",
+        f"http://127.0.0.1:{_P_GW}", f"http://localhost:{_P_GW}",
+        f"http://127.0.0.1:{_P_DSH}", f"http://localhost:{_P_DSH}",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -889,17 +897,36 @@ def _lrc_job_write(rid: str, state: dict) -> None:
 
 
 def _lrc_build_thread(rid: str) -> None:
-    """后台线程：对齐歌词与音频生成 .lrc，状态写 .lrcjob 供前端轮询。"""
+    """后台线程：对齐歌词与音频生成 .lrc，状态写 .lrcjob 供前端轮询。
+
+    主路径改为**强制对齐**（src/lrc_align.py）：歌词文本已知，只需把它压到音频上，
+    不做 ASR 识别，因此不受歌声漏识影响（实测起唱点误差中位 2.07s → 0.66s）。
+    强制对齐不可用时才退回旧的 whisper 段级匹配链路（src/lrc.py）。
+    """
     _lrc_job_write(rid, {"status": "running"})
     try:
         meta = _output_read_meta(rid)
         wav = _output_wav_path(rid)
-        if not meta or not wav.is_file() or not str(meta.get("lyrics") or "").strip():
+        lyrics = str(meta.get("lyrics") or "") if meta else ""
+        if not meta or not wav.is_file() or not lyrics.strip():
             raise RuntimeError("任务缺少音频或歌词")
-        text = lrc_mod.generate_lrc(
-            wav, meta.get("lyrics", ""), meta.get("task_name", ""))
+        text, method, diag = None, "legacy", {}
+        # 主路径：强制对齐（fa-zh 中文字级 / ctc-wav2vec2 英文词级 / vad-distribute 末级）。
+        # 全程无 ASR，比旧的 SenseVoice/whisper 识别兜底更准（歌声漏识严重）。
+        if lrc_align_mod is not None:
+            try:
+                res = lrc_align_mod.align(wav, lyrics)
+                if res.get("lrc"):
+                    text, method = res["lrc"], res.get("method", "align")
+                    diag = res.get("diagnostics") or {}
+                    if res.get("elrc"):
+                        (OUTPUT_DIR / f"{rid}.elrc").write_text(res["elrc"], encoding="utf-8")
+            except Exception as exc:  # 强制对齐彻底失败 → 旧链路兜底
+                logger.warning("强制对齐失败，退回旧链路：%s", exc)
+        if text is None:  # 强制对齐未产出（极罕见）→ 旧链路 whisper 兜底
+            text = lrc_mod.generate_lrc(wav, lyrics, meta.get("task_name", ""))
         _output_lrc_path(rid).write_text(text, encoding="utf-8")
-        _lrc_job_write(rid, {"status": "done"})
+        _lrc_job_write(rid, {"status": "done", "method": method, "diagnostics": diag})
     except HTTPException as e:
         _lrc_job_write(rid, {"status": "error", "error": str(e.detail)})
     except Exception as e:
@@ -1013,7 +1040,7 @@ def _is_vram_error(msg: str) -> bool:
 def _gen_run_once(payload: dict) -> tuple[int, str, bytes, dict]:
     """调用一次 /api/music/generate，返回 (status_code, detail, content, headers)。"""
     with httpx.Client(
-        base_url="http://127.0.0.1:7863", timeout=settings.audiocpp_timeout_sec,
+        base_url=f"http://127.0.0.1:{settings.app_port}", timeout=settings.audiocpp_timeout_sec,
         trust_env=False,
     ) as client:
         r = client.post("/api/music/generate", json=payload)
@@ -1427,7 +1454,17 @@ def generate_lrc_status(rid: str):
     rid = os.path.basename(rid)
     fp = _output_lrc_path(rid)
     if fp.is_file():
-        return {"status": "done", "lrc": fp.read_text(encoding="utf-8")}
+        out = {"status": "done", "lrc": fp.read_text(encoding="utf-8")}
+        job = _lrc_job_read(rid) or {}
+        # 附带对齐方式与诊断（方法/命中率/偏差），便于判断时间轴可信度
+        if job.get("method"):
+            out["method"] = job["method"]
+        if job.get("diagnostics"):
+            out["diagnostics"] = job["diagnostics"]
+        elrc = OUTPUT_DIR / f"{rid}.elrc"
+        if elrc.is_file():
+            out["elrc"] = elrc.read_text(encoding="utf-8")
+        return out
     job = _lrc_job_read(rid)
     if job:
         return job
@@ -3266,7 +3303,31 @@ def _orphan_cleanup_on_startup() -> None:
 
 # 孤儿清理仅在真实启动服务时执行；模块导入（如 dsh 桥子进程 import app）不得触发，
 # 否则会把正在运行的任务误判为"服务重启，任务中断"。
+_PURE_API_TIP = """<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<title>音乐工作台 · 网关</title><style>
+body{font-family:"Microsoft YaHei",system-ui,sans-serif;background:#15161a;color:#e6e6e6;
+display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+.box{max-width:520px;padding:28px 32px;background:#1d1f25;border:1px solid #2c2f38;
+border-radius:12px;line-height:1.7}
+a{color:#6ea8fe}b{color:#ffd479}code{background:#262930;padding:2px 6px;border-radius:4px}
+</style></head><body><div class="box">
+<h3>这是 API 网关，不是工作台入口</h3>
+<p>当前 <code>gateway_serve_ui=false</code>，网关已退化为纯 API 服务，不再托管页面。</p>
+<p>请打开工作台：<a href="http://127.0.0.1:{dsh}/">http://127.0.0.1:{dsh}/</a></p>
+<p style="opacity:.7;font-size:13px">若 3081 未运行，双击 <b>启动音乐工作台.bat</b>；
+想让网关恢复直出页面，把 <code>settings.py</code> 的 <code>gateway_serve_ui</code> 改回 <code>True</code>。</p>
+</div></body></html>"""
+
+
 def _serve_index():
+    # 纯 API 模式（阶段二）：网关不再托管 UI，只给一条明确的入口指引，
+    # 避免"双入口"——页面只能有一个家，就是 3081。
+    if not settings.gateway_serve_ui:
+        return Response(
+            content=_PURE_API_TIP.replace("{dsh}", str(settings.dsh_port)).encode("utf-8"),
+            media_type="text/html; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
     idx = ROOT / "static" / "index.html"
     if idx.is_file():
         content = idx.read_bytes()

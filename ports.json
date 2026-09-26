@@ -1,0 +1,6 @@
+{
+  "_readme": "音乐工作台端口唯一真源。Python（settings.py / app.py / watchdog.py）与 Node（dsh-plugin）都从这里读；改端口只改这一处，重启生效。缺失或写坏时自动回退 7863/3081/8080。也可用环境变量临时覆盖：YUE2_GATEWAY_PORT / YUE2_DSH_PORT / YUE2_AUDIOCPP_PORT。",
+  "gateway": 7863,
+  "dsh": 3081,
+  "audiocpp": 8080
+}

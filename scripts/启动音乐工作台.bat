@@ -8,11 +8,18 @@ echo ================================================
 echo   音乐工作台 一键启动
 echo ================================================
 
+rem ---- 端口：唯一真源 ports.json（与 settings.py / watchdog.py / dsh 插件同源）----
+set "GATEWAY_PORT=7863"
+set "DSH_PORT=3081"
+for /f "usebackq tokens=*" %%p in (`powershell -NoProfile -Command "try{$j=Get-Content '%cd%\ports.json' -Raw | ConvertFrom-Json; '{0} {1}' -f $(if($j.gateway){$j.gateway}else{'7863'}),$(if($j.dsh){$j.dsh}else{'3081'})}catch{'7863 3081'}" 2^>nul`) do (
+  for /f "tokens=1,2" %%a in ("%%p") do (set "GATEWAY_PORT=%%a" & set "DSH_PORT=%%b")
+)
+
 set GATEWAY_UP=0
 set DSH_UP=0
 rem findstr /R ":PORT " 行尾精确匹配，避免 :7863 误命中 :78630/:17863
-netstat -ano | findstr /R /C:":7863 .*LISTENING" >nul && set GATEWAY_UP=1
-netstat -ano | findstr /R /C:":3081 .*LISTENING" >nul && set DSH_UP=1
+netstat -ano | findstr /R /C:":%GATEWAY_PORT% .*LISTENING" >nul && set GATEWAY_UP=1
+netstat -ano | findstr /R /C:":%DSH_PORT% .*LISTENING" >nul && set DSH_UP=1
 
 set GRADIO_TEMP_DIR=%cd%\tmp\
 set PYTHON_PATH=%cd%\py312\
@@ -49,7 +56,7 @@ if errorlevel 1 (
 )
 
 if "%GATEWAY_UP%"=="1" goto watchdog
-echo [1/3] 启动网关 :7863（WMI 无窗口启动）...
+echo [1/3] 启动网关 :%GATEWAY_PORT%（WMI 无窗口启动）...
 powershell -NoProfile -Command "$sw=([wmiclass]'Win32_ProcessStartup').CreateInstance(); $sw.ShowWindow=0; $p=([wmiclass]'Win32_Process').Create('%cd%\py312\python.exe -s %cd%\app.py','%cd%',$sw); if($p.ReturnValue -ne 0){exit 1}"
 
 :watchdog
@@ -71,15 +78,15 @@ goto dsh2
 echo [2/3] 看门狗已在运行，跳过
 :dsh2
 if "%DSH_UP%"=="1" goto wait
-echo [3/3] 启动 dsh AI 工作台 :3081 ...
-if not exist "dsh-plugin\_dsh_home" mkdir "dsh-plugin\_dsh_home"
-powershell -NoProfile -Command "$env:DSH_HOME='%cd%\dsh-plugin\_dsh_home'; $env:DSH_NO_BROWSER='1'; $env:DEEPSEEK_API_KEY='%DEEPSEEK_API_KEY%'; Start-Process -WindowStyle Hidden node -WorkingDirectory '%cd%\dsh-plugin' -ArgumentList 'node_modules\@deepseek-ai\dsh\lib\bin.js','web','--port','3081','--no-open' -RedirectStandardOutput '%cd%\dsh-plugin\_dsh_web.log' -RedirectStandardError '%cd%\dsh-plugin\_dsh_err.log'"
+echo [3/3] 启动 dsh AI 工作台 :%DSH_PORT% ...
+rem 启动参数集中在 scripts\启动dsh工作台.bat（看门狗重启 3081 时复用同一份）
+call "%~dp0启动dsh工作台.bat"
 
 :wait
 set /a TRIES=0
 :waitloop
 ping -n 3 127.0.0.1 >nul
-"%SystemRoot%\System32\curl.exe" -s --noproxy "*" -m 3 http://127.0.0.1:7863/api/health >nul 2>&1
+"%SystemRoot%\System32\curl.exe" -s --noproxy "*" -m 3 http://127.0.0.1:%GATEWAY_PORT%/api/health >nul 2>&1
 if not errorlevel 1 goto ready
 set /a TRIES+=1
 if %TRIES% geq 20 goto notready
@@ -88,7 +95,7 @@ goto waitloop
 
 :notready
 echo.
-echo   [警告] 网关 7863 未就绪（启动可能失败），请查看 runtime\data\logs\ 与 _gateway 日志
+echo   [警告] 网关 %GATEWAY_PORT% 未就绪（启动可能失败），请查看 runtime\data\logs\ 与 _gateway 日志
 echo   常见原因：显存不足、模型缺失、端口被占用
 goto dshwait
 
@@ -96,7 +103,7 @@ goto dshwait
 echo.
 echo ================================================
 echo   全部就绪！
-echo   工作台:  http://127.0.0.1:7863
+echo   工作台:  http://127.0.0.1:%DSH_PORT%
 echo   AI 助手: 页面内 "AI 工作台" 页签
 echo ================================================
 rem 等待 dsh web 就绪后，打开带 token 的 3081 地址（无 token 则回退 7863）
@@ -104,7 +111,7 @@ set /a DSH_TRIES=0
 :dshwait
 ping -n 3 127.0.0.1 >nul
 set "DSH_URL="
-for /f "tokens=*" %%u in ('powershell -NoProfile -Command "if(Test-Path 'dsh-plugin\_dsh_web.log'){Select-String -Path 'dsh-plugin\_dsh_web.log' -Pattern 'http://127\.0\.0\.1:3081/\?token=\S+' | ForEach-Object { $_.Matches[0].Value } | Select-Object -Last 1}" 2^>nul') do set "DSH_URL=%%u"
+for /f "tokens=*" %%u in ('powershell -NoProfile -Command "if(Test-Path 'dsh-plugin\_dsh_web.log'){Select-String -Path 'dsh-plugin\_dsh_web.log' -Pattern 'http://127\.0\.0\.1:%DSH_PORT%/\?token=\S+' | ForEach-Object { $_.Matches[0].Value } | Select-Object -Last 1}" 2^>nul') do set "DSH_URL=%%u"
 if defined DSH_URL goto open
 set /a DSH_TRIES+=1
 if %DSH_TRIES% lss 15 goto dshwait

@@ -1,4 +1,8 @@
-"""LRC 歌词生成：用 faster-whisper 词级时间戳把用户歌词对齐到已生成的音频。
+"""LRC 歌词生成（legacy whisper 兜底）：
+
+仅当 src/lrc_align.py 的强制对齐（fa-zh / ctc-wav2vec2 / vad-distribute）完全失败时，
+由 app.py 回退调用。ASR 在歌声上漏识严重（转音/和声/旋律），时间轴精度远低于
+强制对齐，因此仅作 last-resort，不建议直接依赖。SenseVoice 分支已移除。
 
 产物为标准 .lrc（每行 [mm:ss.xx]歌词），可直接导入音乐 App 做滚动歌词。
 """
@@ -46,7 +50,8 @@ def _load_model():
         except ImportError as exc:
             raise HTTPException(status_code=503, detail="faster-whisper 未安装") from exc
         d = _snapshot_dir()
-        device = "cuda" if settings.sensevoice_device.startswith("cuda") else "cpu"
+        # 末级兜底链路：强制走 CPU int8，避免与常驻的 audiocpp 推理引擎抢显存
+        device = "cpu"
         logger.info("loading faster-whisper from %s device=%s", d, device)
         try:
             _model = WhisperModel(
@@ -115,63 +120,9 @@ def _fmt_ts(sec: float) -> str:
 
 
 
-# ---- SenseVoice + FSMN-VAD 对齐（v3 主路径；whisper 为兜底）----
-# SenseVoiceSmall 中文识别远强于 whisper（漏识少、不吐繁体、抗歌声）；
-# fsmn-vad 输出真实人声活动区间，是比 whisper 段落更准的时间锚点。
-# 两者都在本地 modelscope 缓存（xiaozhi-server），离线可用。
-_SV_MODELS: list = []  # [asr_model, vad_model]
-
-
-def _sv_load():
-    global _SV_MODELS
-    if _SV_MODELS:
-        return _SV_MODELS
-    from funasr import AutoModel
-    hub = Path.home() / ".cache" / "modelscope" / "hub" / "iic"
-    asr_dir = hub / "SenseVoiceSmall"
-    vad_dir = hub / "speech_fsmn_vad_zh-cn-16k-common-pytorch"
-    asr = AutoModel(model=str(asr_dir), vad_model=None, disable_update=True)
-    vad = AutoModel(model=str(vad_dir), disable_update=True) if vad_dir.exists() else None
-    _SV_MODELS = [asr, vad]
-    return _SV_MODELS
-
-
-def _transcribe_segments_sv(wav_path: Path) -> list[dict]:
-    """SenseVoice(文本) + fsmn-vad(人声区间) -> [{start, end, text}]。
-
-    VAD 给出真实人声起止；SenseVoice 对每个 VAD 段转写文本。
-    段与段之间的静默/间奏天然留白，正是歌词时间轴需要的。
-    """
-    asr, vad = _sv_load()
-    import numpy as np
-    import soundfile as sf
-    data, sr = sf.read(str(wav_path), dtype="float32")
-    if data.ndim > 1:
-        data = data.mean(axis=1)
-    if sr != 16000:
-        import librosa
-        data = librosa.resample(data, orig_sr=sr, target_sr=16000)
-    if vad is not None:
-        chunks = vad.generate(input=data, cache={}, chunk_size=200, max_single_segment_time=30000)
-        ivs = [[c[0], c[1]] for c in chunks if isinstance(c, (list, tuple)) and len(c) >= 2]
-    else:
-        ivs = []
-    if not ivs:  # VAD 无输出：整轨转写兜底
-        ivs = [[0, len(data) - 1]]
-    segs: list[dict] = []
-    for a, b in ivs:
-        piece = data[a: b + 1]
-        if len(piece) < 800:  # <50ms 的碎片段跳过
-            continue
-        res = asr.generate(input=piece, cache={}, language="zh", use_itn=False)
-        text = ""
-        for r in (res if isinstance(res, list) else [res]):
-            text += str(r.get("text", ""))
-        text = re.sub(r"<\|[^|>]{1,12}\|>", "", text).strip(" |<>")
-        if text:
-            segs.append({"start": a / 16000.0, "end": b / 16000.0, "text": text, "words": []})
-    return segs
-
+# ---- whisper 段级兜底（legacy；仅当强制对齐完全失败时由 app.py 调用）----
+# 注：ASR 在歌声上漏识严重（转音/和声/旋律导致），时间轴精度远低于强制对齐，
+# 仅作为 last-resort 兜底，不建议直接依赖。SenseVoice 分支已移除。
 def _transcribe_segments(wav_path: Path) -> list[dict]:
     """返回 whisper 段级列表 [{start, end, text}]（按 VAD 开→关两遍尝试）。
 
@@ -209,14 +160,8 @@ def generate_lrc(wav_path: Path, lyrics: str, title: str = "") -> str:
     4. 未命中行在前后锚点之间按剩余字数比例插值；无后锚点时顺延 +2.5s/行，
        全程钳制在 [首锚, 末识别时间] 内。
     """
-    try:
-        segs = _transcribe_segments_sv(wav_path)  # SenseVoice+VAD 主路径
-    except Exception:
-        segs = []
-    # 质量校验：fsmn-vad 在 numpy 输入下偶发把整曲并成 1 段（锚点全毁），
-    # 段数过少视为无效，回退 whisper 段级（其锚点实测 verse/chorus 精确）
-    if len(segs) < 3:
-        segs = _transcribe_segments(wav_path)  # whisper 兜底
+    # whisper 段级兜底（legacy）：强制对齐失败时才走到这里
+    segs = _transcribe_segments(wav_path)
     if not segs:
         raise HTTPException(status_code=500, detail="未能从音频识别出任何人声，无法生成 LRC")
     all_lines = [ln.strip() for ln in str(lyrics or "").splitlines() if ln.strip()]
