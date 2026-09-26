@@ -51,6 +51,12 @@ HEALTH_TIMEOUT = 15     # 单次探测超时（秒）
 FAIL_THRESHOLD = 5      # 连续失败多少次判定假死
 DEEP_PROBE_TIMEOUT = 90  # 达到阈值后、击杀前的最后一次确认超时；答了就是"慢"不是"死"
 RESTART_COOLDOWN = 30   # 重启后的最短稳定观察期（秒），期间不计失败
+# 启动即死熔断（评审 P1-3）：配置错误（如开了 YUE2_ALLOW_LAN 却没给 hosts）会让
+# python -s app.py 在绑定端口之前就抛 RuntimeError。常规"连败→深探→击杀→重启"约
+# 140 秒空转一轮，永远救不活还刷满日志。重启后 EARLY_DEATH_WINDOW 秒内退出计一次，
+# 连续 EARLY_DEATH_LIMIT 次直接放弃自动重启，把问题留给人看日志。
+EARLY_DEATH_WINDOW = 60
+EARLY_DEATH_LIMIT = 3
 # 工作台是唯一 UI 入口：网关健康但 3081 从未出现过时主动拉起一次。
 # 只尝试一次，失败即放弃（避免把用户的"故意不开工作台"理解成故障并反复刷进程）。
 DSH_AUTOSTART = True
@@ -104,12 +110,12 @@ def _spawn_log(name: str):
         return None
 
 
-def spawn_gateway() -> None:
+def spawn_gateway():
     # stdout/stderr 曾经是 DEVNULL：看门狗每次自愈重启，网关这一生的痕迹就全没了
     # （_gateway.log 停在 09-20，之后再无任何网关输出）。改为落盘。
     out, err = _spawn_log("gateway.out"), _spawn_log("gateway.err")
     try:
-        subprocess.Popen(
+        return subprocess.Popen(
             [str(PY), "-s", str(APP)],
             cwd=str(ROOT),
             creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
@@ -123,11 +129,13 @@ def spawn_gateway() -> None:
                 fh.close()
 
 
-def spawn_dsh() -> None:
+def spawn_dsh():
     """拉起 dsh 工作台。优先走 bat（与主启动脚本同一份参数：DSH_HOME/端口/
-    DEEPSEEK_API_KEY 都在这里面），bat 缺失时回退直接拉 node。"""
+    DEEPSEEK_API_KEY 都在这里面），bat 缺失时回退直接拉 node。
+    返回 Popen 句柄仅供"是否还在"观察——bat 路径里 cmd 干完活会先退，
+    其退出时间不代表服务状态，所以 dsh 不纳入启动即死计数。"""
     if DSH_BAT.is_file():
-        subprocess.Popen(
+        return subprocess.Popen(
             ["cmd", "/c", str(DSH_BAT)],
             cwd=str(ROOT),
             creationflags=subprocess.CREATE_NO_WINDOW,
@@ -135,9 +143,8 @@ def spawn_dsh() -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        return
     try:
-        subprocess.Popen(
+        return subprocess.Popen(
             ["node", "node_modules/@deepseek-ai/dsh/lib/bin.js",
              "web", "--port", str(DSH_PORT), "--no-open"],
             cwd=str(ROOT / "dsh-plugin"),
@@ -148,7 +155,7 @@ def spawn_dsh() -> None:
             stderr=subprocess.DEVNULL,
         )
     except Exception:
-        pass
+        return None
 
 
 def log(msg: str) -> None:
@@ -167,6 +174,43 @@ def kill_pid(pid: int) -> None:
     subprocess.run(["taskkill", "/PID", str(pid), "/F", "/T"],
                    capture_output=True, timeout=15,
                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def _respawn(svc: dict) -> bool:
+    """统一的重启入口：记录子进程句柄供"启动即死"观察；熔熔断后不再空转。
+    返回是否真的拉起了——调用方据此决定能不能说"已重新拉起"（fb24917 原则：
+    自愈文案不许说谎）。"""
+    if svc["given_up"]:
+        log(f"{svc['name']} 已熔断（启动即死连击），跳过本轮自动重启；"
+            "请查 runtime/data/logs 下对应 err 日志修好配置后，重启看门狗或启动脚本")
+        return False
+    svc["proc"] = svc["respawn"]()
+    svc["proc_start"] = time.time()
+    return True
+
+
+def _reap_early_death(svc: dict) -> None:
+    """观察自己拉起的子进程：刚拉起就在短窗口内退出=启动即死（配置错、依赖缺失），
+    与"跑一阵后假死"是两种病，后者才走连败→深探→击杀流程。只有 track 的服务
+    （网关）计数——dsh 经 bat 拉起时 cmd 先退不代表服务死了。"""
+    proc = svc["proc"]
+    if proc is None or proc.poll() is None:
+        return
+    life = time.time() - svc["proc_start"]
+    svc["proc"] = None
+    if not svc["track"]:
+        return
+    if life >= EARLY_DEATH_WINDOW:
+        svc["early_deaths"] = 0
+        return
+    svc["early_deaths"] += 1
+    log(f"{svc['name']} 刚被拉起 {life:.0f}s 就退出了（{svc['early_deaths']}/{EARLY_DEATH_LIMIT}），"
+        "判定为启动即死而非假死")
+    if svc["early_deaths"] >= EARLY_DEATH_LIMIT:
+        svc["given_up"] = True
+        log(f"{svc['name']} 连续 {EARLY_DEATH_LIMIT} 次启动即死，看门狗不再自动重启（避免空转刷日志）。"
+            "常见原因是导入期配置校验失败——查 runtime/data/logs/gateway.err.log，"
+            "按报错改掉环境变量后重新启动")
 
 
 def main() -> None:
@@ -199,6 +243,8 @@ def main() -> None:
             "seen": False,
             "cooldown": 0.0,
             "tried_autostart": True,  # 网关无需"首次拉起"判断
+            "proc": None, "proc_start": 0.0,
+            "early_deaths": 0, "given_up": False, "track": True,
         },
         {
             "name": f"工作台 :{DSH_PORT}",
@@ -210,6 +256,8 @@ def main() -> None:
             "seen": False,
             "cooldown": 0.0,
             "tried_autostart": False,
+            "proc": None, "proc_start": 0.0,
+            "early_deaths": 0, "given_up": False, "track": False,
         },
     ]
 
@@ -234,12 +282,16 @@ def main() -> None:
                 f"纳入假死监控，按常规连败→深探→击杀流程处理")
         else:
             log(f"网关 :{GW_PORT} 无人监听，看门狗主动拉起")
-            gw["respawn"]()
+            _respawn(gw)
             gw["cooldown"] = time.time() + RESTART_COOLDOWN
 
     healthy_rounds = 0
     while True:
         time.sleep(CHECK_INTERVAL)
+        # 先看有没有"刚拉起就死"的孩子，再谈探测——这类进程根本没上过端口，
+        # 走探测路径要 ~140 秒才转一圈，只会空转刷日志。
+        for svc in services:
+            _reap_early_death(svc)
 
         # 每轮先探网关，作为"工作台要不要主动拉起"的前置条件
         gw_alive = probe(services[0]["health"])
@@ -256,7 +308,7 @@ def main() -> None:
                 elif healthy_rounds >= 2:
                     svc["tried_autostart"] = True
                     log(f"{svc['name']} 从未响应且网关健康，尝试主动拉起一次")
-                    svc["respawn"]()
+                    _respawn(svc)
                     svc["cooldown"] = time.time() + RESTART_COOLDOWN
                 continue
 
@@ -293,10 +345,10 @@ def main() -> None:
                 kill_pid(pid)
                 log(f"已击杀假死进程 PID {pid}")
             time.sleep(2)
-            svc["respawn"]()
-            log(f"{svc['name']} 已重新拉起，进入 {RESTART_COOLDOWN}s 稳定观察期")
             svc["fails"] = 0
-            svc["cooldown"] = time.time() + RESTART_COOLDOWN
+            if _respawn(svc):
+                log(f"{svc['name']} 已重新拉起，进入 {RESTART_COOLDOWN}s 稳定观察期")
+                svc["cooldown"] = time.time() + RESTART_COOLDOWN
 
 
 def _current_pid() -> int:

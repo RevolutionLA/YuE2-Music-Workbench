@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import time
+import time
 import types
 import unittest
 from pathlib import Path
@@ -367,6 +369,30 @@ class TestLocalGuard(Sandbox):
         finally:
             app.LAN_MODE, app.LAN_HOSTS = saved
 
+    def test_lan_mode_works_through_dsh_proxy(self):  # 评审 P0：真实链路 Host 被代理改写
+        """上一用例把 base_url 设成 192.168.1.7:7863 是"直连网关"的假路径。
+        真实路径是 dsh(ui-panel.mjs proxy())强制 host:127.0.0.1:<gw> 转发、
+        原样带浏览器 Origin(:3081)。这里按代理真实发出的请求头复现。"""
+        client = TestClient(app.app, base_url="http://192.168.1.7:7863")
+        saved = (app.LAN_MODE, app.LAN_HOSTS)
+        app.LAN_MODE, app.LAN_HOSTS = True, {"192.168.1.7"}
+        proxy_host = {"host": f"127.0.0.1:{app.settings.app_port}"}
+        ui_origin = "http://192.168.1.7:3081"
+        try:
+            # 代理内部跳变：回环 Host 不能再按白名单拒，否则整个网关经代理不可达
+            self.assertEqual(client.get("/api/batch/status", headers=proxy_host).status_code, 200)
+            # UI 挂在 dsh 端口，写请求 Origin 是 :3081 —— 必须过守卫（405=到了路由层）
+            self.assertEqual(client.post("/api/batch/status",
+                                         headers={**proxy_host, "origin": ui_origin}).status_code, 405)
+            # 放行回环 Host ≠ 不设防：借道代理、Origin 不在白名单仍要被拒
+            self.assertEqual(client.post("/api/batch/status",
+                                         headers={**proxy_host, "origin": "http://evil.example:3081"}).status_code, 403)
+            # 借道代理也换不来别的端口上的服务：同源判定仍是"白名单主机+白名单端口"
+            self.assertEqual(client.post("/api/batch/status",
+                                         headers={**proxy_host, "origin": "http://192.168.1.7:3999"}).status_code, 403)
+        finally:
+            app.LAN_MODE, app.LAN_HOSTS = saved
+
 
 class TestLanBind(unittest.TestCase):
     """蓝军 Y1：把 app_host 改成 0.0.0.0 却"以为开放了"（实际 Host 检查全 403）比启动即失败更难查。"""
@@ -675,6 +701,80 @@ class TestChordProseGuard(Sandbox):
 
     def test_abc_direction_marker_is_not_a_chord(self):
         self.assertFalse(app._abc_has_chords('X:1\nK:G\n|: C,2 D,2 :| "D.C."\n'))
+
+
+class TestWatchdogEarlyDeath(unittest.TestCase):
+    """评审 P1-3：配置错（开了 YUE2_ALLOW_LAN 却没给 hosts）让 `python -s app.py` 在
+    绑定端口之前就抛 RuntimeError。看门狗常规路径要 ~140s 才转一圈，会把日志刷满
+    却永远救不活——"启动即死"和"跑一阵后假死"是两种病，必须分开处理。"""
+
+    import watchdog as _wd
+
+    def setUp(self):
+        self.wd = self._wd
+        self.msgs = []
+        self._saved_log = self.wd.log
+        self.wd.log = lambda m: self.msgs.append(m)
+
+    def tearDown(self):
+        self.wd.log = self._saved_log
+
+    class _Proc:
+        def __init__(self, rc):
+            self._rc = rc
+
+        def poll(self):
+            return self._rc
+
+    def _new(self, track=True):
+        spawns = []
+        svc = {"name": "网关 :7863", "track": track, "proc": None, "proc_start": 0.0,
+               "early_deaths": 0, "given_up": False,
+               "respawn": lambda: (spawns.append(1), self._Proc(None))[1]}
+        svc["_spawns"] = spawns
+        return svc
+
+    def test_repeated_early_death_trips_the_breaker(self):
+        svc = self._new()
+        for _ in range(self.wd.EARLY_DEATH_LIMIT):
+            self.assertTrue(self.wd._respawn(svc))
+            svc["proc"] = self._Proc(1)                    # 秒退
+            svc["proc_start"] = time.time() - 5            # 窗口内
+            self.wd._reap_early_death(svc)
+        self.assertTrue(svc["given_up"])
+        spawned = len(svc["_spawns"])
+        self.assertFalse(self.wd._respawn(svc))
+        self.assertEqual(svc["_spawns"], [1] * spawned, "熔断后不能再拉起一次")
+        self.assertTrue(any("不再自动重启" in m for m in self.msgs))
+
+    def test_long_lived_child_is_not_an_early_death(self):
+        """跑满窗口后才死的是"假死"，归连败→深探→击杀管，不该被熔断计数吃掉。"""
+        svc = self._new()
+        self.wd._respawn(svc)
+        svc["proc"] = self._Proc(1)
+        svc["proc_start"] = time.time() - self.wd.EARLY_DEATH_WINDOW - 1
+        self.wd._reap_early_death(svc)
+        self.assertEqual(svc["early_deaths"], 0)
+        self.assertFalse(svc["given_up"])
+
+    def test_dsh_via_bat_is_not_counted(self):
+        """bat 路径里 cmd 转完参数就退出，其退出时间不代表服务死了——不能计入。"""
+        svc = self._new(track=False)
+        self.wd._respawn(svc)
+        svc["proc"] = self._Proc(0)
+        svc["proc_start"] = time.time()
+        self.wd._reap_early_death(svc)
+        self.assertEqual(svc["early_deaths"], 0)
+        self.assertFalse(svc["given_up"])
+
+    def test_respawn_reports_truth(self):
+        """自愈文案不许说谎（fb24917 同一条原则）：只有真拉起了才返回 True。"""
+        svc = self._new()
+        self.assertTrue(self.wd._respawn(svc))
+        self.assertEqual(len(svc["_spawns"]), 1)
+        svc["given_up"] = True
+        self.assertFalse(self.wd._respawn(svc))
+        self.assertEqual(len(svc["_spawns"]), 1)
 
 
 if __name__ == "__main__":

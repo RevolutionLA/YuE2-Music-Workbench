@@ -104,18 +104,9 @@ AUDIOCPP_BIN = ROOT / settings.audiocpp_bin
 
 # 允许前端跨域访问（本地页面与接口同源，默认即可；此处为安全兜底）。
 # 本机使用：仅放行本机来源，杜绝任意网页经 CORS 打内网接口。
+# 真正的 add_middleware 在下方 LAN 解析之后——allow_origins 需要 LAN_HOSTS。
 _P_GW = settings.app_port
 _P_DSH = settings.dsh_port
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        f"http://127.0.0.1:{_P_GW}", f"http://localhost:{_P_GW}",
-        f"http://127.0.0.1:{_P_DSH}", f"http://localhost:{_P_DSH}",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 # --------------------------------------------------------------------------- #
@@ -202,6 +193,32 @@ if LAN_MODE:
           f"只认主机名 {sorted(LAN_HOSTS)}；同网段设备均可调用接口（无鉴权），"
           "开 LAN 请同时假定 stderr 原文里的绝对路径/账号名会被同网段看到（Y2），"
           "并务必在前面加反代与鉴权，勿暴露公网", flush=True)
+    # 评审复查补充：dsh 代理硬编码连 127.0.0.1:<gw>（ui-panel.mjs LAB_HOST）。
+    # 绑具体 LAN IP 时回环上没人监听，本机工作台 ECONNREFUSED——HTTP 守卫修得
+    # 再对也到不了那一层。这是 TCP 层的坑，只能在启动时说破。
+    if (str(settings.app_host).strip().lower() not in ("0.0.0.0", "::")):
+        print(f"[guard] ⚠ LAN 模式下 app_host={settings.app_host!r} 是具体地址：本机 dsh 工作台的"
+              f"内部代理只会连 127.0.0.1:{_P_GW}，将直接 ECONNREFUSED。"
+              "请把 settings.app_host 改为 0.0.0.0（同时监听回环与局域网），"
+              "除非你确定只从其它设备直连网关端口、不用本机工作台", flush=True)
+
+# CORS 白名单：回环两端口；开 LAN 后把 LAN_HOSTS 的两端口也纳入（评审 P1-2：
+# 有人直接开 http://<lanhost>:7863 时，只认回环的 CORS 会让响应缺 ACAO 头，
+# 页面能收但 JS 读不到，症状莫名其妙）。add_middleware 顺序保持在守卫之前，
+# 让守卫仍是最外层，403 响应不会被 CORS 层加工。
+_CORS_ORIGINS = [
+    f"http://127.0.0.1:{_P_GW}", f"http://localhost:{_P_GW}",
+    f"http://127.0.0.1:{_P_DSH}", f"http://localhost:{_P_DSH}",
+]
+if LAN_MODE:
+    _CORS_ORIGINS += [f"http://{h}:{p}" for h in sorted(LAN_HOSTS) for p in (_P_GW, _P_DSH)]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def _origin_is_loop(value: str) -> bool:
@@ -214,7 +231,11 @@ def _origin_is_loop(value: str) -> bool:
 
 
 def _origin_in_allowlist(value: str) -> bool:
-    """LAN 模式的放行判据：主机名必须在白名单里，且端口就是网关自己的端口。"""
+    """LAN 模式的放行判据：主机名必须在白名单里，且端口是网关(7863)或工作台(3081)。
+
+    dsh 工作台把页面挂在 :3081、经内部代理转发到网关，浏览器看到的同源 Origin
+    就是 http://<lanhost>:3081——只认网关端口会把 UI 的每一个写请求都 403 掉。
+    """
     if not value or value == "null":
         return False
     try:
@@ -224,14 +245,17 @@ def _origin_in_allowlist(value: str) -> bool:
     h = (u.hostname or "").lower()
     if not h or h not in LAN_HOSTS:
         return False
-    return u.port in (None, _P_GW)
+    return u.port in (None, _P_GW, _P_DSH)
 
 
 @app.middleware("http")
 async def _guard_local_only(request, call_next):
     host = request.headers.get("host", "")
     if LAN_MODE:
-        if _host_name(host) not in LAN_HOSTS:
+        # 回环 Host 必须放行：dsh 代理(ui-panel.mjs)的内部跳变恒定发出
+        # Host: 127.0.0.1:7863。外部攻击者直接打 lanhost:7863 时 Host 就是
+        # lanhost（∈白名单）；DNS 重绑定的 Host: evil.example 两条都不满足，照旧 403。
+        if _host_name(host) not in LAN_HOSTS and not _host_is_loop(host):
             return JSONResponse(status_code=403, content={"detail": "主机名不在局域网白名单内"})
     elif not _host_is_loop(host):
         return JSONResponse(status_code=403, content={"detail": "只接受面向本机回环地址的请求"})
