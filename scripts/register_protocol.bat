@@ -16,11 +16,13 @@ if not exist "%START_BAT%" (
   exit /b 1
 )
 
-rem Windows 要求协议命令带引号包裹完整路径，%%1 为占位符
-set "CMD=\"%%1\""
+rem Windows 要求协议命令带引号包裹完整路径。
+rem 这里刻意不把 URL（%1）转发给启动脚本：启动脚本从不读 %1，它只是被唤起即可。
+rem 以前写成 cmd /c ""...bat" %1"，%1 由 shell 原样替换，网页可构造
+rem yue2workbench://x"&calc.exe 这类带引号/与号的 URL 拼进命令行执行任意命令。
 reg add "HKCU\Software\Classes\yue2workbench" /ve /d "URL:YuE2 Music Workbench" /f
 reg add "HKCU\Software\Classes\yue2workbench" /v "URL Protocol" /d "" /f
-reg add "HKCU\Software\Classes\yue2workbench\shell\open\command" /ve /d "cmd /c \"\"%START_BAT%\" %%1\"" /f
+reg add "HKCU\Software\Classes\yue2workbench\shell\open\command" /ve /d "\"%START_BAT%\"" /f
 
 if %errorlevel%==0 (
   echo [成功] 协议 yue2workbench:// 已注册，指向：%START_BAT%

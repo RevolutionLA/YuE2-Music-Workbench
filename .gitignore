@@ -125,5 +125,9 @@ runtime/models/
 _boot.log
 _gateway.log
 
+# ===== 本机 AI 助手/编辑器缓存（含跨会话记忆，与项目无关，绝不入库） =====
+.atomcode/
+.workbuddy/
+
 # voices 为指向 runtime/voices 的目录联接（Windows junction），不入库
 voices/

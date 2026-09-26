@@ -16,7 +16,7 @@ I've been working on this for a while and it's finally at v1.0: **YuE2 Music Wor
 - 🎼 Style + lyrics → full vocal song (auto verse/chorus arrangement), melody editing via ABC notation
 - 🎤 AI covers: drop a reference clip → lyrics auto-recognized → re-sing with new words/style
 - 🗣 RVC voice conversion + custom voice training
-- 📝 Auto LRC synced-lyrics generation (SenseVoice + whisper dual alignment pipeline)
+- 📝 Auto synced-lyrics: **forced alignment** (known lyric text pressed onto the audio) → line-level `.lrc` + word-level `.elrc` for karaoke highlighting
 - 📦 Batch queue (queue dozens, walk away), task manager, watchdog self-healing
 - 🖥 VRAM-adaptive: GPU when it fits, CPU fallback (no NVIDIA GPU needed, just slower)
 
@@ -56,10 +56,10 @@ Hi! Big fan of YuE/YuE2. I built an end-to-end workstation around it and wanted 
 
 Key pieces that might interest this community:
 - **GGUF quantized local inference** of YuE2-3B via audio.cpp (CUDA + CPU fallback), ~2.7GB q4_k_m
-- **Full pipeline**: songwriting → AI covers (SheetSage2 lyric recognition) → RVC voice conversion → **auto .lrc synced lyrics** (SenseVoice+VAD primary, whisper segment-anchor fallback alignment)
+- **Full pipeline**: songwriting → AI covers (SenseVoice ASR transcript of the reference clip) → SheetSage2 score extraction (melody-only, or melody + chords) → RVC voice conversion → **auto synced lyrics** by forced alignment (FunASR character-level timestamps for Chinese, wav2vec2 CTC for English, anchored to VAD onsets)
 - **Production features**: batch queue with resume/retry, watchdog self-healing, VRAM-adaptive switching
 
-It's aimed at non-technical users (one-click Windows launcher) but the alignment pipeline details are in `src/lrc.py` if anyone wants to reuse it.
+It's aimed at non-technical users (one-click Windows launcher) but the alignment pipeline details are in `src/lrc_align.py` if anyone wants to reuse it.
 
 Feedback and PRs welcome — and thank you for open-sourcing YuE! 🙏
 
@@ -85,10 +85,10 @@ Feedback and PRs welcome — and thank you for open-sourcing YuE! 🙏
 - 写歌：填风格+歌词 → 完整人声歌曲（基于 YuE2 大模型，GGUF 量化推理）
 - AI 翻唱：丢一段参考音频，自动识别歌词，换词换曲风重新演绎
 - RVC 换声 + 音色制作：把自己的音色变成任意歌手
-- 歌曲生成完自动产出 LRC 滚动歌词（SenseVoice + whisper 双链路对齐），直接导入音乐 App
+- 歌曲生成完自动产出滚动歌词：走**强制对齐**（已知歌词压到音频上，中文 FunASR 字级时间戳、英文 wav2vec2 CTC，再用 VAD 起音点吸附），行级 `.lrc` + 逐字 `.elrc` 各一份，直接导入音乐 App
 - 批量队列：一次排几十首挂机；任务管理、看门狗自愈、断电续跑
 
-**技术栈**：YuE2-3B GGUF（audio.cpp）+ FastAPI 网关 + RVC + SenseVoice/whisper 对齐，Windows 一键启动，模型自动下载（约 2.7GB，支持 hf-mirror 镜像直连）。
+**技术栈**：YuE2-3B GGUF（audio.cpp）+ FastAPI 网关 + RVC + FunASR/wav2vec2 强制对齐，Windows 一键启动，模型自动下载（约 2.7GB，支持 hf-mirror 镜像直连）。
 
 **要求**：Windows x64，16G+ 内存，建议 6G+ 显存（无独显自动走 CPU，慢一些）。
 

@@ -1,0 +1,38 @@
+# 许可声明（LICENSE）
+
+本仓库是 **YuE2 音乐工作台**：围绕上游模型构建的本地推理网关、Web 工作台与音频工具链。
+分发/二次分发前请逐层核对下面的许可归属——本文件不授予任何超出下列条款的权利。
+
+## 1. 本仓库自研代码（`app.py`、`src/`、`static/`、`dsh-plugin/`、`scripts/`、`watchdog.py`、`settings.py`）
+
+Copyright (c) 2026 RevolutionLA
+
+随上游模型权重许可分发：**CC BY-NC 4.0**（署名 - 非商业性使用），
+即 https://creativecommons.org/licenses/by-nc/4.0/
+
+这与 README 中的许可徽章一致：**生成的音频与本项目代码均不可用于商业用途**，
+根因是上游 YuE2 / SheetSage2 / MERT2 权重本身即为非商用许可。
+
+## 2. 上游模型权重（不在本仓库内，运行时下载或本地放置）
+
+| 组件 | 来源 | 许可 |
+| --- | --- | --- |
+| YuE2 3B 权重与 `main.cp312-win_amd64.pyd` 所适配的推理链 | [m-a-p/YuE2](https://huggingface.co/m-a-p/YuE2-3B) | CC BY-NC 4.0 |
+| SheetSage2 / MERT2 权重（`checkpoints/model.safetensors`） | [m-a-p/MERT-v2-30s](https://huggingface.co/m-a-p/MERT-v2-30s)、[MERT-v2-FullSong](https://huggingface.co/m-a-p/MERT-v2-FullSong) | CC BY-NC 4.0，见 `checkpoints/LICENSE` |
+| GPT-SoVITS（可选的人声分离链路） | RVC-Boss/GPT-SoVITS | MIT（其分离模型权重另有许可，见上游） |
+| 第三方 Python / Node 依赖 | 各自上游 | 各自许可 |
+
+## 3. 随仓库分发的第三方资产（需重点关注）
+
+| 路径 | 性质 | 许可状态 |
+| --- | --- | --- |
+| `checkpoints/`（含 `LICENSE`、`THIRD_PARTY_NOTICES.md`） | 乐谱提取模型代码与说明 | 上游许可文件已完整保留 |
+| `checkpoints/render_assets/LICENSE.abcjs`、`LICENSE.font` | 乐谱渲染用到的 abcjs 与字体 | 上游许可文件已保留 |
+| `scripts/gtcrn.py` | 噪声抑制模型的 GTCRN 网络结构实现（vendored，**已入库**） | **文件内未保留上游出处与许可头**。出处指向 GTCRN 论文（"GTCRN: Deep Noise Suppression for Reverberant and Noisy Speech by Cascaded Temporal Convolutional Recurrent Network"）及其官方实现仓库；公开分发前必须由维护者核对并按上游条款补声明 |
+| `scripts/model_trained_on_dns3.tar` | GTCRN 权重（DNS3 训练） | **本仓库不分发**：`.gitignore` 已排除，需运行时自行放置；其许可随放置来源，clone 者不受本文件约束 |
+
+第 3 节末两行为**已知未闭环项**，本仓库如实标注，不做"应当没问题"的推定。
+
+## 4. 免责
+
+本软件按"现状"提供，不含任何明示或暗示的保证。使用者需自行确保其用途符合上述各上游组件的许可条款。

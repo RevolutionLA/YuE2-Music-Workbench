@@ -107,6 +107,17 @@ window.__ModuleLoader__.load({
     var rail = document.documentElement.className.indexOf("collapsed") >= 0
       || (document.querySelector('[class*="hHd-Xa_root"]') || {}).className
       && String(document.querySelector('[class*="hHd-Xa_root"]').className).indexOf("collapsed") >= 0;
+    // Hook 必须无条件、按固定顺序全部执行完才能提前 return：
+    // 侧栏展开/收起会翻转 rail，若在 Hook 之前 return null，React 会因
+    // 「渲染次数少于上次」直接抛 #300 把整个 footer 槽打挂（error boundary 吃掉页签导航）。
+    var vBad = react.useState(null), setVBad = vBad[1];
+    // rail 收起态不渲染卡片，也就不必每 5s 去磁盘上校验一遍模型
+    react.useEffect(function () {
+      if (!s.alive || rail) return;
+      fetch("/lab-api/models/verify").then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (j) { if (j) setVBad(j.ok ? false : (j.files || []).filter(function (f) { return !f.ok; }).length); })
+        .catch(function () {});
+    }, [s.alive, s.tick, rail]);
     // rail 收起态：状态卡直接不渲染（窄栏放不下，且用户要求隐藏；折叠按钮独占顶部）
     if (rail) return null;
     function switchMode(ev) {
@@ -124,13 +135,6 @@ window.__ModuleLoader__.load({
     var modeText = switching[0] ? "切换中…" : s.alive ? s.mode + " 模式" : "离线";
     var vramText = s.alive && s.vram ? " · 显存 " + s.vram.replace(" 空闲", "") : "";
     // 模型完整性：校验失败时状态点转红并提示（点击修复走 iframe 内创作页/侧栏修复按钮）
-    var vBad = react.useState(null), setVBad = vBad[1];
-    react.useEffect(function () {
-      if (!s.alive) return;
-      fetch("/lab-api/models/verify").then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (j) { if (j) setVBad(j.ok ? false : (j.files || []).filter(function (f) { return !f.ok; }).length); })
-        .catch(function () {});
-    }, [s.alive, s.tick]);
     var badText = vBad[0] ? " · 模型缺件 " + vBad[0] + " 项" : "";
     return react.createElement("button", {
       onClick: switchMode, title: "点击切换 GPU/CPU 模式" + (vBad[0] ? "；模型缺件请到工作台侧栏点「修复」" : ""),
@@ -324,23 +328,40 @@ window.__ModuleLoader__.load({
         var idleHref = link.href;
         var busyHref = "data:image/svg+xml," + busySvg;
         var favBusy = false;
-        setInterval(function () {
-          var running = false;
+        // 蓝军 B21：这里原本是**同步** XHR —— 网关慢或假死时，每 8 秒把整个 dsh 界面线程
+        // 阻塞到超时为止（而且这个 setInterval 没有 cleanup，组件卸载后仍在跑）。
+        // 改为异步链式探测 + 页面级清理。
+        var probe = function (url, then) {
           try {
-            var x1 = new XMLHttpRequest();
-            x1.open("GET", "/lab-api/batch/status", false); x1.send();
-            if (x1.ok) { var j = JSON.parse(x1.responseText); running = !!j.running; }
-            if (!running) {
-              var x2 = new XMLHttpRequest();
-              x2.open("GET", "/lab-api/history/active", false); x2.send();
-              if (x2.ok) { running = (JSON.parse(x2.responseText).items || []).length > 0; }
-            }
-          } catch (e) {}
-          if (running !== favBusy) {
-            favBusy = running;
-            link.href = running ? busyHref : idleHref;
-          }
+            var x = new XMLHttpRequest();
+            x.open("GET", url, true);
+            x.onload = function () {
+              // XMLHttpRequest 没有 fetch 的 .ok（恒 undefined）——基线这段同步 XHR 也写成 x1.ok，
+              // 所以忙碌角标其实从来没亮过；异步化时照抄把这个 100% 失效的判定一起带过来了（审计 N-1）。
+              then(x.status >= 200 && x.status < 300 ? x.responseText : null);
+            };
+            x.onerror = function () { then(null); };
+            x.send();
+          } catch (e) { then(null); }
+        };
+        var applyBusy = function (v) {
+          if (v === favBusy) return;
+          favBusy = v;
+          link.href = v ? busyHref : idleHref;
+        };
+        var timer = setInterval(function () {
+          probe("/lab-api/batch/status", function (txt) {
+            var running = false;
+            try { running = !!(txt && JSON.parse(txt).running); } catch (e) {}
+            if (running) { applyBusy(true); return; }
+            probe("/lab-api/history/active", function (t2) {
+              var r2 = false;
+              try { r2 = !!(t2 && (JSON.parse(t2).items || []).length > 0); } catch (e) {}
+              applyBusy(r2);
+            });
+          });
         }, 8000);
+        return function () { clearInterval(timer); titleMo.disconnect(); };
       }, []);
       react.useEffect(function () {
         if (!ref.current) return;

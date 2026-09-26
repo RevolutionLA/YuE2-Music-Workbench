@@ -27,16 +27,17 @@ _No cloud. No queue. No subscription. 100% offline._
 
 | | Feature | Description |
 |---|---|---|
-| 🎼 | **AI Songwriting** | Style + lyrics → full vocal song (auto verse/chorus arrangement); paste an ABC score and it sings *your* score (melody-only → `melody`, chords → `full`) |
+| 🎼 | **AI Songwriting** | Style + lyrics → full vocal song (auto verse/chorus arrangement); paste an ABC score and it sings *your* score (melody-only → `melody`, chords → `full`, route auto-paired); reference audio transcribes with or without chords |
 | 🤖 | **AI lyric & style assistant** | Built-in DeepSeek-powered helper: describe your idea in plain words, get structured lyrics and style tags |
 | 🎤 | **Cover / re-write / re-style** | Drop in a reference clip → lyrics auto-recognized → sing it again with new words or a new style |
+| 🎼🔍 | **Song → ABC score** | SheetSage2 transcription: melody-only by default (pairs with `melody`, what covers usually want); tick **提取时带和弦** for a melody + chord score (pairs with `full`). Chords are decoded in both modes, so the tick costs essentially no time |
 | 🗣 | **Voice conversion** | RVC voice conversion: turn your voice into any singer; exports include converted vocal / original vocal / instrumental / full song |
-| 📝 | **LRC synced lyrics** | Auto-generated clean `.lrc` per song (whisper/SenseVoice alignment, timestamps only — no metadata headers), import straight into any music player |
+| 📝 | **Synced lyrics (LRC + word-level eLRC)** | Forced alignment, not ASR guessing: the known lyric text is pressed onto the audio — FunASR character-level timestamps for Chinese, wav2vec2 CTC for English, snapped to VAD onsets. Downloads as line-level `.lrc` or word-level `.elrc` (karaoke highlighting for eLRC-capable players) |
 | 🎨 | **Custom voice training** | Upload dry vocals, train your own RVC voice models |
-| 📦 | **Batch queue** | Queue dozens of songs and walk away; one-click resume after interruption, per-item retry, auto-recovery on restart |
-| 🗂 | **Task manager** | Status × type dual filters; per-task rename / stop / retry / delete; running tasks pinned on top |
+| 📦 | **Batch queue** | Queue dozens of songs and walk away; one-click resume after interruption, per-item retry, auto-recovery on restart; each submission gets its own queue identity, so counts never blend into yesterday's batch |
+| 🗂 | **Task manager** | Status × type dual filters; per-task rename / stop / retry / delete; running tasks pinned on top; **every task carries a globally unique ID** (= its on-disk filename, click to copy) so duplicate names never get confused |
 | 🔔 | **Notifications** | Windows toast on completion (with task name); browser favicon shows busy/idle state |
-| ⏸ | **Job persistence** | Refresh the page or close the browser — tasks keep running and results are waiting |
+| ⏸ | **Job persistence** | Refresh the page or close the browser — tasks keep running and results are waiting. After a *service restart* queued items resume and finished artifacts stay intact; the song that was mid-inference is marked "interrupted by restart" (just re-run it) |
 | 🩺 | **Watchdog self-healing** | Stuck gateway/workbench auto-restart; zombie batch entries auto-reset |
 | 🖥 | **VRAM adaptive** | GPU when it fits, CPU fallback when it doesn't, automatic switch-back |
 
@@ -55,6 +56,18 @@ git clone https://github.com/RevolutionLA/YuE2-Music-Workbench.git
 
 **First run downloads the model automatically** — YuE2-3B GGUF + VAE (~2.7GB) from HuggingFace (China mainland users get hf-mirror.com mirror by default, resumable). Interrupted? Just run the launcher again.
 
+> ⚠️ **Being honest up front: `git clone` gives you the workbench *code*, not the runtime.** These are excluded by `.gitignore` (size / upstream licensing) and are required to boot:
+>
+> | Not committed | Put it at | Where it comes from |
+> |---|---|---|
+> | `py312/` (Python 3.12 env + all deps) | repo root | Bring your own 3.12 environment — there is **no root `requirements.txt`**; `checkpoints/requirements*.txt` only covers transcription |
+> | `main.cp312-win_amd64.pyd` (compiled gateway core) | repo root | Ships with the YuE2 engine distribution; not redistributable here |
+> | `cpp/` (`audiocpp_server.exe` + `server.json`) | `cpp/` | Same; GGUF models via `scripts/download_models.py` |
+> | `checkpoints/model.safetensors` (SheetSage2/MERT2) | `checkpoints/` | Manual download from `m-a-p/MERT-v2-30s` / `MERT-v2-FullSong` (only needed for transcription) |
+> | `runtime/models/` (local ASR/alignment weights, ~1.6GB) | `runtime/models/` | Only needed for word-level lyric alignment |
+>
+> The "3 steps to sing" path therefore holds for users of the full distribution package; a plain clone needs the five items above. Missing pieces fail with an explicit error, never a silent downgrade. Tracked as finding D1 in `docs/review/RESPONSE-308f833.md`.
+
 ## 🏗 Architecture
 
 ```
@@ -67,15 +80,22 @@ Browser ── 3081 integrated workbench (dsh-plugin)
         8080 audio.cpp inference engine (YuE2 GGUF, CUDA/CPU adaptive)
 ```
 
+> 🧱 **What you can actually change:** `app = main.app` — `main` is the compiled `main.cp312-win_amd64.pyd` (no source, not modifiable). This project's routes hang *around* that core (`/api` prefix) and reorder `app.routes` so their own endpoints win. `audiocpp.py` is the engine adapter the core loads at runtime — it is live code, not dead code.
+
 | Directory | Contents |
 |---|---|
-| `app.py` | Gateway routes: job hosting / batch queue / resume / retry / RVC / lyric alignment |
-| `src/lrc.py` | LRC generation (SenseVoice+VAD primary, whisper segment-anchor fallback) |
+| `app.py` | Gateway routes: job hosting / batch queue / resume / retry / RVC / lyric alignment / loopback request guard |
+| `main.cp312-win_amd64.pyd` | Compiled gateway core (not committed, not modifiable) |
+| `audiocpp.py` | Runtime engine adapter used by the compiled core |
+| `src/lrc_align.py` | Forced-alignment engine (character/word timestamps → LRC + word-level eLRC) |
+| `src/ports.py` | Single source of truth for ports (`ports.json` + env override + fallback) |
 | `static/` | Front-end (theme sync, no state loss on refresh) |
 | `dsh-plugin/` | Integrated workbench UI plugin |
 | `scripts/` | Launch/stop/model download, `yue2workbench://` protocol registration |
 | `watchdog.py` | Watchdog (gateway + workbench self-healing) |
-| `cpp/` | YuE2 GGUF engine (models downloaded automatically, not committed) |
+| `tests/` | Regression tests (`py312\python.exe -m unittest discover -s tests`) — tmp dirs and read-only endpoints only, never starts a computation |
+| `LICENSE` | Layered licensing, incl. the third-party assets shipped here |
+| `cpp/` | YuE2 GGUF engine (`audiocpp_server.exe`); engine and models are not committed, models download via `scripts/download_models.py` |
 
 ## ❓ FAQ
 
@@ -85,7 +105,29 @@ Browser ── 3081 integrated workbench (dsh-plugin)
 
 **Commercial use?** YuE2 model weights are CC BY-NC 4.0 (non-commercial); songs you create are yours to use per YuE2's license. This workbench's own code follows the repo license.
 
-**I pasted an ABC score but it sang something else?** A score in the box now always means "sing my score" — you no longer have to line the 规划 CoT dropdown up by hand. Before submitting, the workbench checks the score's shape: a melody-only score goes through `melody` (free accompaniment), a chord-annotated score goes through `full` (melody + harmony), and `off` is corrected back onto a score-consuming route (`off` + score is a hard 400 from the engine). An external ABC bypasses the symbolic planner, but `melody` and `full` are different native instructions, so feeding a melody-only score to `full` is a mismatch and the conditioning drifts. The 🎸 extract-from-reference button yields a melody-only score, so it generates via `melody`. The UI and the history entry both record the route actually used. Note: a score anchors the melodic line only — it does not keep the original singer's timbre or arrangement.
+**I pasted an ABC score but it sang something else?** A score in the box now always means "sing my score" — you no longer have to line the 规划 CoT dropdown up by hand. Before submitting, the workbench checks the score's shape in *both* directions: a melody-only score goes through `melody` (free accompaniment), a chord-annotated score goes through `full` (melody + harmony), a swapped selection is corrected, and `off` is corrected back onto a score-consuming route (`off` + score is a hard 400 from the engine). An external ABC bypasses the symbolic planner, but `melody` and `full` are different native instructions, and the engine will not rewrite your score for you — `melody` does not strip the `"C"` / `"Am7"` symbols off a score, `full` does not add harmony you did not write. A mismatched route is what makes the result sound nothing like your score. The score box shows live whether the current score carries chords and which route it will take; the toast and the history entry record the route actually used.
+
+The 🎸 extract-from-reference button yields a **melody-only score** by default (pairs with `melody`, what covers usually want). Tick **提取时带和弦 / extract with chords** next to it and you get a **melody + chord score** (pairs with `full`, harmony anchored too). Chords are decoded either way, so ticking it costs essentially no extra time. Honest limitation: a full score's chord symbols must pass SheetSage2's symbol table; an unrecognized chord quality makes the whole ABC export fail — it raises with the reason instead of silently handing you a stale score from a previous run. If that happens, untick and re-submit.
+
+Note: a score anchors the melodic line (and, with `full`, the harmony) — it does not keep the original singer's timbre or arrangement.
+
+**Task names repeat — how do I tell two runs apart?** Every task carries a **globally unique ID** (`20260926_183413_64c31a01`: creation timestamp + 32 random bits, de-duplicated against both disk and memory). Names are yours to reuse; IDs are not. The ID *is* the artifact filename (`runtime/output/<ID>.wav/.json/.lrc`, RVC and training folders, saved scores), so deleting or retrying one run can never hit its namesake. The ID shows on the task manager rows, the voice-conversion list, the training cards and the live progress line — click it to copy.
+
+Batch submissions additionally get a **queue-level ID** representing *one submission*: queue 2 songs and the panel reports those 2, while older finished entries count separately as "previous queue records" instead of inflating this batch's total. Appending to a queue that is *still running* reuses that queue's name and ID — an append is a continuation of the same queue, not a new one.
+
+**How long can my lyrics be?** Caps: style 2,000 characters, lyrics 20,000, ABC score 20,000. Over the cap the request is **rejected with the exact length and limit** — no more silent truncation. Truncation used to chop the tail off, so the audio and the lyric file stopped matching, and nothing on screen told you it happened. In a batch queue each item is validated on its own; one over-long item only rejects that item.
+
+**What does deleting a task actually take with it?** Everything under that task ID: `runtime/output/<ID>` with `.wav/.json/.txt/.lrc/.lrcjob/.elrc`, plus the voice-conversion workspace `runtime/rvc/jobs/<ID>/` (your uploaded source song and the separated stems — previously only the finished wav was removed and these folders piled up into gigabytes of orphans). Queue records and history entries go with it. Only that whitelist of extensions is touched, matched exactly — passing `*` as the ID deletes nothing. A file locked by a player is left in place rather than reported as deleted.
+
+**Can I expose it to my LAN or the internet?** Not recommended, and by default refused: the gateway binds 127.0.0.1 *and* runs a loopback guard — a request whose `Host` is not a loopback address gets 403 (that's the DNS-rebinding case), and state-changing methods (POST/PUT/PATCH/DELETE) carrying a non-local `Origin`/`Referer` get 403 (browser CORS only blocks *reading* the response, not sending the request, so any web page could otherwise POST at 127.0.0.1 to stop jobs or kill the engine). Responses also carry a CSP `frame-ancestors` listing only local origins, so nobody can iframe your workbench and bait a click.
+
+If you set `settings.app_host` to something like `0.0.0.0` (anything non-loopback), **the gateway refuses to start** and explains why. Two reasons: with the guard still requiring a loopback `Host`, an "opened" gateway would answer every LAN request with 403, which is harder to debug than an honest startup failure; and a relaxed check must still be able to tell *your* devices apart from a web page that DNS-rebinding pointed at your internal address — comparing `Origin` against `Host`, two strings both derived from the attacker's hostname, is not a check at all. So opening it takes both variables: `YUE2_ALLOW_LAN=1` (you know what you are doing) plus `YUE2_LAN_HOSTS=192.168.1.7` (comma-separated hostname allowlist — the exact IP or hostname you type in the browser). Opting out without a hostname allowlist still refuses to start. Once open: `Host` must hit the allowlist, state-changing requests need an `Origin` whose host is on the allowlist *and* whose port is the service port, and CSP `frame-ancestors` admits only those hosts. LAN mode has no per-user isolation and error details still contain local absolute paths and account names, so put an authenticating reverse proxy in front of it. The safer alternative is to keep it on loopback and front it with a reverse proxy that rewrites `Host` back to `127.0.0.1`. One tightening of the same kind: switching the inference model (`POST /api/models/switch`) used to validate one variable while writing a *different, unvalidated* one into `server.json`, so `../` could walk the path out of the engine's working directory — it now accepts only a bare filename under `model/` and rejects anything carrying a directory component.
+
+**Do the environment variables set by the launcher actually reach the gateway?** Now they do. The first-launch path used to spawn the gateway through WMI `Win32_Process.Create` (to avoid a console window), and a WMI-spawned process inherits the WMI service's environment — *not* the cmd window's — so `HF_ENDPOINT`, `HF_HOME`, `TORCH_HOME`, `FFMPEG_PATH`, `NO_PROXY` and the key loaded from `secrets\local_env.bat` were all inert on first launch, while the watchdog's restart path passed them explicitly: two different configurations depending on who started the process. Both paths now use `Start-Process -WindowStyle Hidden` — still no window, but the environment is inherited down the chain (A/B verified with the same probe child script: WMI could not see the variable, Start-Process could). The API key still travels only through inherited environment; it is never expanded into a command line, which any local process could read.
+
+**Where does the automatic vocal separation come from?** It uses a local GPT-SoVITS install (with the RoFormer / HPs separation models). The default path is the author's machine; set `YUE2_GSV_ROOT` to your own install. Without it the feature says so plainly and everything else keeps working. Device selection follows the backend mode (no hardcoded `cuda`).
+
+**How do I run the tests?** `py312\python.exe -m unittest discover -s tests -v` — 49 cases in under a second. They only touch temp directories and read-only endpoints and never submit a computation, so they are safe to run while a generation is in flight. Coverage: task-ID uniqueness, the delete-cleanup extension whitelist, input length caps at *both* the generation and the storage entries (history records, templates), chord detection and the melody/full pairing (including "an English word in quotes is not a chord"), legacy queue migration, state-file atomic write, concurrent append and the bounded crash-revive guard, the loopback guard with its LAN hostname allowlist and port match, refusal to start on a wildcard bind, model-switch path validation, the aggregate upload and free-disk gates, and the checkup result cache. Every case is labelled with the review ID it locks.
 
 ## 🙏 Credits
 
@@ -94,4 +136,4 @@ Browser ── 3081 integrated workbench (dsh-plugin)
 
 ## 📄 License
 
-This workbench: CC BY-NC 4.0. Model weights follow their upstream licenses (see Credits).
+See [`LICENSE`](LICENSE) for the full layered statement. Short version: model weights follow their upstream licenses (YuE2 / MERT2 = CC BY-NC 4.0, **non-commercial**), and this workbench's own code is distributed under the same terms — do not plan on commercial use of the outputs either. `checkpoints/` keeps its upstream `LICENSE` and `THIRD_PARTY_NOTICES.md`. **Open item, stated plainly:** `scripts/gtcrn.py` is a vendored network implementation that kept no upstream provenance/license header; it needs one before further redistribution.

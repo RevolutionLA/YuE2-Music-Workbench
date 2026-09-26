@@ -3,7 +3,8 @@ rem 一键启动音乐工作台（正式逻辑在 scripts\，此文件仅转调�
 echo 运行位置: %~f0
 if not exist "%~dp0py312\python.exe" (
   echo [错误] 未找到 %~dp0py312\python.exe
-  echo 你双击的不是本项目的启动脚本，请到 E:\AI\10AIMusic\Yue\yuE-2\yuE-2\ 下运行。
+  echo 本脚本要求 Python 3.12 环境目录 py312\ 与本脚本同级放置（README「首次运行准备」列明了哪几样不入库）。
+  echo 若你用的是完整分发包，请确认整个目录（含 py312\）一起拷全，只挑 .bat 过来是起不来的。
   pause
   exit /b 1
 )

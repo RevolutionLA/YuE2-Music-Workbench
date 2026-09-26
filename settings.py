@@ -9,7 +9,12 @@ from ports import get as _port  # noqa: E402
 
 
 class Settings:
-    app_host: str = "127.0.0.1"  # 仅本机使用：不暴露到局域网（如需 LAN 访问改回 0.0.0.0 并配套加鉴权）
+    # 仅本机使用：不暴露到局域网。改成非回环地址（如 0.0.0.0）时 app.py 会拒绝启动，
+    # 除非显式设 YUE2_ALLOW_LAN=1 **并且**给出主机名白名单 YUE2_LAN_HOSTS（例如
+    # 192.168.1.7，逗号分隔）——只放宽不列名单等于把 DNS 重绑定请回门内，所以缺名单
+    # 仍然拒绝启动。本工作台没有鉴权与多用户隔离，开放前必须自己套反代 + 鉴权，
+    # 且不要暴露到公网。
+    app_host: str = "127.0.0.1"
     app_port: int = _port("gateway")
 
     # dsh 工作台（UI 宿主）端口：UI 归属 3081，网关只在 gateway_serve_ui=False 时

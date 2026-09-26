@@ -141,6 +141,12 @@ def unload() -> None:
 
 
 def transcribe_abc(audio_path: str, *, melody_only: bool = True) -> str:
+    """音频 → ABC。melody_only=True 只要旋律声部；False 连和弦记号一起写进谱面。
+
+    和弦在两种模式下都会被解码（chord.lab 总是落盘），melody_only 只决定 ABC 里要不要
+    写和弦记号，所以 False 几乎不额外花时间。代价是完整谱更容易整次失败：记号要过
+    chord_symbol_to_abc，遇到不认的和弦性质就抛错、整份 ABC 变空。
+    """
     configure_hf_home()
     model = get_model()
     out_dir = ROOT / "sheetsage2-output"
@@ -151,12 +157,12 @@ def transcribe_abc(audio_path: str, *, melody_only: bool = True) -> str:
         melody_only=melody_only,
     )
     abc = ""
+    reason = ""
     if isinstance(result, dict):
         abc = str(result.get("abc") or "").strip()
-    abc_file = out_dir / "score.abc"
-    if abc:
-        abc_file.write_text(abc, encoding="utf-8")
-        return abc
-    if abc_file.is_file():
-        return abc_file.read_text(encoding="utf-8").strip()
-    raise RuntimeError("官方转谱没有返回乐谱")
+        reason = str(result.get("abc_error") or "")
+    if not abc:
+        # 绝不回读 score.abc：那是上一次转谱留下的旧谱，静默返回会让用户拿到别的歌的谱
+        raise RuntimeError("转谱未产出乐谱：" + (reason[:200] or "官方转谱没有返回乐谱"))
+    (out_dir / "score.abc").write_text(abc, encoding="utf-8")
+    return abc

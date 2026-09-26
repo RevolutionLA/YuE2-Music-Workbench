@@ -18,6 +18,16 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+import sys as _sys
+# 端口一律取自唯一真源 ports.json：这里再写死 3081，换端口后 _kill_stale_listener
+# 会去 netstat 里找 :3081 并 taskkill——那可能杀掉与本项目无关的进程。
+_src_dir = str(Path(__file__).resolve().parent)
+if _src_dir not in _sys.path:
+    _sys.path.insert(0, _src_dir)
+from ports import get as _port  # noqa: E402
+
+DSH_PORT = _port("dsh")
+
 import ai_lab
 
 router = APIRouter(prefix="/api/ai")
@@ -60,40 +70,70 @@ def ai_web():
     def _read_token() -> str | None:
         if not log.is_file():
             return None
-        m = re.search(r"http://127\.0\.0\.1:3081/\?token=[A-Za-z0-9_\-]+",
-                      log.read_text(encoding="utf-8", errors="replace"))
-        return m.group(0) if m else None
+        # 取**最后**一条：日志可能被两条链路写（拉起脚本每次截断重写、本模块以 "ab"
+        # 追加），旧 token 留在前面。返回第一个匹配会把用户引到上一次会话的地址上。
+        hits = re.findall(rf"http://127\.0\.0\.1:{DSH_PORT}/\?token=[A-Za-z0-9_\-]+",
+                          log.read_text(encoding="utf-8", errors="replace"))
+        return hits[-1] if hits else None
 
     def _alive() -> bool:
         import httpx
         try:
-            httpx.get("http://127.0.0.1:3081/", timeout=1.5)
+            httpx.get(f"http://127.0.0.1:{DSH_PORT}/", timeout=1.5)
             return True
         except Exception:
             return False
 
     def _kill_stale_listener() -> None:
-        """端口 3081 被占用但不响应（假死僵死进程）时击杀，否则新进程抢不到端口起不来。"""
+        """端口被占用但不响应（假死僵死进程）时击杀，否则新进程抢不到端口起不来。
+
+        只杀确证的 dsh node 进程：端口号可能已被别的程序占用（ports.json 改过、
+        或别人抢过这个口），盲杀 taskkill 会把与本项目无关的进程连子进程树一起干掉。
+        光看镜像名不够——用户自己开的 dev server 也叫 node.exe，所以要再验命令行里
+        是否含 dsh；验不了就当不是自己的（宁可起不来并报明确错误，也不误杀）。
+        """
         try:
             out = subprocess.run(
                 ["netstat", "-ano", "-p", "tcp"], capture_output=True, text=True, timeout=15,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
             for line in out.splitlines():
-                if "LISTENING" in line and line.split()[1].rstrip().endswith(":3081"):
+                if "LISTENING" in line and line.split()[1].rstrip().endswith(f":{DSH_PORT}"):
                     pid = int(line.split()[-1])
-                    if pid != os.getpid():
-                        subprocess.run(["taskkill", "/PID", str(pid), "/F", "/T"],
-                                       capture_output=True, timeout=15,
-                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                        _t.sleep(1)
-                        break
+                    if pid == os.getpid():
+                        continue
+                    if not _is_dsh_listener(pid):
+                        return
+                    subprocess.run(["taskkill", "/PID", str(pid), "/F", "/T"],
+                                   capture_output=True, timeout=15,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                    _t.sleep(1)
+                    break
         except Exception:
             pass
+
+    def _is_dsh_listener(pid: int) -> bool:
+        img = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True, text=True, timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+        if "node.exe" not in img.lower():
+            print(f"[ai_router] :{DSH_PORT} 被 PID {pid} 占用但非 node.exe，跳过击杀", flush=True)
+            return False
+        ps = ("$p=Get-CimInstance Win32_Process -Filter 'ProcessId=%d';"
+              "if($p){[Console]::Out.Write($p.CommandLine)}" % pid)
+        cmd = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            capture_output=True, text=True, timeout=25,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+        if "dsh" not in cmd.lower():
+            print(f"[ai_router] :{DSH_PORT} 上是本机其它 node 服务（命令行不含 dsh），跳过击杀", flush=True)
+            return False
+        return True
 
     url = _read_token() if _alive() else None
     if not url:
         _kill_stale_listener()  # 假死自愈兜底：watchdog 之外，拉起前再清一次
-        # 自动拉起（分离进程，DSH_HOME 隔离，端口 3081）。
+        # 自动拉起（分离进程，DSH_HOME 隔离，端口取自 ports.json）。
         # 用 env 字典传密钥，不走 cmd/PowerShell 字符串拼接：
         # 避免特殊字符注入命令行，也避免密钥出现在进程命令行（WMI 可见）。
         root = Path(__file__).parent.parent
@@ -104,7 +144,7 @@ def ai_web():
         log_fd = open(log, "ab")
         subprocess.Popen(
             ["node", str(root / "dsh-plugin" / "node_modules" / "@deepseek-ai" / "dsh" / "lib" / "bin.js"),
-             "web", "--port", "3081", "--no-open"],
+             "web", "--port", str(DSH_PORT), "--no-open"],
             cwd=str(root / "dsh-plugin"), env=env,
             stdout=log_fd, stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0),

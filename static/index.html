@@ -358,6 +358,10 @@
   .hist-item .h-title { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .hist-item .h-sub { font: 11px var(--mono); color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .hist-item .h-time { font: 10.5px var(--sans); color: var(--dim); white-space: nowrap; }
+  /* 任务 ID：全局唯一、同时是产物文件名；点一下复制，便于报障与精确检索 */
+  .tid { font: 10.5px var(--mono); color: var(--dim); letter-spacing: .2px; cursor: pointer;
+         border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; user-select: all; }
+  .tid:hover { color: var(--acc); border-color: var(--acc); }
   .hist-item .h-actions { display: flex; gap: 6px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
   .hist-item .h-col-st { font: 12px var(--sans); font-weight: 600; white-space: nowrap; }
   .hist-item .h-col-meta { font: 11px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -600,6 +604,11 @@ We will sing beyond the night</textarea>
           <input type="file" id="abcAudio" accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" style="display:none;">
           <span class="status" id="abcStatus" style="padding:0;"></span>
         </div>
+        <label for="abcChords" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:6px;">
+          <input id="abcChords" type="checkbox" style="width:auto;" />
+          <span>提取时带和弦（出「旋律+和弦」完整谱）</span>
+        </label>
+        <div class="hint-xs">不勾 = 纯旋律谱（配 melody 路线，伴奏交给模型，翻唱常用）；勾选 = 谱里额外写进 <code>"C"</code>、<code>"Am7"</code> 这类和弦记号（配 full 路线，和声也锚住）。和弦本来就会被识别，勾选几乎不多花时间；但个别和弦性质不被记号表认得时整份谱会提取失败，失败就取消勾选重提一次。</div>
         <div id="scoreList" style="margin-top:8px;"></div>
 
         <details>
@@ -625,10 +634,10 @@ We will sing beyond the night</textarea>
 
         <div class="hint">
           <b>seed -1</b> 随机，固定数字可复现<br>
-          <b>full</b> 先写带和弦 ABC 再合成，适合改编<br>
-          <b>melody</b> 只规划旋律，伴奏自由，适合翻唱<br>
-          <b>off</b> 跳过符号规划，速度更快<br>
-          <b>有乐谱</b> 时自动按谱：旋律谱走 melody、带和弦走 full，off 会被纠正（口径不符谱面条件会走偏）<br>
+          <b>full</b> 模型先规划「旋律+和弦」再合成；贴进来的谱要带和弦记号才配得上，适合改编/重配和声<br>
+          <b>melody</b> 模型只规划旋律不写和弦；贴进来的谱要干净（无和弦记号），伴奏由模型配，适合翻唱<br>
+          <b>off</b> 跳过符号规划直接从文字生成，速度最快，不能带谱<br>
+          <b>填了乐谱</b> 就按你的谱唱：无和弦自动走 melody、有和弦自动走 full，档位选错或选了 off 提交时会被纠正（引擎不会替你改写谱面）<br>
           <b>6GB 显存</b> 推荐 Q4_K_M；失败时减小 Steps 或缩短歌词
         </div>
       </div>
@@ -696,7 +705,10 @@ We will sing beyond the night</textarea>
       <button class="subtab" data-kind="rvc">🎙 换声任务</button>
       <button class="subtab" data-kind="train">🎨 音色制作任务</button>
     </div>
-    <button class="ghost" id="batchResume" style="display:none; padding:3px 12px; font-size:12px; margin-top:10px;" title="把意外终止/已停止/失败的队列任务重新入队继续执行">▶ 一键继续</button>
+    <div class="flex" style="align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap;">
+      <button class="ghost" id="batchResume" style="display:none; padding:3px 12px; font-size:12px;" title="把意外终止/已停止/失败的队列任务重新入队继续执行">▶ 一键继续</button>
+      <div id="queueBar" style="font:11px var(--mono); color:var(--muted);"></div>
+    </div>
     <div class="row-list" id="histList" style="width:100%;max-width:1680px; margin-top:14px;">
       <div class="empty">暂无任务记录。</div>
     </div>
@@ -945,6 +957,50 @@ function fmtBytes(n) {
   if (n == null) return "";
   if (n < 1024*1024) return (n/1024).toFixed(1) + " KB";
   return (n/1024/1024).toFixed(2) + " MB";
+}
+// 任务 ID 徽标：ID 全局唯一（时间戳+随机），且就是 output/ 下的产物文件名。
+// 任务名可以重复，ID 不能——定位问题、删错风险都靠它。
+function idTag(id) {
+  if (!id) return "";
+  return `<span class="tid" tabindex="0" role="button" data-id="${escapeHtml(id)}" `
+       + `aria-label="任务 ID ${escapeHtml(id)}，回车复制" title="任务 ID（唯一），点击/回车复制">ID ${escapeHtml(id)}</span>`;
+}
+// 捕获阶段拦截：历史行整行可点（播放/回填），必须赶在行的 onclick 之前吃掉这次点击
+document.addEventListener("click", (ev) => {
+  const el = ev.target.closest && ev.target.closest(".tid");
+  if (!el) return;
+  ev.stopPropagation();
+  ev.preventDefault();
+  copyId(el.dataset.id || "");
+}, true);
+// 键盘可达：span 加 role=button 后必须自己响应 Enter/空格，否则纯键盘用户复制不了 ID
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter" && ev.key !== " ") return;
+  const el = ev.target.closest && ev.target.closest(".tid");
+  if (!el) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  copyId(el.dataset.id || "");
+}, true);
+function copyId(id) {
+  const done = () => toast("已复制 ID：" + id, "ok");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(id).then(done, () => fallbackCopy(id, done));
+  } else fallbackCopy(id, done);
+}
+function fallbackCopy(text, done) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;";
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  ta.remove();
+  // execCommand 失败不抛错、只返回 false：不看返回值就会谎报「已复制」
+  // （非安全上下文 http://局域网IP 下 clipboard API 根本不存在，只能走这条路）
+  if (ok) done();
+  else { toast("复制失败，请手动选中 ID：" + text, "err"); }
 }
 // 下载命名：任务名称 + 年月日（如「稻香 260921」）
 function dlName(name, ext = "wav") {
@@ -1532,7 +1588,8 @@ function renderJobProgress(job) {
     ? "仍在生成（耗时超过常见区间，受显存挤占影响属正常）… "
     : (job.cpu_fallback ? "CPU 模式生成中（较慢，请耐心等待）… " : "服务端生成中（刷新页面不会丢失任务）… "))
     + "<span class='timer'>" + Math.floor(elapsed/60) + "分" + Math.round(elapsed%60) + "秒</span>"
-    + (etaStr ? " · 预计还需 " + etaStr : "");
+    + (etaStr ? " · 预计还需 " + etaStr : "")
+    + " · " + idTag(job.id);
 }
 
 // ---------- 完成通知：浏览器通知(requireInteraction) + 页内常驻横幅(带X) ----------
@@ -1564,7 +1621,8 @@ function applyFinishedJob(job) {
     $("progressBar").style.width = "100%";
     $("status").className = "status ok";
     $("status").innerHTML = "生成完成 · " + fmtBytes(job.bytes) + " · seed="
-      + escapeHtml(String(job.seed_actual ?? "")) + " · <span class='timer'>" + (job.sec || "?") + "s</span>";
+      + escapeHtml(String(job.seed_actual ?? "")) + " · <span class='timer'>" + (job.sec || "?") + "s</span>"
+      + " · " + idTag(job.id);
     fetch("/api/generate/audio/" + job.id).then(r => r.ok ? r.blob() : null).then(b => {
       if (b) loadAudio(b, job.id + ".wav", job.task_name || (job.style || "").split(",")[0]);
     });
@@ -1585,11 +1643,13 @@ function applyFinishedJob(job) {
   setTimeout(() => $("progress").classList.remove("show"), 1500);
 }
 
+let netMiss = 0;   // 生成状态轮询的连续失败次数：达阈值即如实报断连，不再谎报「生成中」
 function pollJob() {
   if (pollTimer) clearTimeout(pollTimer);
   pollTimer = setTimeout(async () => {
     try {
       const j = await (await fetch("/api/generate/current")).json();
+      netMiss = 0;
       const job = j.job;
       if (job && job.status === "running") {
         renderJobProgress(job);
@@ -1607,7 +1667,22 @@ function pollJob() {
         $("status").className = "status err";
         $("status").textContent = "任务已结束（服务端未保留运行记录，详见历史页最近一条，可能是生成失败）。";
       }
-    } catch {}
+    } catch (e) {
+      // 一次网络抖动/网关重启不能把轮询弄死：那样页面会永远停在「生成中」，
+      // 而服务端其实早已结束——谎报进行中比报一次错更糟。退避后继续问。
+      netMiss++;
+      if (netMiss >= 4) {
+        netMiss = 0;
+        setGenerating(false);
+        $("progress").classList.remove("show");
+        $("status").className = "status err";
+        $("status").textContent = "连不上工作台服务（" + String(e.message || e).slice(0, 80) + "），进度已停止刷新。恢复后点「历史」页看结果。";
+        return;
+      }
+      const wait = 2000 * netMiss;
+      if (pollTimer) clearTimeout(pollTimer);
+      pollTimer = setTimeout(pollJob, wait);
+    }
   }, 2000);
 }
 
@@ -1710,7 +1785,9 @@ $("queue").onclick = async () => {
     toast(j.message || "已加入队列", "ok");
     if (j.cot_note) toast(j.cot_note, "ok");
     $("status").className = "status ok";
-    $("status").textContent = j.message || "已加入队列，将在后台依次生成（可在历史页查看进度）。";
+    // 明确报出这一批的队列身份（名字 + 唯一 ID），避免和历史队列混淆
+    $("status").textContent = (j.message || "已加入队列，将在后台依次生成（可在历史页查看进度）。")
+      + " 队列「" + (j.name || "") + "」" + (j.queue_id ? " ID " + j.queue_id : "");
   } catch (err) {
     $("status").className = "status err"; $("status").textContent = "入队失败：" + err.message;
   } finally { btn.disabled = false; }
@@ -1730,9 +1807,16 @@ function renderAbcAnalysis(a) {
   if (a.bpm) parts.push(a.bpm + " BPM");
   if (a.range) parts.push("音域 " + a.range);
   if ((a.sections || []).length) parts.push("曲式 " + a.sections.join(" → "));
-  if (a.cot_suggested) parts.push(a.cot_suggested === "full" ? "带和弦谱 → 按 full 生成" : "旋律谱 → 按 melody 生成");
-  const cotSel = $("cot") ? $("cot").value : "";
-  if (cotSel === "off") parts.push("（CoT 选了 off，提交时会自动改回按谱生成）");
+  const route = a.cot_suggested || "";
+  if (route) {
+    const n = a.chord_count || 0;
+    parts.push(route === "full"
+      ? ("带和弦谱" + (n ? "（" + n + " 处和弦记号）" : "") + " → 按谱走 full")
+      : "纯旋律谱（无和弦记号） → 按谱走 melody");
+    const sel = $("cot") ? $("cot").value : "";
+    if (sel && sel !== "off" && sel !== route) parts.push("档位选了 " + sel + "，提交时自动纠正为 " + route);
+    else if (sel === "off") parts.push("档位选了 off，提交时自动纠正为 " + route);
+  }
   el.textContent = "✓ " + parts.join(" · ");
 }
 function analyzeAbcDebounced() {
@@ -1766,8 +1850,10 @@ $("abcAudio").onchange = async () => {
   if (!file) return;
   const form = new FormData();
   form.append("audio", file);
+  // 默认纯旋律谱（SheetSage2 两种模式都会识别和弦，只是导出时写不写进 ABC）
+  form.append("melody_only", $("abcChords").checked ? "false" : "true");
   $("extractAbc").disabled = true;
-  $("abcStatus").textContent = "正在上传并提交转谱任务…";
+  $("abcStatus").textContent = $("abcChords").checked ? "正在上传并提交转谱任务（带和弦）…" : "正在上传并提交转谱任务…";
   try {
     const r = await fetch("/api/score", { method: "POST", body: form });
     const j = await r.json().catch(() => ({}));
@@ -1780,25 +1866,43 @@ $("abcAudio").onchange = async () => {
     // 轮询结果（每 3 秒，最长 20 分钟）
     $("abcStatus").textContent = "转谱进行中（首次需加载模型，请耐心等待）…";
     const deadline = Date.now() + 20 * 60 * 1000;
+    let miss = 0;
     while (Date.now() < deadline) {
       await new Promise((res) => setTimeout(res, 3000));
-      const rr = await fetch("/api/score/result?job_id=" + encodeURIComponent(jobId));
+      // 一次 502/网络抖动不等于提取失败：服务端任务还在跑并会成功入库，
+      // 这里整体抛错会让用户白重传一遍（GPU 时间）。连错 5 次才认输。
+      let rr;
+      try { rr = await fetch("/api/score/result?job_id=" + encodeURIComponent(jobId)); }
+      catch (e) {
+        if (++miss >= 5) throw new Error("查询任务失败（连续 " + miss + " 次连不上服务）");
+        continue;
+      }
       const rj = await rr.json().catch(() => ({}));
-      if (!rr.ok) throw new Error(rj.detail || "查询任务失败");
+      if (!rr.ok) {
+        if (rr.status !== 404 && ++miss < 5) continue;
+        throw new Error(rj.detail || "查询任务失败");
+      }
+      miss = 0;
       if (!rj.done) continue;
       if (rj.error) throw new Error(rj.error);
       if (!rj.abc) throw new Error("没有得到乐谱");
       $("abc").value = rj.abc;
-              if ($("cot").value === "off") $("cot").value = "full";
-              renderAbcAnalysis(rj.analysis);
-              if (!rj.analysis) analyzeAbcDebounced();
-              $("abcStatus").textContent = "✓ 乐谱已保存，可改词后生成（下方列表可随时复用）";
-              $("abcStatus").style.color = "var(--ok, #34c759)";
-              $("extractAbc").disabled = false;
-              $("abcAudio").value = "";
-              stickyNotify("乐谱提取完成", "已从参考歌曲提取 ABC 乐谱，可直接改词生成。", true);
-              loadScoreList();
-              return;
+      // 提取完把档位拨到和这份谱配对的路线：无和弦→melody，带和弦→full
+      const want = (rj.analysis && rj.analysis.cot_suggested)
+        || ($("abcChords").checked ? "full" : "melody");
+      $("cot").value = want;
+      renderAbcAnalysis(rj.analysis);
+      if (!rj.analysis) analyzeAbcDebounced();
+      const wantedChords = $("abcChords").checked && !(rj.analysis && rj.analysis.has_chords);
+      $("abcStatus").textContent = wantedChords
+        ? "⚠ 谱里没出现和弦记号（这首歌可能识别不出可用和弦），已按 melody 路线准备生成"
+        : "✓ 乐谱已保存（走 " + want + "），可改词后生成（下方列表可随时复用）";
+      $("abcStatus").style.color = wantedChords ? "#ff9f0a" : "var(--ok, #34c759)";
+      $("extractAbc").disabled = false;
+      $("abcAudio").value = "";
+      stickyNotify("乐谱提取完成", "已从参考歌曲提取 ABC 乐谱，可直接改词生成。", true);
+      loadScoreList();
+      return;
     }
     throw new Error("转谱超时（超过 20 分钟）");
   } catch (err) {
@@ -1821,13 +1925,14 @@ async function loadScoreList() {
       row.style.cssText = "display:flex;align-items:center;gap:8px;padding:4px 8px;margin:2px 0;border-radius:8px;font-size:12px;cursor:pointer;background:rgba(127,127,127,.06);";
       const label = document.createElement("span");
       label.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
-      label.textContent = (s.time || "") + " · " + (s.abc_preview || "").replace(/\s+/g, " ").slice(0, 40);
-      label.title = "点击回填到乐谱框";
-      label.onclick = async () => {
+      label.textContent = (s.time || "") + (s.cot ? " [" + s.cot + "]" : "") + " · "
+        + (s.abc_preview || "").replace(/\s+/g, " ").slice(0, 40);
+      label.title = "点击回填到乐谱框";      label.onclick = async () => {
         try {
           const rec = await (await fetch("/api/scores/" + encodeURIComponent(s.id))).json();
           $("abc").value = rec.abc || "";
-          if ($("cot").value === "off") $("cot").value = "full";
+          const sug = rec.analysis && rec.analysis.cot_suggested;
+          if (sug) $("cot").value = sug;  // 回填时一并把档位拨到和这份谱配对的路线
           renderAbcAnalysis(rec.analysis);
           if (!rec.analysis) analyzeAbcDebounced();
           $("abcStatus").textContent = "✓ 已回填历史乐谱 " + s.id;
@@ -1839,12 +1944,15 @@ async function loadScoreList() {
       del.textContent = "✕";
       del.title = "删除该乐谱";
       del.style.cssText = "padding:0 8px;font-size:12px;";
+      const idc = document.createElement("span");
+      idc.innerHTML = idTag(s.id);
+      idc.style.cssText = "display:inline-flex;align-items:center;";
       del.onclick = async (ev) => {
         ev.stopPropagation();
         await fetch("/api/scores/" + encodeURIComponent(s.id), { method: "DELETE" });
         loadScoreList();
       };
-      row.appendChild(label); row.appendChild(del);
+      row.appendChild(label); row.appendChild(idc); row.appendChild(del);
       el.appendChild(row);
     });
   } catch (e) { el.innerHTML = ""; }
@@ -1885,6 +1993,23 @@ async function fetchExtraTasks() {
   try {
     const b = await (await fetch("/api/batch/status")).json();
     const it0 = (b && b.items || []).filter(x => x.status !== "cancelled" || b.running);
+    // 队列身份按「一次提交」划分：一次投 2 首就只报 2 首，历史条目单独计数，
+    // 不再把状态文件里所有旧任务的总数当成当前这批（寻兰 58/2 那次误导的根因）
+    const q = (b && b.queue) || null;
+    const bar = $("queueBar");
+    if (bar) {
+      if (q && q.id) {
+        const seg = [
+          (b.running ? "🏃 正在跑" : "⏸ 已停") + " · 队列「" + escapeHtml(q.name || "未命名") + "」",
+          idTag(q.id),
+          q.done + "/" + q.total + " 完成",
+          q.error ? q.error + " 失败" : "",
+          q.pending ? q.pending + " 待跑" : "",
+          b.queued_hist ? "另有 " + b.queued_hist + " 条历史队列记录" : "",
+        ].filter(Boolean);
+        bar.innerHTML = seg.join(" · ");
+      } else bar.innerHTML = "";
+    }
     // 一键继续按钮显隐：队列没在跑且有未完成任务
     const un = (b && b.items || []).filter(x => ["pending", "running", "error", "cancelled"].includes(x.status)).length;
     const resumeBtn = $("batchResume");
@@ -1930,7 +2055,9 @@ async function renderHistory() {
     // 队列 + 活跃条目并入统一列表（按 id 去重：历史里已完结的优先）
     const extra = await fetchExtraTasks();
     const seen = new Set(list.map(h => h.id));
-    extra.forEach(x => { if (!seen.has(x.id)) list.push(x); });
+    // extra 内部也要去重：同一 id 可能同时来自 batch/status 与 history/active
+    // （刚提交、output meta 尚未落盘的那几秒），不去重就渲染成两行同 ID 任务
+    extra.forEach(x => { if (!seen.has(x.id)) { seen.add(x.id); list.push(x); } });
     // 排序：进行中（running/pending）置顶，其余按时间由近及远（新→旧）；
     // ts 是 ISO 字符串可直接字典序比较，缺失的排最后
     const rankOf = h => (h.status === "running" || h.status === "pending") ? 0 : 1;
@@ -1951,6 +2078,10 @@ async function renderHistory() {
     if (histType !== "all") list = list.filter(h => (h.kind || "generate") === histType);
     const shown = list;
     const el = $("histList");
+    // 「⋯ 更多」菜单展开时本轮不重建 DOM：5s 队列轮询整表 innerHTML 重绘会把菜单
+    // 悄悄关掉（实测 6.5s 后自动关闭），用户正在点的按钮随之丢失。
+    // 菜单收起后的下一轮轮询自然补回最新状态。
+    if ([...el.querySelectorAll("[data-more-menu]")].some(m => m.style.display !== "none")) return;
     if (!shown.length) { el.innerHTML = `<div class="empty">${histKind === "all" ? "暂无历史记录。生成歌曲后会自动保存（含音频与参数）。" : "该分类下暂无记录。"}</div>`; return; }
     el.innerHTML = "";
     shown.forEach(h => {
@@ -1971,7 +2102,7 @@ async function renderHistory() {
       d.innerHTML = `
         <div class="h-col">
           <div class="h-title">${escapeHtml(title)}${kindTag}</div>
-          ${h.ts ? '<div class="h-sub">' + timeAgo(h.ts) + '</div>' : ''}
+          ${h.ts || h.id ? '<div class="h-sub">' + [h.ts ? timeAgo(h.ts) : "", idTag(h.id)].filter(Boolean).join(" ") + '</div>' : ''}
           ${h.status === "error" && h.error ? `<div class="h-sub" style="color:#d33; cursor:pointer;" data-err title="点击展开/收起">⚠ ${escapeHtml(String(h.error).slice(0, 120))}${String(h.error).length > 120 ? " …（点击查看全部）" : ""}</div>` : ""}
         </div>
         <div class="h-col h-col-st" style="color:${stColor};">${stTxt}</div>
@@ -1990,6 +2121,7 @@ async function renderHistory() {
             ${h.status === "running" ? '<button class="danger" data-stop>⏹ 终止</button><button class="ghost" data-restart>↻ 重启任务</button>' : ''}
             ${h.status === "done" && !isTrain && !isRvc ? '<button class="ghost" data-rvc>🎙 送去换声</button>' : ''}
             ${!isTrain && !isRvc && (h.lyrics || "").trim() ? '<button class="ghost" data-lyrics>⬇ LRC歌词</button>' : ''}
+            ${!isTrain && !isRvc && (h.lyrics || "").trim() ? '<button class="ghost" data-elrc>⬇ 逐字 eLRC</button>' : ''}
             ${!isTrain && !isRvc ? '<button class="ghost" data-restore>↩ 回填创作</button>' : ''}
             ${h.status === "done" && isTrain ? '<button class="ghost" data-use>去使用</button>' : ''}
             <button class="ghost" data-rename>✏ 任务改名</button>
@@ -2136,15 +2268,12 @@ async function renderHistory() {
       });
       const rb = d.querySelector("[data-restore]");
       if (rb) rb.onclick = (e) => { e.stopPropagation(); restore(); toast("已回填该次生成参数", "ok"); };
-      // 下载 LRC 歌词（带时间轨）：已生成直接下载，否则触发后端对齐并轮询
-      const lb = d.querySelector("[data-lyrics]");
-      if (lb) lb.onclick = async (e) => {
-        e.stopPropagation();
-        const btn = lb;
+      // 下载歌词时间轨：已生成直接下载，否则触发后端对齐并轮询。
+      // LRC（行级）与 eLRC（逐字卡拉OK）出自同一次对齐，只是取不同字段。
+      async function downloadTrack(btn, fmt) {
         const oldTxt = btn.textContent;
         btn.disabled = true;
         try {
-          // 首查状态：已有 lrc 直接用；没有则触发后台对齐
           let r = await fetch("/api/generate/lrc/" + h.id);
           let j = await r.json();
           if (!r.ok) { throw new Error(j.detail || "状态查询失败"); }
@@ -2166,16 +2295,26 @@ async function renderHistory() {
             }
             if (j.status !== "done") throw new Error("对齐超时，请稍后重试");
           }
-          const blob = new Blob([j.lrc], { type: "text/plain;charset=utf-8" });
+          const text = fmt === "elrc" ? j.elrc : j.lrc;
+          if (!text) {
+            throw new Error(fmt === "elrc"
+              ? "这份对齐结果没有逐字版本（当前语言/引擎只产出行级时间轨），可下载 LRC"
+              : "没有可用的行级歌词文本");
+          }
+          const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
           const a = document.createElement("a");
           a.href = URL.createObjectURL(blob);
-          a.download = dlName(h.task_name || (h.style || "").split(",")[0]) + ".lrc";
+          a.download = dlName(h.task_name || (h.style || "").split(",")[0]) + (fmt === "elrc" ? ".elrc" : ".lrc");
           document.body.appendChild(a); a.click(); a.remove();
           setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-          toast("已开始下载 LRC 歌词", "ok");
-        } catch (err) { toast("LRC 下载失败：" + err.message, "err"); }
+          toast("已开始下载 " + (fmt === "elrc" ? "逐字 eLRC 歌词" : "LRC 歌词"), "ok");
+        } catch (err) { toast((fmt === "elrc" ? "eLRC" : "LRC") + " 下载失败：" + err.message, "err"); }
         finally { btn.disabled = false; btn.textContent = oldTxt; }
-      };
+      }
+      const lb = d.querySelector("[data-lyrics]");
+      if (lb) lb.onclick = (e) => { e.stopPropagation(); downloadTrack(lb, "lrc"); };
+      const eb = d.querySelector("[data-elrc]");
+      if (eb) eb.onclick = (e) => { e.stopPropagation(); downloadTrack(eb, "elrc"); };
       // 音色制作完成：跳到换声页并选中该音色
       const ub = d.querySelector("[data-use]");
       if (ub) ub.onclick = async (e) => {
@@ -2251,8 +2390,8 @@ $("batchResume").onclick = async () => {
   const btn = $("batchResume");
   btn.disabled = true;
   try {
-    const r = await jfetch("/api/batch/resume", { method: "POST" });
-    toast(r.message || "已恢复队列", "ok");
+    const j = await (await jfetch("/api/batch/resume", { method: "POST" })).json();
+    toast(j.message || "已恢复队列", "ok");
     renderHistory();
   } catch (e) { toast(e.message, "err"); }
   finally { btn.disabled = false; }
@@ -2371,7 +2510,18 @@ $("vDenoise").onclick = async () => {
 
 
 // ---------- rvc（换声）----------
-const rvcPolls = new Set();  // 每个任务独立轮询，互不影响
+// rid → setInterval 句柄。必须用 Map：这里按 rid 取/存句柄，Set 上没有 get/set，
+// 之前用 Set 会让每次「提交成功」都抛 rvcPolls.set is not a function 误报成提交失败，
+// 并且定时器每周期翻倍、完成时的 clearInterval 也抛（被 catch 吞掉）→ 界面永远显示转换中。
+const rvcPolls = new Map();
+const rvcMiss = new Map();   // rid → 连续查不到状态的次数
+
+function stopRvcPoll(rid) {
+  const t = rvcPolls.get(rid);
+  if (t) clearInterval(t);
+  rvcPolls.delete(rid);
+  rvcMiss.delete(rid);
+}
 
 async function renderRvc() {
   try {
@@ -2395,12 +2545,14 @@ function renderRvcList() {
   rvcJobs.forEach(j => {
     const d = document.createElement("div");
     d.className = "hist-item";
-    const st = j.status === "done" ? "✓ 完成" : j.status === "error" ? "✕ 失败" : "🎵 转换中";
+    const st = j.status === "done" ? "✓ 完成" : j.status === "error" ? "✕ 失败"
+      : j.status === "lost" ? "⚠ 状态丢失（服务重启过，结果见历史页）" : "🎵 转换中";
     const rvcTitle = j.task_name || (j.model || "").replace(/\.pth$/i, "");
     d.innerHTML = `
       <div class="h-body">
         <div class="h-title">${escapeHtml(rvcTitle)} · ${st}${j.sec ? " · " + j.sec + "s" : ""}</div>
         <div class="h-sub truncate">${escapeHtml((j.model || "").replace(/\.pth$/i, ""))} · ${escapeHtml(j.src_name || j.srcName || "")}</div>
+        <div class="h-sub">${idTag(j.id)}</div>
         ${j.status === "error" ? `<div class="h-sub truncate" title="${escapeHtml(j.error || "")}">${escapeHtml((j.error || "").slice(0, 80))}</div>` : ""}
       </div>
       ${j.status === "done" ? '<button class="ghost" data-play>▶ 播放</button>' : ''}`;
@@ -2434,12 +2586,13 @@ async function pollRvc(rid) {
   try {
     const r = await fetch("/api/rvc/status/" + rid);
     if (r.ok) {
+      rvcMiss.delete(rid);
       const j = await r.json();
       const i = rvcJobs.findIndex(x => x.id === rid);
       if (i >= 0) rvcJobs[i] = { ...rvcJobs[i], ...j };
       renderRvcList();
       if (j.status === "done") {
-        clearInterval(rvcPolls.get(rid)); rvcPolls.delete(rid);
+        stopRvcPoll(rid);
         $("rvcProgress").classList.remove("show");
         $("rvcProgressBar").style.width = "100%";
         $("rvcStatus").className = "status ok";
@@ -2449,7 +2602,7 @@ async function pollRvc(rid) {
         return;
       }
       if (j.status === "error") {
-        clearInterval(rvcPolls.get(rid)); rvcPolls.delete(rid);
+        stopRvcPoll(rid);
         $("rvcProgress").classList.remove("show");
         $("rvcStatus").className = "status err";
         $("rvcStatus").textContent = "换声失败：" + (j.error || "未知错误").slice(0, 160);
@@ -2469,11 +2622,21 @@ async function pollRvc(rid) {
       const fmtR = (t) => t > 90 ? Math.round(t / 60) + " 分钟" : Math.round(t) + " 秒";
       const etaStrR = etaHi <= 0 ? "" : etaLo > 0 ? fmtR(etaLo) + "~" + fmtR(etaHi) : "不超过 " + fmtR(etaHi);
       $("rvcStatus").textContent = `转换中（${j.model || ""}）… 已 ${Math.floor(elapsed/60)}分${Math.round(elapsed%60)}秒` + (etaStrR ? ` · 预计还需 ${etaStrR}` : "") + "（可离开页面）";
+    } else if (r.status === 404) {
+      // 服务端重启过、任务记录已丢：轮下去永远不会有心，连 3 次就停表并如实标状态丢失
+      const n = (rvcMiss.get(rid) || 0) + 1;
+      rvcMiss.set(rid, n);
+      const i = rvcJobs.findIndex(x => x.id === rid);
+      if (n >= 3) {
+        if (i >= 0) { rvcJobs[i] = { ...rvcJobs[i], status: "lost" }; renderRvcList(); }
+        stopRvcPoll(rid);
+        $("rvcProgress").classList.remove("show");
+        return;
+      }
     }
   } catch {}
   if (!rvcPolls.has(rid)) {
-    const t = setInterval(() => pollRvc(rid), 5000);
-    rvcPolls.set(rid, t);
+    rvcPolls.set(rid, setInterval(() => pollRvc(rid), 5000));
   }
 }
 
@@ -2646,8 +2809,16 @@ async function renderRvcModels() {
 }
 
 // ---------- rvc 音色制作 ----------
-const rvcTrainPolls = new Set();  // 每个任务独立轮询
+const rvcTrainPolls = new Map();  // rid → setInterval 句柄（Set 没有 .get/.set，早期版本用 Set 会在注册定时器时抛 TypeError）
+const rvcTrainMiss = new Map();   // rid → 连续查不到状态（404）的次数
 const rvcTrainJobs = [];
+
+function stopRvcTrainPoll(rid) {
+  const t = rvcTrainPolls.get(rid);
+  if (t) clearInterval(t);
+  rvcTrainPolls.delete(rid);
+  rvcTrainMiss.delete(rid);
+}
 
 let _lastTrainKey = "__init__";
 function renderRvcTrainList() {
@@ -2662,7 +2833,9 @@ function renderRvcTrainList() {
   rvcTrainJobs.forEach(j => {
     const d = document.createElement("div");
     d.className = "hist-item";
-    const st = j.status === "done" ? "✓ 完成" : j.status === "error" ? "✕ 失败" : j.status === "pending" ? "⏳ 排队" : "🎵 " + (j.step || "进行中");
+    const st = j.status === "done" ? "✓ 完成" : j.status === "error" ? "✕ 失败"
+      : j.status === "lost" ? "⚠ 状态丢失（服务重启过，成品见音色列表）"
+      : j.status === "pending" ? "⏳ 排队" : "🎵 " + (j.step || "进行中");
     // 训练轮次：进行中且拿到轮次数据时，显示百分比 + 进度条 + 预计剩余时间
     const total = j.epochs_total || j.epochs || 0;
     const inTrain = j.status === "running" && j.step === "训练中" && j.epoch && total > 0;
@@ -2685,6 +2858,7 @@ function renderRvcTrainList() {
       <div class="h-body">
         <div class="h-title">${escapeHtml(j.name || "")} · ${st}${inTrain ? `（${j.epoch}/${total} · ${pct}%）` : ""}${j.sec && j.status !== "running" ? " · " + (j.sec > 90 ? Math.round(j.sec / 60) + "分" : j.sec + "s") : ""}</div>
         <div class="h-sub truncate">${escapeHtml(`${j.samples || "?"} 个样本 · ${j.epochs || "?"} 轮`)}${j.model ? " · 产出 " + escapeHtml(j.model) : ""}${eta}</div>
+        <div class="h-sub">${idTag(j.id)}</div>
         ${pct !== null ? `<div class="progress show" style="margin-top:6px;"><div style="width:${pct}%;"></div></div>` : ""}
         ${j.status === "error" ? `<div class="h-sub truncate" title="${escapeHtml(j.error || "")}">${escapeHtml((j.error || "").slice(0, 100))}</div>` : ""}
         ${liveLog ? `<div class="h-sub truncate" style="color:var(--acc);" title="${escapeHtml(liveLog)}">${escapeHtml(liveLog)}</div>` : ""}
@@ -2775,6 +2949,7 @@ async function pollRvcTrain(rid) {
   try {
     const r = await fetchT("/api/rvc/train/status/" + rid, {}, 15000);
     if (r.ok) {
+      rvcTrainMiss.delete(rid);
       const j = await r.json();
       const i = rvcTrainJobs.findIndex(x => x.id === rid);
       if (i >= 0) {
@@ -2793,7 +2968,7 @@ async function pollRvcTrain(rid) {
       renderRvcTrainList();
       updateRvcTrainProgress(j);
       if (j.status === "done") {
-        clearInterval(rvcTrainPolls.get(rid)); rvcTrainPolls.delete(rid);
+        stopRvcTrainPoll(rid);
         $("rvcTrainStatus").className = "status ok";
         $("rvcTrainStatus").textContent = `音色「${j.name}」制作完成（${Math.round(j.sec / 60)} 分钟），已出现在音色下拉框。`;
         $("rvcTrainProgress").classList.remove("show");
@@ -2802,13 +2977,24 @@ async function pollRvcTrain(rid) {
         return;
       }
       if (j.status === "error") {
-        clearInterval(rvcTrainPolls.get(rid)); rvcTrainPolls.delete(rid);
+        stopRvcTrainPoll(rid);
         $("rvcTrainStatus").className = "status err";
         $("rvcTrainStatus").textContent = "音色制作失败：" + (j.error || "").slice(0, 160);
         $("rvcTrainProgress").classList.remove("show");
         return;
       }
       $("rvcTrainStatus").textContent = `当前步骤：${j.step || "进行中"}…（可离开页面，完成会通知）`;
+    } else if (r.status === 404) {
+      // 网关重启过：内存任务表没了，继续挂着定时器就是永久空转
+      const miss = (rvcTrainMiss.get(rid) || 0) + 1;
+      rvcTrainMiss.set(rid, miss);
+      if (miss >= 3) {
+        stopRvcTrainPoll(rid);
+        const i = rvcTrainJobs.findIndex(x => x.id === rid);
+        if (i >= 0) rvcTrainJobs[i] = { ...rvcTrainJobs[i], status: "lost" };
+        renderRvcTrainList();
+        $("rvcTrainProgress").classList.remove("show");
+      }
     }
   } catch {}
   if (!rvcTrainPolls.has(rid)) {
@@ -2892,6 +3078,23 @@ $("rvcTrainGo").onclick = async () => {
 };
 
 // ---------- boot ----------
+// 创作页表单取值/回填：供下面的 localStorage 持久化调用。
+// 字段清单必须与下方监听白名单一致，否则改了控件却悄悄不再保存。
+const _FORM_IDS = ["taskName", "style", "lyrics", "cot", "abc", "gender", "seed", "steps", "cfg",
+  "genCount", "bpm", "abc_temperature", "abc_top_p", "abc_top_k",
+  "semantic_temperature", "semantic_top_p", "semantic_top_k"];
+function currentConfig() {
+  const c = {};
+  _FORM_IDS.forEach((id) => { const el = $(id); if (el) c[id] = el.value; });
+  const box = $("abcChords"); if (box) c.abcChords = !!box.checked;
+  return c;
+}
+function applyConfig(c) {
+  if (!c || typeof c !== "object") return;
+  _FORM_IDS.forEach((id) => { const el = $(id); if (el && c[id] != null) el.value = String(c[id]); });
+  const box = $("abcChords"); if (box && c.abcChords != null) box.checked = !!c.abcChords;
+  analyzeAbcDebounced();   // 回填的谱要重算「有没有和弦/走哪条档位」提示
+}
 // 创作页表单自动持久化：切 dsh 对话页再切回（iframe 重载）也不丢歌词/曲风/参数
 (function () {
   const KEY = "yue2_compose_form";
@@ -2902,20 +3105,20 @@ $("rvcTrainGo").onclick = async () => {
       const c = JSON.parse(saved);
       if (c && (c.style || c.lyrics)) applyConfig(c);
     }
-  } catch (e) {}
+  } catch (e) { console.warn("恢复上次表单失败：", e); }
   // 自动保存：内容变化即写 localStorage（防抖 400ms），iframe 销毁前兜底再存一次
   const save = () => {
-    try { localStorage.setItem(KEY, JSON.stringify(currentConfig())); } catch (e) {}
+    try { localStorage.setItem(KEY, JSON.stringify(currentConfig())); } catch (e) { console.warn("表单保存失败：", e); }
   };
   let timer = null;
   document.addEventListener("input", (ev) => {
-    if (ev.target && ev.target.id && /^(style|lyrics|abc|cot|seed|cfg|steps|gender|bpm|abc_|semantic_|genCount|model|taskName)$/.test(ev.target.id)) {
+    if (ev.target && ev.target.id && /^(taskName|style|lyrics|abc|abcChords|cot|seed|cfg|steps|gender|bpm|abc_|semantic_|genCount|model)$/.test(ev.target.id)) {
       clearTimeout(timer);
       timer = setTimeout(save, 400);
     }
   });
   document.addEventListener("change", (ev) => {
-    if (ev.target && ev.target.id && /^(cot|seed|steps|cfg|gender|genCount|model)$/.test(ev.target.id)) save();
+    if (ev.target && ev.target.id && /^(cot|seed|steps|cfg|gender|genCount|abcChords|model)$/.test(ev.target.id)) save();
   });
   window.addEventListener("beforeunload", save);
 })();

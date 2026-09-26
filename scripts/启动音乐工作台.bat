@@ -23,6 +23,9 @@ netstat -ano | findstr /R /C:":%DSH_PORT% .*LISTENING" >nul && set DSH_UP=1
 
 set GRADIO_TEMP_DIR=%cd%\tmp\
 set PYTHON_PATH=%cd%\py312\
+rem 蓝军 N-9：PowerShell 侧一律从环境变量取目录，不把路径拼进字符串字面量
+rem （路径含单引号会让整条命令语法崩，且被 catch 吞掉看不到根因）。
+set "YUE2_ROOT_DIR=%cd%"
 set PYTHONHOME=
 set PYTHONPATH=
 set PYTHON_EXECUTABLE=%PYTHON_PATH%\python.exe
@@ -56,8 +59,16 @@ if errorlevel 1 (
 )
 
 if "%GATEWAY_UP%"=="1" goto watchdog
-echo [1/3] 启动网关 :%GATEWAY_PORT%（WMI 无窗口启动）...
-powershell -NoProfile -Command "$sw=([wmiclass]'Win32_ProcessStartup').CreateInstance(); $sw.ShowWindow=0; $p=([wmiclass]'Win32_Process').Create('%cd%\py312\python.exe -s %cd%\app.py','%cd%',$sw); if($p.ReturnValue -ne 0){exit 1}"
+echo [1/3] 启动网关 :%GATEWAY_PORT%（无窗口启动，继承本脚本环境变量）...
+rem 蓝军 S5：这里原先用 WMI Win32_Process.Create 拉起。WMI 派生的进程继承的是 WMI 服务的环境，
+rem 不是本 cmd 的环境 —— 上面 set 的 HF_ENDPOINT/HF_HOME/TORCH_HOME/FFMPEG_PATH/NO_PROXY/密钥
+rem 对首启的网关全部无效（看门狗重启那条却是带着 env 的），于是"首次运行走镜像、重启后走别的"
+rem 两套行为。实测对照（同一段子进程脚本，只换拉起方式）：WMI 读不到探针变量，Start-Process 读得到。
+rem Start-Process -WindowStyle Hidden 同样不弹控制台窗口，且逐层继承父进程环境，故改用它。
+rem 目录从环境变量取（脚本开头 set 的 YUE2_ROOT_DIR），不拼进 PS 字符串字面量：
+rem 路径里有单引号（C:\Users\O'Brien\...）会让整条 PS 命令语法崩，而 catch{exit 1}
+rem 把根因吞得干干净净，用户只能看到"网关未就绪"。
+powershell -NoProfile -Command "try{Start-Process -WindowStyle Hidden -FilePath (Join-Path $env:YUE2_ROOT_DIR 'py312\python.exe') -ArgumentList '-s',(Join-Path $env:YUE2_ROOT_DIR 'app.py') -WorkingDirectory $env:YUE2_ROOT_DIR -PassThru -ErrorAction Stop | Out-Null}catch{exit 1}"
 
 :watchdog
 rem 看门狗：网关假死（health 无响应）自动重启；pythonw 无窗口，日志写 runtime\data\logs\watchdog.log
@@ -72,7 +83,7 @@ if exist "runtime\_watchdog.pid" (
   goto dsh2
 )
 echo [2/3] 启动网关看门狗（假死自愈，无窗口）...
-powershell -NoProfile -Command "$p = Start-Process -WindowStyle Hidden '%PYTHON_PATH%pythonw.exe' -WorkingDirectory '%cd%' -ArgumentList 'watchdog.py' -PassThru; $p.Id | Out-File -Encoding ascii 'runtime\_watchdog.pid'"
+powershell -NoProfile -Command "$wd = if ($env:YUE2_ROOT_DIR) { $env:YUE2_ROOT_DIR } else { (Get-Location).Path }; $p = Start-Process -WindowStyle Hidden (Join-Path $wd 'py312\pythonw.exe') -WorkingDirectory $wd -ArgumentList 'watchdog.py' -PassThru; $p.Id | Out-File -Encoding ascii (Join-Path $wd 'runtime\_watchdog.pid')"
 goto dsh2
 :dsh
 echo [2/3] 看门狗已在运行，跳过
