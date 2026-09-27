@@ -3111,6 +3111,18 @@ def _pymss_env() -> dict:
     return env
 
 
+# legacy VR (UVR-*) 多 band 卷积在本机 cuDNN 上整批吐 NaN（→ nan_to_num → 数字静音）。
+# 关掉 cuDNN 后 GPU 结果与 CPU 逐位一致且更快；开关由 sitecustomize 读
+# PYMSS_DISABLE_CUDNN 实现，只作用于我们显式传入的净化子进程。
+_RVC_VR_LEGACY = "UVR-"
+
+
+def _pymss_env_cudnn_off() -> dict:
+    env = _pymss_env()
+    env["PYMSS_DISABLE_CUDNN"] = "1"
+    return env
+
+
 def _pymss_creationflags() -> int:
     """PyMSS 分离子进程降 CPU 优先级（低于普通程序），浏览器/界面优先拿到算力。"""
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -4342,6 +4354,9 @@ _RVC_CLEAN_CN = {"light": "轻", "medium": "中"}
 _RVC_CLEAN_KEEP_NAMES = {"dry", "noreverb", "nonoise", "vocals", "vocal", "clean"}
 _RVC_CLEAN_DROP_NAMES = {"reverb", "noise", "wet", "other", "echo", "novocals",
                          "instrumental", "instrument", "accompaniment", "backing"}
+# 净化产物峰值低于此值（≈ -80 dBFS）一律判为"数字静音"，不当净化结果往下送。
+# 正常干声净化后实测峰值 0.29 量级；cuDNN NaN→nan_to_num 的产物峰值恰好是 0.0。
+_RVC_CLEAN_SILENT_PEAK = 1e-4
 
 
 def _rvc_clean_norm(s: str) -> str:
@@ -4372,13 +4387,46 @@ def _rvc_clean_select(stage_out: Path, stem: str) -> Path | None:
     return rest[0] if len(rest) == 1 else None
 
 
+def _rvc_clean_wav_peak(path: Path):
+    """分块读 WAV 求峰值（单个素材能到 111 MB，不能整文件进内存）。
+    含 NaN 或全零返回 0.0；文件读不动返回 None（交给下游报错，不冒充"静音"）。"""
+    import numpy as np
+    import soundfile as sf
+    peak = 0.0
+    try:
+        with sf.SoundFile(str(path)) as f:
+            for blk in f.blocks(blocksize=1 << 18, dtype="float32", always_2d=True):
+                if not np.isfinite(blk).all():
+                    return 0.0
+                peak = max(peak, float(np.abs(blk).max()))
+    except Exception:
+        return None
+    return peak
+
+
+def _rvc_clean_pick_silent(pick: Path) -> bool:
+    """选中的那条"干净人声"是不是数字静音（峰值 < _RVC_CLEAN_SILENT_PEAK）。
+    只判被选中的声部，不判同批其它声部——降噪模型的 Noise 声部实测峰值 4e-4，
+    本来就"几乎没声音"，按目录扫会把好素材误杀。"""
+    peak = _rvc_clean_wav_peak(pick)
+    return peak is not None and peak < _RVC_CLEAN_SILENT_PEAK
+
+
 def _rvc_pymss_stage(model: str, in_dir: Path, out_dir: Path, dev: str) -> str:
     """对一个目录跑一次 PyMSS 推理（权重只加载一次）。返回 ""=成功，否则为错误摘要。
 
     `infer -i` 原生支持传目录；整批失败不直接判死——调用方还可以逐文件重试，
     一个坏文件不该拖垮整批素材。--download：换机器/清过缓存时自动补权重
-    （和分离模型同一个解析链：PYMSS_MODEL_DIR → tools/all_models → ~/.cache/pymss/models）。"""
+    （和分离模型同一个解析链：PYMSS_MODEL_DIR → tools/all_models → ~/.cache/pymss/models）。
+
+    legacy VR（UVR-*）多 band 卷积在本机 cuDNN 上整批吐 NaN，NaN 被 nan_to_num 洗成
+    数字零——产物退出码 0、文件齐全、内容全静音，是净化链上最难查的一种退化。
+    这类模型显式关掉 cuDNN（实测峰值与 CPU 一致且更快）；静音判定放在调用方
+    _rvc_clean_dataset 里对"选中的那条声部"做，不能在这里整目录扫——降噪模型的
+    Noise 声部本来就极安静（实测峰值 4e-4），按目录扫会误杀。"""
     out_dir.mkdir(parents=True, exist_ok=True)
+    vr_legacy = model.startswith(_RVC_VR_LEGACY)
+    env = _pymss_env_cudnn_off() if vr_legacy else _pymss_env()
 
     def _one(src: Path) -> str:
         try:
@@ -4392,7 +4440,7 @@ def _rvc_pymss_stage(model: str, in_dir: Path, out_dir: Path, dev: str) -> str:
                  "-i", str(src), "-o", str(out_dir), "--device", dev, "--download"],
                 capture_output=True, timeout=7200,
                 creationflags=_pymss_creationflags(),
-                cwd=str(RVC_DIR), env=_pymss_env())
+                cwd=str(RVC_DIR), env=env)
         except Exception as e:
             return str(e)[:160]
         if r.returncode != 0:
@@ -4424,7 +4472,10 @@ def _rvc_clean_dataset(train_dir: Path, out_dir: Path, tier: str,
     if not files:
         raise RuntimeError(f"净化输入目录没有可识别的音频：{train_dir}")
     out_dir.mkdir(parents=True, exist_ok=True)
-    if resume and all((out_dir / f"{p.stem}.wav").is_file() for p in files):
+    # 续跑复用留档的前提是那份留档"真的净化过"：上一轮若是 cuDNN NaN→0 留下的静音，
+    # 只看文件齐不齐就会把数字零直接喂进预处理，最后又收成一句"没有可用样本"。
+    if resume and all((out_dir / f"{p.stem}.wav").is_file() for p in files) \
+            and not any(_rvc_clean_pick_silent(out_dir / f"{p.stem}.wav") for p in files):
         return {"tier": tier, "label": _RVC_CLEAN_CN[tier],
                 "dereverb": de_model, "denoise": dn_model,
                 "files": len(files), "fully_cleaned": len(files),
@@ -4448,6 +4499,7 @@ def _rvc_clean_dataset(train_dir: Path, out_dir: Path, tier: str,
         stage_out = tmp / f"{label}_out"
         job["step"] = f"素材净化（{cn} · {cn_label}，{len(cur)} 个文件）"
         _rvc_train_write(rid, job)
+        retry_dev = dev
         err = _rvc_pymss_stage(model, in_dir, stage_out, dev)
         if err:
             err_note = (err_note + f"；{cn_label}整批失败后逐文件重试：")[:200]
@@ -4455,12 +4507,31 @@ def _rvc_clean_dataset(train_dir: Path, out_dir: Path, tier: str,
                 if any(stage_out.glob(f"{src.stem}_*")):
                     continue
                 err_note += f"{cn_label}:{src.name[:40]} " + \
-                    (_rvc_pymss_stage(model, src, stage_out, dev) or "ok")[:60]
+                    (_rvc_pymss_stage(model, src, stage_out, retry_dev) or "ok")[:60]
+        picks = {stem: _rvc_clean_select(stage_out, stem) for stem in cur}
+        silent = [s for s, p in picks.items() if p is not None and _rvc_clean_pick_silent(p)]
+        if silent and len(silent) == len([p for p in picks.values() if p is not None]) \
+                and dev != "cpu":
+            # 守卫 2：整批选中的声部全是数字静音（VR 多 band 在 cuDNN 上 NaN→nan_to_num→0）。
+            # 换设备重跑整批，而不是把"没净化成"悄悄记成 carried 往下送。
+            err_note = (err_note + f"；{cn_label}：GPU 产物全为数字静音（cuDNN NaN→0），整批改走 CPU 重跑")[:400]
+            job["step"] = f"素材净化（{cn} · {cn_label}）GPU 吐静音，改走 CPU 重跑"
+            _rvc_train_write(rid, job)
+            shutil.rmtree(stage_out, ignore_errors=True)
+            err = _rvc_pymss_stage(model, in_dir, stage_out, "cpu")
+            picks = {stem: _rvc_clean_select(stage_out, stem) for stem in cur}
+            silent = [s for s, p in picks.items() if p is not None and _rvc_clean_pick_silent(p)]
+            retry_dev = "cpu"
+        if silent:
+            # 个别文件吐静音（或 CPU 重跑后仍静音）：那一条退回净化前版本，绝不当"已净化"。
+            err_note = (err_note + f"；{cn_label}：{len(silent)} 个产物为数字静音，已退回净化前版本")[:400]
+            for s in silent:
+                picks[s] = None
         nxt = tmp / f"{label}_v"
         nxt.mkdir(parents=True, exist_ok=True)
         new_cur = {}
         for stem, src in cur.items():
-            pick = _rvc_clean_select(stage_out, stem)
+            pick = picks[stem]
             if pick is None:
                 new_cur[stem] = src           # 回退：带着净化前的版本进下一步
                 carry += 1
@@ -4477,13 +4548,26 @@ def _rvc_clean_dataset(train_dir: Path, out_dir: Path, tier: str,
         raise RuntimeError("素材净化全部失败（PyMSS 净化模型缺失或推理报错，"
                            f"权重需落在 {_pymss_model_dir()}）{('：' + err_note[:160]) if err_note else ''}；"
                            "素材本来就是干净干声的话，取消净化后重新提交")
+    min_peak = None
     for stem, src in cur.items():
         cleaned = src.parent.name.endswith("_v")
         dst = out_dir / (f"{stem}.wav" if cleaned else src.name)
         shutil.move(str(src), str(dst))
+        if cleaned:
+            # 落档后逐个复测峰值并留档：min_peak 是"净化真的做了且没做塌"的唯一可见证据，
+            # 出静音当场报错——绝不能等到预处理切不出片子时才以"没有可用样本"收口。
+            peak = _rvc_clean_wav_peak(dst)
+            if peak is not None:
+                if peak < _RVC_CLEAN_SILENT_PEAK:
+                    raise RuntimeError(
+                        f"净化产物 {dst.name} 峰值 {peak:.1e} 为数字静音（疑 GPU cuDNN 吐 NaN→0），"
+                        "已中止训练；素材已留档，可换净化档位或关闭净化重提交")
+                min_peak = peak if min_peak is None else min(min_peak, peak)
     shutil.rmtree(tmp, ignore_errors=True)
     return {"tier": tier, "label": cn, "dereverb": de_model, "denoise": dn_model,
             "files": len(files), "fully_cleaned": real, "carried": carry,
+            "min_peak": None if min_peak is None else round(min_peak, 4),
+            "note": err_note[:400] or None,
             "sec": round(time.perf_counter() - t0, 1),
             "before": str(train_dir), "after": str(out_dir)}
 

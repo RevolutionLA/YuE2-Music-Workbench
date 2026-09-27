@@ -2001,6 +2001,182 @@ class TestRvcModelsList(Sandbox):
             app.RVC_MODELS_DIR = saved
 
 
+class TestTrainCleanSilentGuard(Sandbox):
+    """2026-09-27「蛋卷」真机事故锁测：legacy VR（UVR-*）多 band 卷积在这块卡上
+    整批吐 NaN，被 nan_to_num 洗成数字零——产物退出码 0、文件齐全、内容全静音，
+    一路骗到预处理才以"没有可用样本"收口（2.2 小时白跑）。三条防线：
+    ① py312 sitecustomize 的 PYMSS_DISABLE_CUDNN 开关只喂 legacy VR 净化子进程；
+    ② 选中声部峰值≈0 判失败：整批静音换 CPU 重跑、个别静音退回净化前、落档复测；
+    ③ 续跑复用留档前先验峰值——上一轮留下的静音不能被当成"已净化"直接继承。
+    stub 同样只放在 subprocess.run 边界，其余全走真实函数路径。"""
+
+    DE_BS = "dereverb_bs_roformer_anvuew_sdr_22.5050"   # 中档去混响（GPU 正常）
+    DN_VR = "UVR-DeNoise"                               # 中档降噪（本事故主犯）
+    SUFFIX = {DE_BS: ["noreverb", "reverb"],
+              DN_VR: ["No Noise", "Noise"]}
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._saved_guard = (app.subprocess, app.backend_mode, app._pymss_env,
+                             app._pymss_creationflags)
+        app.backend_mode = lambda: "cuda"
+        app._pymss_env = lambda: {}
+        app._pymss_creationflags = lambda: 0
+        self.cmds: list[list[str]] = []
+        self.envs: list[tuple[str, str, dict]] = []
+        self.silent_on_cuda: set[str] = set()     # 模型 → cuda 跑出静音、cpu 正常
+        self.no_output_for: set[tuple[str, str]] = set()
+        self.real_audio = False                   # True 时产物写真 wav（测峰值链）
+
+        class _R:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        def _write_wav(path: Path, silent: bool) -> None:
+            import numpy as np
+            import soundfile as sf
+            n = 40000 * 3
+            x = (np.zeros(n, dtype="float32") if silent else
+                 (0.3 * np.sin(2 * np.pi * 220 * np.arange(n) / 40000)).astype("float32"))
+            sf.write(str(path), x, 40000)
+
+        def fake_run(cmd, **kw):
+            cmd = [str(c) for c in cmd]
+            self.cmds.append(cmd)
+            model = cmd[cmd.index("infer") + 1]
+            dev = cmd[cmd.index("--device") + 1]
+            src = Path(cmd[cmd.index("-i") + 1])
+            out = Path(cmd[cmd.index("-o") + 1])
+            self.envs.append((model, dev, dict(kw.get("env") or {})))
+            out.mkdir(parents=True, exist_ok=True)
+            items = [src] if src.is_file() else sorted(p for p in src.iterdir()
+                                                       if p.is_file())
+            for w in items:
+                if (model, w.stem) in self.no_output_for:
+                    continue
+                silent = model in self.silent_on_cuda and dev == "cuda"
+                for s in self.SUFFIX[model]:
+                    dst = out / f"{w.stem}_{s}.wav"
+                    if silent:
+                        _write_wav(dst, True)
+                    elif self.real_audio:
+                        _write_wav(dst, False)
+                    else:
+                        dst.write_bytes(s.encode())
+            return _R()
+
+        app.subprocess = types.SimpleNamespace(run=fake_run)
+
+    def tearDown(self) -> None:
+        app.subprocess, app.backend_mode, app._pymss_env, app._pymss_creationflags = \
+            self._saved_guard
+        super().tearDown()
+
+    def _mk(self, *stems: str):
+        rid = "trainsilent01"
+        ds = app.RVC_TRAIN_DIR / rid / "dataset"
+        ds.mkdir(parents=True, exist_ok=True)
+        for s in stems:
+            (ds / f"{s}.wav").write_bytes(b"orig")
+        return ds, app.RVC_TRAIN_DIR / rid / "dataset_purified", {"id": rid}
+
+    def test_cudnn_off_env_only_for_legacy_vr(self):
+        ds, out, job = self._mk("a")
+        app._rvc_clean_dataset(ds, out, "medium", job)
+        vr_env = [e for m, d, e in self.envs if m == self.DN_VR]
+        bs_env = [e for m, d, e in self.envs if m == self.DE_BS]
+        self.assertTrue(vr_env and all(e.get("PYMSS_DISABLE_CUDNN") == "1" for e in vr_env),
+                        "legacy VR 净化子进程必须带 PYMSS_DISABLE_CUDNN=1（cuDNN NaN 的唯一开关）")
+        self.assertTrue(bs_env and all("PYMSS_DISABLE_CUDNN" not in e for e in bs_env),
+                        "bs_roformer 不关 cuDNN——别为了修 VR 把分离/去混响一起拖慢")
+
+    def test_gpu_silent_batch_reruns_on_cpu_and_lands_real_audio(self):
+        ds, out, job = self._mk("a", "b")
+        self.silent_on_cuda = {self.DN_VR}
+        self.real_audio = True   # 走真实峰值链：CPU 重跑的产物必须是可读的真 wav
+        info = app._rvc_clean_dataset(ds, out, "medium", job)
+        dn_devs = [d for m, d, _ in self.envs if m == self.DN_VR]
+        self.assertIn("cuda", dn_devs)
+        self.assertIn("cpu", dn_devs, "GPU 整批吐静音必须自动换 CPU 重跑，而不是收工")
+        self.assertEqual((info["fully_cleaned"], info["carried"]), (2, 0))
+        self.assertIn("数字静音", info["note"] or "", "换设备这件事必须留在任务卡上")
+        self.assertIsNotNone(info["min_peak"])
+        for f in ("a.wav", "b.wav"):
+            import soundfile as sf
+            x, _ = sf.read(str(out / f), dtype="float32")
+            self.assertGreater(float(abs(x).max()), 0.05,
+                               "落档的成品必须真的是有声素材，不是数字零")
+
+    def test_quiet_noise_stem_is_not_mistaken_for_silence(self):
+        """降噪模型本来就极安静的 Noise 声部（真机实测峰值 4e-4）不能触发静音守卫，
+        否则好素材会被误判、整批白白重跑一遍 CPU。"""
+        import numpy as np
+        import soundfile as sf
+        quiet = self.tmp / "quiet.wav"
+        sf.write(str(quiet), (4e-4 * np.ones(40000 * 2)).astype("float32"), 40000)
+        silent = self.tmp / "silent.wav"
+        sf.write(str(silent), np.zeros(40000 * 2, dtype="float32"), 40000)
+        loud = self.tmp / "loud.wav"
+        sf.write(str(loud), (0.3 * np.ones(40000 * 2)).astype("float32"), 40000)
+        self.assertTrue(app._rvc_clean_pick_silent(silent))
+        self.assertFalse(app._rvc_clean_pick_silent(quiet))
+        self.assertFalse(app._rvc_clean_pick_silent(loud))
+
+    def test_resume_reuse_refuses_stale_silent_purified(self):
+        """续跑复用留档前先验峰值：上一轮 cuDNN NaN→0 留下的 dataset_purified
+        不能被"文件齐了就跳过"直接继承，否则数字零会被喂进预处理再白跑一次。"""
+        import numpy as np
+        import soundfile as sf
+        ds, out, job = self._mk("a")
+        out.mkdir(parents=True, exist_ok=True)
+        sf.write(str(out / "a.wav"), np.zeros(40000 * 2, dtype="float32"), 40000)
+        self.no_output_for = {(self.DE_BS, "a"), (self.DN_VR, "a")}
+        with self.assertRaises(RuntimeError) as cm:
+            app._rvc_clean_dataset(ds, out, "medium", job, resume=True)
+        self.assertIn("素材净化全部失败", str(cm.exception))
+
+    def test_unreadable_output_is_not_silence(self):
+        """读不动的产物交给下游报错，不许冒充"静音"——否则会把可诊断的损坏
+        伪装成环境问题。"""
+        self.assertIsNone(app._rvc_clean_wav_peak(self.tmp / "nope.wav"))
+
+
+class TestPreprocessEmptySliceGuard(unittest.TestCase):
+    """runtime/rvc/train/preprocess.py:109 的真空切片守卫（真机撞过）：
+    切片器一片都切不出时老代码在 norm_write 上抛 UnboundLocalError，13 条素材
+    全报同一个栈，真原因（整段静音/过短）被完全遮住。这里用真脚本、真静音素材跑。"""
+
+    RUNTIME = ROOT / "runtime" / "rvc"
+
+    @unittest.skipUnless((ROOT / "runtime" / "rvc" / "train" / "preprocess.py").is_file(),
+                         "本机没有 vendored runtime")
+    def test_silent_input_reports_skip_not_unbound_error(self):
+        import subprocess
+        import numpy as np
+        import soundfile as sf
+        with tempfile.TemporaryDirectory(prefix="yue2-pp-") as t:
+            t = Path(t)
+            src, out = t / "in", t / "out"
+            src.mkdir()
+            out.mkdir()
+            sf.write(str(src / "sil.wav"), np.zeros(40000 * 30, dtype="float32"), 40000)
+            env = {**os.environ, "PYTHONPATH": str(self.RUNTIME),
+                   "RVC_AUDIO_FORCE_CPU": "1"}
+            r = subprocess.run(
+                [sys.executable, "-P", str(self.RUNTIME / "train" / "preprocess.py"),
+                 str(src), "40000", "1", str(out), "True", "3.7"],
+                capture_output=True, timeout=600, env=env, cwd=str(self.RUNTIME))
+            log = (out / "preprocess.log")
+            text = log.read_text(encoding="utf8") if log.is_file() else ""
+            self.assertNotIn("UnboundLocalError", (r.stdout or b"").decode("utf8", "replace")
+                             + (r.stderr or b"").decode("utf8", "replace") + text,
+                             "空切片必须走新守卫，不许再抛 UnboundLocalError")
+            self.assertIn("切不出任何片段", text)
+            self.assertEqual(list((out / "0_gt_wavs").iterdir()), [],
+                             "静音素材切不出片段，产物目录就该是空的")
+
+
 class TestRvcIndexNamed(Sandbox):
     """推理必须点名给索引：本机 王菲 与 王菲V6 并存时，runtime 自己的子串猜测
     会按文件名排序选中 王菲V6 的外链——选 王菲 却在用别人的检索库。"""
