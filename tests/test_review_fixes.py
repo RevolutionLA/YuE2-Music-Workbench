@@ -10,13 +10,16 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
-import time
+import threading
 import time
 import types
 import unittest
 from pathlib import Path
+
+import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 for p in (str(ROOT), str(ROOT / "src")):
@@ -42,6 +45,7 @@ for _name in ("voices", "asr", "denoise", "lrc"):
             sys.modules[_name] = types.ModuleType(_name)
 
 import app  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 LOCAL_BASE = f"http://127.0.0.1:{app.settings.app_port}"
@@ -61,6 +65,22 @@ class Sandbox(unittest.TestCase):
         for d in (app.OUTPUT_DIR, app.SCORES_DIR, app.HIST_DIR,
                   app.RVC_JOB_DIR, app.RVC_TRAIN_DIR):
             Path(d).mkdir(parents=True, exist_ok=True)
+        # 索引目录也一并挪走：网关找配套索引看的是本机 assets/indices 与 logs，
+        # 不重定向的话"提交换声"这类用例就只在作者机上通过（作者恰好装过孙燕姿的索引），
+        # 换台机器就凭空多出一堆 400。
+        self._saved["_rvc_index_dirs"] = app._rvc_index_dirs
+        self.rvc_indices = self.tmp / "indices"
+        self.rvc_logs = self.tmp / "logs"
+        for d in (self.rvc_indices, self.rvc_logs):
+            d.mkdir(parents=True, exist_ok=True)
+        # CLI 能力探测默认模拟"打过补丁的 runtime"。不 stub 的话 fcpe 用例会真起子进程
+        # 探本机 runtime——作者机装了 torchfcpe 就绿、换台没装的机器红得莫名其妙，
+        # 这正是索引目录那条评论过的"本机假通过"。个别用例再点名改成缺能力场景。
+        self._saved["_rvc_cli_caps"] = app._rvc_cli_caps
+        self._saved["_rvc_fcpe_ok"] = app._rvc_fcpe_ok
+        app._rvc_cli_caps = lambda: {"filter_radius": True, "fcpe": True}
+        app._rvc_fcpe_ok = lambda: True
+        app._rvc_index_dirs = lambda: (self.rvc_indices, self.rvc_logs)
         app._ID_SEEN.clear()
 
     def tearDown(self) -> None:
@@ -100,6 +120,37 @@ class TestPurge(Sandbox):
         keep.write_text("x", encoding="utf-8")
         for bad in ("*", "", ".", "..", "*/.."):
             self.assertEqual(app._output_purge(bad), 0)
+        self.assertTrue(keep.is_file())
+
+    def test_output_purge_takes_meta_recorded_multi_artifacts(self):
+        # 换声多产物叫 `<id>_full_song.wav` 这种名字，后缀白名单命不中：
+        # 删一条换声记录曾留下三个几十 MB 的孤儿（本团队自查发现）
+        import json
+        rid = "20260101_000000_aaaaaaaa"
+        (app.OUTPUT_DIR / f"{rid}.wav").write_text("x", encoding="utf-8")
+        for part in ("vocals_original", "accompaniment", "full_song"):
+            (app.OUTPUT_DIR / f"{rid}_{part}.wav").write_text("x", encoding="utf-8")
+        (app.OUTPUT_DIR / f"{rid}.json").write_text(json.dumps(
+            {"assets": {"vocals_raw": f"{rid}_vocals_original.wav",
+                        "accompaniment": f"{rid}_accompaniment.wav",
+                        "full_song": f"{rid}_full_song.wav"}}), encoding="utf-8")
+        neighbor = app.OUTPUT_DIR / "20260101_000000_aaaaaaaa_other.wav"
+        neighbor.write_text("x", encoding="utf-8")
+        self.assertEqual(app._output_purge(rid), 5)  # 3 多产物 + .wav + .json
+        self.assertTrue(neighbor.is_file(), "同前缀但 meta 没登记的，不许顺手删")
+
+    def test_output_purge_ignores_assets_that_are_not_this_tasks(self):
+        # meta 里的 assets 只认 `<rid>_*.wav` 这个形状，别的（穿越、别人的产物、
+        # 奇怪后缀）一概不碰——这是 URL 里的 rid 加上可被改的 meta 两个入口叠出来的面
+        import json
+        rid = "20260101_000000_aaaaaaaa"
+        keep = app.OUTPUT_DIR / "20260101_000001_bbbbbbbb.wav"
+        keep.write_text("x", encoding="utf-8")
+        (app.OUTPUT_DIR / f"{rid}.json").write_text(json.dumps(
+            {"assets": {"a": keep.name, "b": "../../app.py", "c": f"{rid}x.wav",
+                        "d": f"{rid}_evil.txt", "e": ""}}), encoding="utf-8")
+        self.assertEqual(app._output_extra_assets(rid), [])
+        self.assertEqual(app._output_purge(rid), 1)  # 只删掉那份 .json
         self.assertTrue(keep.is_file())
 
     def test_rvc_job_purge_removes_uploaded_source(self):  # S7：原曲 + 分离 stem 不能变孤儿
@@ -592,6 +643,134 @@ class TestGsvChainConfig(Sandbox):
         self.assertIn(app._gsv_chain_available(), (True, False))
 
 
+class TestRvcGateAndMix(Sandbox):
+    """换声三投诉的锁定用例：①没人声段的底噪 ②成品丢了立体声 ③去和声开关要真存在。"""
+
+    SR = 8000
+
+    def _tone(self, n, amp=0.3, f=279.0):
+        t = np.arange(n) / self.SR
+        return (amp * np.sin(2 * np.pi * f * t)).astype(np.float32)[:, None]
+
+    def test_gate_mutes_hum_over_silent_reference(self):  # 症状①：模型在静音处自己哼音
+        ref = np.zeros((self.SR * 3, 2), dtype=np.float32)     # 送 RVC 的人声 = 静音
+        voc = self._tone(self.SR * 3)                          # RVC 却输出了恒定蜂鸣
+        out, info = app._apply_silence_gate(voc, ref, self.SR)
+        rms = float(np.sqrt((out.astype(np.float64) ** 2).mean()))
+        self.assertLess(20 * np.log10(max(rms, 1e-12)), -55.0, "静音段没被压下去")
+        self.assertGreaterEqual(info["gate_closed_ratio"], 0.9)
+
+    def test_gate_keeps_vocal_untouched_over_active_reference(self):  # 不能误切人声
+        voc = self._tone(self.SR * 3)
+        ref = np.repeat(self._tone(self.SR * 3, amp=0.4), 2, axis=1)
+        out, info = app._apply_silence_gate(voc, ref, self.SR)
+        self.assertAlmostEqual(float(np.sqrt((out ** 2).mean())),
+                               float(np.sqrt((voc ** 2).mean())), delta=1e-4)
+        self.assertEqual(info["gate_closed_ratio"], 0.0)
+        self.assertTrue(info["gate_open_frames"].all())
+
+    def test_gate_reference_length_mismatch_is_rescaled(self):  # 换声输出采样数与输入不同
+        out, info = app._apply_silence_gate(self._tone(self.SR * 2),
+                                            np.zeros((self.SR * 3, 1), dtype=np.float32),
+                                            self.SR)
+        self.assertEqual(out.shape[0], self.SR * 2)
+
+    def test_mix_never_collapses_stereo_accompaniment(self):  # 症状②：成品曾被压成单声道
+        voc = self._tone(self.SR * 2)                          # 单声道人声
+        acc = np.stack([self._tone(self.SR * 2, 0.2)[:, 0],
+                        self._tone(self.SR * 2, 0.2, 281.0)[:, 0]], axis=1)  # 立体声伴奏
+        mixed = app._mix_vocal_accompaniment(voc, acc)
+        self.assertEqual(mixed.shape[1], 2, "伴奏声道数不能被压掉")
+        self.assertFalse(np.allclose(mixed[:, 0], mixed[:, 1]), "两声道必须不同")
+
+    def test_mix_pads_shorter_side(self):
+        mixed = app._mix_vocal_accompaniment(self._tone(self.SR), self._tone(self.SR * 2))
+        self.assertEqual(mixed.shape[0], self.SR * 2)
+
+    def test_mask_to_signal_covers_request_length(self):
+        m = app._mask_to_signal(np.array([True, False, True]), 9)
+        self.assertEqual(m.shape, (9,))
+        self.assertEqual(app._mask_to_signal(None, 4).all(), True)
+
+    def test_convert_worker_exposes_gate_and_strip_harmony(self):  # 症状③开关真的接进了流水线
+        import inspect
+        worker = inspect.signature(app._rvc_convert_worker)
+        for name in ("separate_vocal", "gate", "strip_harmony",
+                     "filter_radius", "resample_sr"):
+            self.assertIn(name, worker.parameters)
+        sep_sig = inspect.signature(app._run_vocal_separation)
+        self.assertIn("strip_harmony", sep_sig.parameters)
+        # 端点的默认值不是裸值而是 Form 实例（app.py 开了 future annotations）
+        endpoint = inspect.signature(app.rvc_convert).parameters
+        self.assertIn("gate", endpoint)
+        self.assertIn("strip_harmony", endpoint)
+        self.assertEqual(endpoint["gate"].default.default, "on")
+        self.assertEqual(endpoint["filter_radius"].default.default, 3)
+        self.assertEqual(endpoint["resample_sr"].default.default, 0)
+
+    def test_gate_envelope_matches_reference_implementation(self):  # 评审 F1：分块≠改结果
+        """分块重构后的阈值必须与旧的全展开 float64 参考实现一致。"""
+        rng = np.random.default_rng(7)
+        ref = np.zeros(self.SR * 3, dtype=np.float32)
+        ref[self.SR:self.SR * 2] = rng.standard_normal(self.SR).astype(np.float32) * 0.3
+        gain, thr, open_ = app._gate_envelope(ref, self.SR)
+        # 参考实现：当年那份 np.stack 全展开（就是被 F1 点名的写法）
+        n, hop = int(self.SR * 0.02), int(self.SR * 0.01)
+        starts = np.arange(0, max(1, len(ref) - n + 1), hop)
+        frames = np.stack([ref[s:s + n] for s in starts]).astype(np.float64)
+        db = 20 * np.log10(np.clip(np.sqrt((frames ** 2).mean(axis=1)), 1e-12, None))
+        thr_ref = float(np.clip(np.percentile(db, 90) - 38.0, -75.0, -45.0))
+        self.assertAlmostEqual(thr, thr_ref, places=3)
+        self.assertEqual(len(gain), len(ref))
+        self.assertEqual(gain.dtype, np.float32)
+
+    def test_gate_peak_memory_does_not_scale_with_length(self):  # 评审 F1：1.06GB→分块水位
+        """600s / 44.1kHz 输入下，_gate_envelope 期间的进程峰值内存增量必须远小于
+        旧全展开实现（评审实测旧版仅帧矩阵就 +1061MB；新版只随输出线性 +~110MB）。
+        判据取 300MB：旧代码必红、新代码有余量。"""
+        if sys.platform != "win32":
+            self.skipTest("Windows 专属：ctypes 读 ProcessMemoryCounters")
+        import ctypes
+        import ctypes.wintypes as wt
+
+        class PMC(ctypes.Structure):
+            _fields_ = [("cb", wt.DWORD), ("PageFaultCount", wt.DWORD),
+                        ("PeakWorkingSetSize", ctypes.c_size_t),
+                        ("WorkingSetSize", ctypes.c_size_t),
+                        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                        ("PagefileUsage", ctypes.c_size_t),
+                        ("PeakPagefileUsage", ctypes.c_size_t)]
+
+        k32 = ctypes.windll.kernel32
+        try:                                   # Win10 起该函数在 psapi.dll，个别构建挂在 kernel32
+            fn = ctypes.windll.psapi.GetProcessMemoryInfo
+        except AttributeError:
+            fn = k32.GetProcessMemoryInfo
+        # 必须显式声明签名：默认 int 返回会把 -1 伪句柄截断成无效值
+        k32.GetCurrentProcess.restype = wt.HANDLE
+        fn.restype = wt.BOOL
+        fn.argtypes = [wt.HANDLE, ctypes.c_void_p, wt.DWORD]
+        buf = PMC()
+        buf.cb = ctypes.sizeof(PMC)
+
+        def peak_mb():
+            assert fn(k32.GetCurrentProcess(), ctypes.byref(buf), buf.cb), "GetProcessMemoryInfo failed"
+            return buf.PeakWorkingSetSize / 1e6
+
+        sr = 44100
+        ref = np.zeros(sr * 600, dtype=np.float32)          # 零页不占物理内存
+        ref[sr * 100:sr * 200] = 0.2                         # 一段"人声"
+        p0 = peak_mb()
+        gain, thr, open_ = app._gate_envelope(ref, sr)
+        p1 = peak_mb()
+        del gain, ref
+        self.assertLess(p1 - p0, 300.0,
+                        f"_gate_envelope 峰值内存增量 {p1 - p0:.0f}MB，旧全展开是 ~1061MB（评审 F1）")
+
+
 class TestStorageCaps(Sandbox):
     """蓝军 N-11：存储入口必须和生成入口同一套口径——原样存下，或者报错。
 
@@ -775,6 +954,1581 @@ class TestWatchdogEarlyDeath(unittest.TestCase):
         svc["given_up"] = True
         self.assertFalse(self.wd._respawn(svc))
         self.assertEqual(len(svc["_spawns"]), 1)
+
+
+class TestRvcSerialQueue(Sandbox):
+    """投诉④：连点「换声」不能并行。一次只跑一个，后面的排队、看得见、没开跑的能取消。
+
+    全部用例都把真正的 worker 换成假任务（不碰 GPU/不落盘），所以可以放心在跑歌时执行。
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._saved_rvc = (app._rvc_convert_worker, dict(app._RVC_JOBS),
+                       list(app._RVC_QUEUE), app._RVC_WORKER, app._RVC_CURRENT[0])
+        self.calls: list[str] = []          # 假任务的实际执行顺序
+        self.live = 0                       # 当前同时在跑的几个
+        self.peak = 0                       # 观测到的并发峰值
+        self._lock = threading.Lock()
+        self.release = threading.Event()    # 放行当前这条假任务
+        self.entered = threading.Event()    # 通知"第一条已经进 worker"
+
+        def fake_worker(rid, job, *args, **kw):
+            with app._RVC_LOCK:
+                app._RVC_JOBS[rid] = {**app._RVC_JOBS.get(rid, {"id": rid}),
+                                      "status": "running", "queue_pos": 0,
+                                      "started_ts": "2026-01-01T00:00:00"}
+            with self._lock:
+                self.live += 1
+                self.peak = max(self.peak, self.live)
+                self.calls.append(rid)
+            self.entered.set()
+            self.release.wait(10)
+            with self._lock:
+                self.live -= 1
+            with app._RVC_LOCK:
+                app._RVC_JOBS[rid] = {**app._RVC_JOBS.get(rid, {}), "status": "done"}
+
+        app._rvc_convert_worker = fake_worker
+        self.client = TestClient(app.app, base_url=LOCAL_BASE)
+
+    def tearDown(self) -> None:
+        self.release.set()                  # 别让还堵着的假任务把线程带走
+        self._wait_until(lambda: not self._queue_len()
+                         and (app._RVC_WORKER is None or not app._RVC_WORKER.is_alive()))
+        worker, jobs, queue, _, current = self._saved_rvc
+        app._rvc_convert_worker = worker
+        app._RVC_QUEUE[:] = queue
+        app._RVC_CURRENT[0] = current
+        app._RVC_JOBS.clear()
+        app._RVC_JOBS.update(jobs)
+        app._RVC_WORKER = None              # 真实 worker 从未被起过（假任务不起新线程）
+        super().tearDown()                  # 最后再收临时目录（前面还要用它的落盘路径）
+
+    # ---- 小工具 ---- #
+    def _queue_len(self) -> int:
+        with app._RVC_QUEUE_LOCK:
+            return len(app._RVC_QUEUE)
+
+    def _wait_until(self, pred, timeout: float = 10.0) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if pred():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def _register(self, rid: str, pos: int) -> None:
+        with app._RVC_LOCK:
+            app._RVC_JOBS[rid] = {"id": rid, "status": "pending", "queue_pos": pos,
+                                  "model": "孙燕姿.pth", "src_duration": 30}
+
+    def _status(self, rid: str) -> str:
+        with app._RVC_LOCK:
+            return (app._RVC_JOBS.get(rid) or {}).get("status", "missing")
+
+    # ---- 用例 ---- #
+    def test_submits_are_queued_fifo_and_never_concurrent(self):
+        """三条一起提交：位次 1/2/3，同时最多一条在算，执行顺序=提交顺序。"""
+        rids = [f"20260101_00000{i}_0000000{i}" for i in (1, 2, 3)]
+        for i, rid in enumerate(rids, start=1):
+            self._register(rid, i)
+            self.assertEqual(app._rvc_submit((rid, app._RVC_JOBS[rid])), i)
+        self.assertTrue(self.entered.wait(10), "队列线程没把第一条跑起来")
+        # 第一条在跑的时候，后两条必须仍是 pending —— 并行就是这次投诉的根因
+        self.assertTrue(self._wait_until(
+            lambda: len(self.calls) == 1 and self.live == 1 and self._status(rids[1]) == "pending"
+            and self._status(rids[2]) == "pending"))
+        self.release.set()
+        self.assertTrue(self._wait_until(lambda: len(self.calls) == 3), "后两条没轮到")
+        self.assertEqual(self.calls, rids, "必须按提交顺序执行")
+        self.assertEqual(self.peak, 1, f"换声并发峰值 {self.peak}，只允许 1")
+
+    def test_queue_position_is_recomputed_live(self):
+        """入队时写下的位次会过期：正在转换的那条占第 1 位，后面的依次前移。"""
+        a, b, c = ("20260101_000001_aaaaaaaa", "20260101_000002_bbbbbbbb",
+                   "20260101_000003_cccccccc")
+        for i, rid in enumerate((a, b, c), start=1):
+            self._register(rid, i)
+            app._rvc_submit((rid, app._RVC_JOBS[rid]))
+        self.assertTrue(self.entered.wait(10))
+        with app._RVC_LOCK:
+            lb = app._rvc_live(dict(app._RVC_JOBS[b]))
+            lc = app._rvc_live(dict(app._RVC_JOBS[c]))
+        self.assertEqual(lb["queue_pos"], 2, "a 正在转换 = 第 1 位，b 紧随其后")
+        self.assertEqual(lc["queue_pos"], 3)
+        self.release.set()
+
+    def test_cancel_only_touches_tasks_that_have_not_started(self):
+        """排队中的能取消；已经在转换的不给取消（推理进程不可半途终止），并如实回 409。"""
+        a, b = "20260101_000001_dddddddd", "20260101_000002_eeeeeeee"
+        for i, rid in enumerate((a, b), start=1):
+            self._register(rid, i)
+            for r in (a, b):                       # 两条都已落地上传的源文件
+                (app.RVC_JOB_DIR / r).mkdir(parents=True, exist_ok=True)
+                (app.RVC_JOB_DIR / r / "src.wav").write_bytes(b"RIFFxxxx")
+            app._rvc_submit((rid, app._RVC_JOBS[rid]))
+        self.assertTrue(self.entered.wait(10))
+        busy = self.client.post(f"/api/rvc/cancel/{a}")
+        self.assertEqual(busy.status_code, 409)
+        self.assertIn("已在转换中", busy.json()["detail"])
+        r = self.client.post(f"/api/rvc/cancel/{b}")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["job"]["status"], "cancelled")
+        self.assertEqual(self._status(b), "cancelled")
+        self.assertFalse((app.RVC_JOB_DIR / b).exists(), "取消掉的任务那份上传必须回收，它永远轮不到执行")
+        self.assertTrue((app.RVC_JOB_DIR / a).exists(), "正在转换的目录不能动")
+        self.release.set()
+        self._wait_until(lambda: not self._queue_len())
+        self.assertEqual(self.calls, [a], "取消掉的条目永远不该被跑到")
+        self.assertEqual(self.client.post("/api/rvc/cancel/20260101_090909_deadbeef").status_code, 404)
+
+    def test_convert_endpoint_enqueues_instead_of_spawning_threads(self):
+        """上传入口必须入队（起线程 = 并行的来源），回包如实给 pending + 位次。"""
+        seen: list[tuple] = []
+        saved = (app._rvc_submit, app._rvc_models)
+        app._rvc_models = lambda: ["孙燕姿.pth"]
+        # 检索强度默认 0.75（>0），提交闸门要求配套索引在位——这里给一份，
+        # 专门测"缺索引"的用例见 TestRvcSubmitGate。
+        (self.rvc_logs / "added_IVF348_Flat_nprobe_1_孙燕姿_v2.index").write_bytes(b"x")
+        app._rvc_submit = lambda args: (seen.append(args), 4)[1]   # 不起线程，位次固定 4
+        try:
+            r = self.client.post("/api/rvc/convert",
+                                 files={"file": ("demo.wav", b"RIFFxxxx", "audio/wav")},
+                                 data={"model": "孙燕姿.pth", "task_name": "队列测试"})
+        finally:
+            app._rvc_submit, app._rvc_models = saved
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual(body["position"], 4)
+        self.assertEqual(body["job"]["status"], "pending", "不能再写死 running")
+        self.assertEqual(body["job"]["queue_pos"], 4)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][0], body["id"], "入队的就是这条任务")
+        self.assertEqual(app._RVC_JOBS[body["id"]]["queue_pos"], 4)
+
+    def test_active_lists_include_queued_tasks(self):
+        """页面刷新后要能还原整条队列；只列 running 的话排队条目会凭空消失。"""
+        run, wait = "20260101_000003_aaaaaaaa", "20260101_000004_bbbbbbbb"
+        self._register(run, 0)
+        self._register(wait, 1)
+        with app._RVC_LOCK:
+            app._RVC_JOBS[run]["status"] = "running"
+        ids = [j["id"] for j in self.client.get("/api/rvc/active").json()["items"]]
+        self.assertEqual(ids, [run, wait], "正在跑的在前，排队的在后")
+        act = self.client.get("/api/history/active").json()["items"]
+        self.assertIn(wait, [a["id"] for a in act if a.get("model")])
+        self.assertEqual(app._rvc_model_in_use("孙燕姿.pth"), True, "排队中的音色也算被占用")
+
+    def test_delete_queued_rvc_dequeues_instead_of_resurrecting(self):  # 评审 F3
+        """删掉排队中的换声任务：必须先把参数元组从队列摘掉。只删文件不摘队列，
+        轮到它时 src 已没 → 子进程失败 → 任务"删了又复活"成 error。"""
+        first, doomed = "20260101_000005_aaaaaaaa", "20260101_000006_bbbbbbbb"
+        for i, rid in enumerate((first, doomed), start=1):
+            self._register(rid, i)
+            (app.RVC_JOB_DIR / rid).mkdir(parents=True, exist_ok=True)
+            (app.RVC_JOB_DIR / rid / "src.wav").write_bytes(b"RIFFxxxx")
+            app._rvc_submit((rid, app._RVC_JOBS[rid]))
+        self.assertTrue(self.entered.wait(10))               # first 占住队列（假任务堵住）
+        r = self.client.delete(f"/api/generate/{doomed}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._status(doomed), "cancelled", "删除后要落在 cancelled，不是复活成 error")
+        self.assertFalse((app.RVC_JOB_DIR / doomed).exists(), "工作目录必须一起回收")
+        self.release.set()
+        self.assertTrue(self._wait_until(lambda: self._status(first) == "done"))
+        self._wait_until(lambda: not self._queue_len())
+        self.assertEqual(self._status(doomed), "cancelled", "前一条跑完后，被删的不得被跑起来")
+        self.assertNotIn(doomed, self.calls, "被删除的条目永远不该被跑到")
+
+    def test_delete_running_rvc_is_refused(self):  # 评审 F3 配套：正在转换的不许删
+        rid = "20260101_000007_cccccccc"
+        self._register(rid, 1)
+        app._rvc_submit((rid, app._RVC_JOBS[rid]))
+        self.assertTrue(self.entered.wait(10))
+        r = self.client.delete(f"/api/generate/{rid}")
+        self.assertEqual(r.status_code, 409)
+        self.assertIn("转换", r.json()["detail"])
+        self.assertTrue((app._RVC_JOBS[rid]["status"] == "running"))
+        self.release.set()
+
+
+class TestRvcWaitsForGpu(Sandbox):
+    """评审 MEDIUM：出队 ≠ 开算。_GPU_SEM 还被生成/批量/训练占着时，
+    换声条目必须老老实实待在 pending，running 与起表时刻只能写在拿到锁之后，
+    否则等锁的几十分钟会被画成"转换进度"——正是这一轮要修的第二个谎。"""
+
+    RID = "20260101_000006_gggggggg"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._saved_rvc_gpu = (app._GPU_SEM, app.subprocess, app._win_toast)
+        self.toasts: list[str] = []
+        app._win_toast = lambda title, body: self.toasts.append(title)
+        with app._RVC_LOCK:
+            app._RVC_JOBS.pop(self.RID, None)
+
+    def tearDown(self) -> None:
+        app._GPU_SEM, app.subprocess, app._win_toast = self._saved_rvc_gpu
+        with app._RVC_LOCK:
+            app._RVC_JOBS.pop(self.RID, None)
+        super().tearDown()
+
+    def test_running_and_start_time_are_stamped_after_the_gpu_lock(self):
+        in_dir = app.RVC_JOB_DIR / self.RID
+        in_dir.mkdir(parents=True, exist_ok=True)
+        job = {"id": self.RID, "status": "pending", "step": "排队中", "queue_pos": 1,
+               "model": "孙燕姿.pth", "src_name": "x.wav", "src_duration": 30,
+               "ts": "2026-01-01T00:00:00"}
+        with app._RVC_LOCK:
+            app._RVC_JOBS[self.RID] = job
+        seen: dict = {}
+
+        class _Failed:
+            returncode = 1
+            stdout = b""
+            stderr = b"intentional failure"   # 故意失败：本例只验证登记时机
+
+        def fake_run(cmd, **kw):
+            # 真起推理进程的那一刻，任务必须已经登记为 running 且起了表
+            with app._RVC_LOCK:
+                seen.update(app._RVC_JOBS[self.RID])
+            return _Failed()
+
+        sem = threading.Semaphore(1)
+        sem.acquire()                       # 假装一首歌正在生成，GPU 不给
+        app._GPU_SEM = sem
+        app.subprocess = types.SimpleNamespace(run=fake_run)
+        th = threading.Thread(target=app._rvc_convert_worker,
+                              args=(self.RID, job, in_dir / "src.wav", in_dir,
+                                    "孙燕姿.pth", 0, "rmvpe", 0.75, 0.33, 0.25))
+        th.start()
+        try:
+            deadline = time.time() + 10
+            while time.time() < deadline and not app._RVC_JOBS[self.RID].get("step"):
+                time.sleep(0.02)
+            snap = dict(app._RVC_JOBS[self.RID])
+            self.assertIn("等待本机空闲", snap.get("step", ""), "没写出在等什么，页面只能说谎")
+            self.assertEqual(snap["status"], "pending", "没拿到 GPU 之前不许说在转换")
+            self.assertNotIn("started_ts", snap, "起表只能等到 GPU 真到手")
+            self.assertEqual(seen, {}, "等待期间不许起推理进程")
+            sem.release()
+            th.join(15)
+            self.assertEqual(seen.get("status"), "running", "拿到锁的那一刻才登记在算")
+            self.assertTrue(seen.get("started_ts"))
+            self.assertEqual(app._RVC_JOBS[self.RID]["status"], "error")
+            self.assertLess(app._RVC_JOBS[self.RID]["sec"], 10, "耗时不含等锁时间")
+        finally:
+            if sem._value == 0:
+                sem.release()               # 断言中途失败时别把锁留在测试手里
+            th.join(5)
+
+
+class TestRvcIndexFiles(Sandbox):
+    """P0：配套索引的查找必须与推理侧同一套规则，且覆盖 assets/indices 与 logs 两处。
+
+    两条踩过的坑：①网关只 glob logs/ 下的 added_*_名字_v2.index，自己练出来的音色
+    （外链名前缀是音色名，train_index.py:52-76）一律被体检报成"缺索引"；
+    ②删音色时另一处的同名索引没人清，留在盘上成孤儿。"""
+
+    def test_training_link_counts_as_matching_index(self):
+        p = self.rvc_indices / "兔裹_added_IVF500_Flat_nprobe_1_兔裹_v2.index"
+        p.write_bytes(b"x")
+        self.assertEqual([q.name for q in app._rvc_index_files("兔裹")], [p.name],
+                         "刚训练完的音色必须被认成有索引，否则体检与提交都是冤枉")
+
+    def test_downloaded_index_in_logs_root_still_found(self):
+        p = self.rvc_logs / "added_IVF348_Flat_nprobe_1_孙燕姿_v2.index"
+        p.write_bytes(b"x")
+        self.assertEqual([q.name for q in app._rvc_index_files("孙燕姿")], [p.name])
+
+    def test_foreign_trained_and_multispeaker_indexes_are_not_matched(self):
+        (self.rvc_indices / "trained_IVF500_Flat_nprobe_1_王菲_v2.index").write_bytes(b"x")
+        (self.rvc_indices / "added_IVF500_Flat_nprobe_1_王菲_v2_spkid1.index").write_bytes(b"x")
+        (self.rvc_indices / "added_IVF500_Flat_nprobe_1_孙燕姿_v2.index").write_bytes(b"x")
+        keep = self.rvc_indices / "added_IVF500_Flat_nprobe_1_王菲_v2.index"
+        keep.write_bytes(b"x")
+        self.assertEqual([q.name for q in app._rvc_index_files("王菲")], [keep.name],
+                         "trained_ 是索引训练自己的中间文件；多说话人索引在换声不指定说话人时"
+                         "也不会被选中——两者都不算「有这个音色的索引」")
+        self.assertEqual(app._rvc_index_files("不存在的音色"), [])
+
+    def test_delete_removes_both_copies(self):
+        saved = app.RVC_MODELS_DIR
+        models = self.tmp / "weights"
+        models.mkdir()
+        app.RVC_MODELS_DIR = models
+        client = TestClient(app.app, base_url=LOCAL_BASE)
+        try:
+            (models / "王菲.pth").write_bytes(b"x")
+            a = self.rvc_indices / "王菲_added_IVF9_Flat_nprobe_1_王菲_v2.index"
+            b = self.rvc_logs / "added_IVF9_Flat_nprobe_1_王菲_v2.index"
+            a.write_bytes(b"x")
+            b.write_bytes(b"x")
+            self.assertEqual(client.delete("/api/rvc/models/王菲.pth").status_code, 200)
+            self.assertFalse(a.exists(), "assets/indices 里那份不能留成孤儿")
+            self.assertFalse(b.exists())
+        finally:
+            app.RVC_MODELS_DIR = saved
+
+    def test_delete_never_touches_a_neighbors_index(self):
+        """查找侧允许子串匹配（推理选索引时 王菲 会把 王菲V6 的索引也当候选），
+        但删除必须只认这个音色自己的——否则删一个音色会废掉另一个音色的检索。"""
+        saved = app.RVC_MODELS_DIR
+        models = self.tmp / "weights2"
+        models.mkdir()
+        app.RVC_MODELS_DIR = models
+        client = TestClient(app.app, base_url=LOCAL_BASE)
+        try:
+            (models / "王菲.pth").write_bytes(b"x")
+            mine = self.rvc_logs / "added_IVF9_Flat_nprobe_1_王菲_v2.index"
+            neighbor = self.rvc_logs / "added_IVF9_Flat_nprobe_1_王菲V6_v2.index"
+            mine.write_bytes(b"x")
+            neighbor.write_bytes(b"x")
+            self.assertTrue(app._rvc_index_files("王菲"), "查找侧要能看见候选（与推理一致）")
+            self.assertEqual(client.delete("/api/rvc/models/王菲.pth").status_code, 200)
+            self.assertFalse(mine.exists())
+            self.assertTrue(neighbor.exists(), "邻居的索引不是它的文件")
+        finally:
+            app.RVC_MODELS_DIR = saved
+
+
+class TestRvcSubmitGate(Sandbox):
+    """P0：两个换声入口在入队前把注定失败的参数拦下来（失败点原本在十几分钟队列之后）。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        # 注意别覆盖 Sandbox._saved（那是临时目录还原用的字典）
+        self._saved_gate = (app._rvc_models, app._rvc_submit,
+                            dict(app._RVC_JOBS), list(app._RVC_QUEUE))
+        self.seen: list[tuple] = []
+        app._rvc_models = lambda: ["孙燕姿.pth"]
+        app._rvc_submit = lambda args: (self.seen.append(args), 1)[1]
+        app._RVC_JOBS.clear()
+        app._RVC_QUEUE.clear()
+        self.client = TestClient(app.app, base_url=LOCAL_BASE)
+
+    def tearDown(self) -> None:
+        app._rvc_models, app._rvc_submit = self._saved_gate[0], self._saved_gate[1]
+        app._RVC_QUEUE[:] = self._saved_gate[3]
+        app._RVC_JOBS.clear()
+        app._RVC_JOBS.update(self._saved_gate[2])
+        super().tearDown()
+
+    def _post_upload(self, **data):
+        form = {"model": "孙燕姿.pth"}
+        form.update({k: str(v) for k, v in data.items()})
+        return self.client.post("/api/rvc/convert",
+                                files={"file": ("demo.wav", b"RIFFxxxx", "audio/wav")},
+                                data=form)
+
+    def test_missing_index_is_refused_before_upload_is_queued(self):
+        r = self._post_upload(index_rate=0.75)
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("没有配套的检索索引", r.json()["detail"])
+        self.assertIn("检索强度", r.json()["detail"], "要给出路：调 0 或补索引，而不是只说失败")
+        self.assertEqual(self.seen, [], "缺索引的一条都不该进队列")
+
+    def test_index_rate_zero_needs_no_index(self):
+        (self.rvc_indices / "孙燕姿_added_IVF9_Flat_nprobe_1_孙燕姿_v2.index").write_bytes(b"x")
+        self.assertEqual(self._post_upload(index_rate=0).status_code, 200)
+        self.assertEqual(len(self.seen), 1)
+
+    def test_unknown_f0_method_is_refused(self):
+        """变调算法的白名单与 CLI choices 同步（infer/cli.py --f0-method）；
+        写错的那串要当场说，不能进 argparse。"""
+        r = self._post_upload(f0_method="harvest", index_rate=0)
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("未知变调算法", r.json()["detail"])
+
+    def test_fcpe_accepted_and_new_knob_gates(self):
+        """评审 C1/C2/C3：fcpe 放开（pipeline 与 CLI 都支持，torchfcpe 已装并真机跑通）；
+        平滑半径与输出采样率各有闸门。"""
+        self.assertEqual(self._post_upload(f0_method="fcpe", index_rate=0).status_code, 200)
+        args = self.seen[-1]   # worker 参数元组：[..., strip_harmony, filter_radius, resample_sr]
+        self.assertEqual(args[13], 3, "不填 = 官方 WebUI 同值默认 3")
+        self.assertEqual(args[14], 0, "默认跟随模型原生采样率（40k 音色不再被无谓上采样）")
+        self.assertEqual(self._post_upload(filter_radius=9, index_rate=0).status_code, 400)
+        self.assertEqual(self._post_upload(resample_sr=8000, index_rate=0).status_code, 400)
+        self.assertEqual(self._post_upload(resample_sr=44100, index_rate=0).status_code, 200)
+        self.assertEqual(self.seen[-1][14], 44100)
+        with self.assertRaises(HTTPException) as cm:
+            app._rvc_convert_params("孙燕姿.pth", "rmvpe", 0, 0.33, 1, "大", 0)
+        self.assertEqual(cm.exception.status_code, 400)
+
+    def test_filter_radius_even_is_clamped_to_odd(self):
+        """评审 H1：scipy.signal.medfilt 只认奇数核，页面 number 输入 step=1，
+        4 和 6 随手能填且能过旧的 0-7 闸门——原值传到推理里整条换声崩在 get_f0。
+        网关必须钳到下一个奇数（4→5、6→7）；≤2 本就不触发滤波，不许被"顺手修正"。"""
+        self.assertEqual(self._post_upload(filter_radius=4, index_rate=0).status_code, 200)
+        self.assertEqual(self.seen[-1][13], 5)
+        self.assertEqual(self._post_upload(filter_radius=6, index_rate=0).status_code, 200)
+        self.assertEqual(self.seen[-1][13], 7)
+        self.assertEqual(self._post_upload(filter_radius=2, index_rate=0).status_code, 200)
+        self.assertEqual(self.seen[-1][13], 2, "2 = 关闭档，不该被改成 3（那等于偷偷开启滤波）")
+        self.assertEqual(app._rvc_convert_params("孙燕姿.pth", "rmvpe", 0, 0.33, 1, 7, 0)[4], 7)
+
+    def test_fcpe_refused_when_runtime_or_dependency_missing(self):
+        """评审 H2/H3：fcpe 缺一样都必须在提交时 400——悄悄降级成 rmvpe 是"点 A 得 B"，
+        放进队列则十几分钟后才崩。缺 CLI 支持（runtime 被重装成上游原版）与
+        缺 torchfcpe 依赖是两条不同的路，都要说清出路。"""
+        app._rvc_cli_caps = lambda: {"filter_radius": True, "fcpe": False}
+        r = self._post_upload(f0_method="fcpe", index_rate=0)
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("不支持 fcpe", r.json()["detail"])
+        self.assertIn("rmvpe", r.json()["detail"], "要给出路：换算法或恢复补丁")
+        self.assertEqual(self.seen, [])
+        app._rvc_cli_caps = lambda: {"filter_radius": True, "fcpe": True}
+        app._rvc_fcpe_ok = lambda: False
+        r = self._post_upload(f0_method="fcpe", index_rate=0)
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("torchfcpe", r.json()["detail"])
+        self.assertEqual(self.seen, [])
+        self.assertEqual(self._post_upload(f0_method="rmvpe", index_rate=0).status_code, 200,
+                         "rmvpe 是永远可用的路")
+
+    def test_out_of_range_ratios_are_refused(self):
+        r = self._post_upload(protect=0.9, index_rate=0)
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("protect", r.json()["detail"])
+        self.assertEqual(self._post_upload(index_rate=1.5).status_code, 400)
+        self.assertEqual(self._post_upload(pitch=90).status_code, 400)
+
+    def test_by_rid_entry_keeps_index_rate_zero(self):
+        """送去换声（历史页转发）以前写 `float(payload.get('index_rate') or 0.75)`，
+        用户主动设的 0 会被当成"没填"又放回 0.75。"""
+        rid = "20260101_000000_abcdabcd"
+        (app.OUTPUT_DIR / f"{rid}.wav").write_bytes(b"RIFFxxxx")
+        (app.OUTPUT_DIR / f"{rid}.json").write_text(
+            json.dumps({"id": rid, "kind": "generate"}), encoding="utf-8")
+        r = self.client.post(f"/api/rvc/convert/{rid}",
+                             json={"model": "孙燕姿.pth", "index_rate": 0, "protect": 0})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self.seen[0][7], 0.0, "入队参数就是用户要的 0")
+        # 缺索引 + 检索强度>0 的组合在历史入口同样要拦住
+        self.assertEqual(self.client.post(
+            f"/api/rvc/convert/{rid}", json={"model": "孙燕姿.pth"}).status_code, 400)
+
+    def test_by_rid_rejects_before_touching_the_disk(self):
+        rid = "20260101_000000_abcdefff"
+        (app.OUTPUT_DIR / f"{rid}.wav").write_bytes(b"RIFFxxxx")
+        (app.OUTPUT_DIR / f"{rid}.json").write_text(
+            json.dumps({"id": rid, "kind": "generate"}), encoding="utf-8")
+        r = self.client.post(f"/api/rvc/convert/{rid}",
+                             json={"model": "孙燕姿.pth", "index_rate": 2})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertEqual(list(app.RVC_JOB_DIR.iterdir()), [],
+                         "参数不合法时不该在本机留下半成品工作目录")
+
+
+class TestRvcTrainCheck(Sandbox):
+    """P1：训练前先给素材做体检（时长/静音/爆音/响度 + 建议轮数），确认后再开练不重传。"""
+
+    SR = 40000
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.client = TestClient(app.app, base_url=LOCAL_BASE)
+        self._saved_train = (app._rvc_train_worker, dict(app.RVC_TRAIN_JOBS))
+        self.starts: list[tuple] = []
+
+        def fake_worker(rid, name, epochs, *a, **kw):
+            self.starts.append((rid, name, epochs, a, kw))
+
+        app._rvc_train_worker = fake_worker
+
+    def tearDown(self) -> None:
+        app._rvc_train_worker = self._saved_train[0]
+        app.RVC_TRAIN_JOBS.clear()
+        app.RVC_TRAIN_JOBS.update(self._saved_train[1])
+        super().tearDown()
+
+    def _wav(self, seconds: float, amp: float = 0.2, silence_tail: float = 0.0,
+             clip: bool = False):
+        import io
+        import soundfile as sf
+        n = int(self.SR * seconds)
+        t = np.arange(n) / self.SR
+        x = amp * np.sin(2 * np.pi * 220 * t)
+        if silence_tail:
+            k = int(self.SR * silence_tail)
+            x[-k:] = 0.0
+            x = np.concatenate([x, np.zeros(int(self.SR * silence_tail))])
+        if clip:
+            x[::7] = 1.0
+        buf = io.BytesIO()
+        sf.write(buf, x.astype("float32"), self.SR, format="WAV", subtype="PCM_16")
+        return buf.getvalue()
+
+    def test_scan_reports_duration_silence_and_clip(self):
+        ds = self.tmp / "ds"
+        ds.mkdir()
+        (ds / "a.wav").write_bytes(self._wav(30))
+        (ds / "b.wav").write_bytes(self._wav(30, silence_tail=8))
+        rep = app._rvc_dataset_scan(ds)
+        self.assertEqual(rep["files"], 2)
+        self.assertAlmostEqual(rep["total_sec"], 60 + 8, delta=1.0)
+        self.assertTrue(rep["longest_silence_sec"] >= 8, "8 秒纯静音必须量出来")
+        self.assertGreater(rep["silence_runs_over_5s"], 0)
+        self.assertIn("5 秒的静音段", " ".join(rep["warnings"]))
+        self.assertEqual(rep["clipped_ratio"], 0.0)
+        self.assertEqual(rep["suggest_epochs"], 100, "68 秒素材：不足 8 分钟走常用档")
+        self.assertTrue(rep["advice"])
+
+    def test_scan_flags_clipping_and_tiny_dataset(self):
+        ds = self.tmp / "ds2"
+        ds.mkdir()
+        (ds / "hot.wav").write_bytes(self._wav(10, clip=True))
+        rep = app._rvc_dataset_scan(ds)
+        self.assertGreater(rep["clipped_ratio"], 0.05)
+        self.assertIn("爆音", " ".join(rep["warnings"]))
+        self.assertEqual(rep["suggest_epochs"], 30, "10 秒素材只够试听档")
+        self.assertIn("不足 1 分钟", rep["advice"])
+
+    def test_check_endpoint_then_train_reuses_the_same_dataset(self):
+        r = self.client.post("/api/rvc/train/check",
+                             files=[("files", ("a.wav", self._wav(30), "audio/wav")),
+                                    ("files", ("b.wav", self._wav(30), "audio/wav"))])
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        rid = body["id"]
+        self.assertEqual(body["report"]["files"], 2)
+        self.assertTrue((app.RVC_TRAIN_DIR / rid / "dataset" / "sample_000.wav").is_file())
+        self.assertEqual((app.RVC_TRAIN_DIR / rid / "job.json").is_file(), True,
+                         "体检结果要落盘：刷新页面不能丢")
+        only = list(app.RVC_TRAIN_DIR.iterdir())
+        q = self.client.post("/api/rvc/train",
+                             data={"name": "voiceA", "epochs": "100", "dataset_id": rid})
+        self.assertEqual(q.status_code, 200, q.text)
+        self.assertEqual(self.starts[0][0], rid, "开练用的就是体检那份素材目录（rid 不变）")
+        self.assertEqual(list(app.RVC_TRAIN_DIR.iterdir()), only,
+                         "复用素材不得再建一个目录（几十分钟素材不传第二遍）")
+
+    def test_train_without_files_and_without_dataset_id_is_refused(self):
+        r = self.client.post("/api/rvc/train", data={"name": "voiceB", "epochs": "100"})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("dataset_id", r.json()["detail"])
+        bad = self.client.post("/api/rvc/train",
+                               data={"name": "voiceB", "epochs": "100",
+                                     "dataset_id": "20260101_000000_deadbeef"})
+        self.assertEqual(bad.status_code, 404, r.text)
+
+    def test_epoch_tiers_reach_below_the_old_floor(self):
+        """旧闸门写死 150-400，"30 轮试听"这种档位根本提交不了；现在按官方口径 1-1200。"""
+        r = self.client.post("/api/rvc/train/check",
+                             files=[("files", ("a.wav", self._wav(30), "audio/wav"))])
+        rid = r.json()["id"]
+        self.assertEqual(self.client.post("/api/rvc/train",
+                                          data={"name": "voiceC", "epochs": "30",
+                                                "dataset_id": rid}).status_code, 200)
+        self.assertEqual(self.client.post("/api/rvc/train",
+                                          data={"name": "voiceD", "epochs": "0",
+                                                "dataset_id": rid}).status_code, 400)
+
+
+class TestRvcTrainBudget(Sandbox):
+    """P1-2/P1-3：训练耗时与 batch_size 都要有出处——实测数字 + 整卡显存，不再拍脑袋。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._saved_budget = (app.backend_mode, app._gpu_total_mb, dict(app.RVC_TRAIN_JOBS))
+
+    def tearDown(self) -> None:
+        app.backend_mode, app._gpu_total_mb = self._saved_budget[0], self._saved_budget[1]
+        app.RVC_TRAIN_JOBS.clear()
+        app.RVC_TRAIN_JOBS.update(self._saved_budget[2])
+        super().tearDown()
+
+    def _done_job(self, rid: str, train_sec: float, epochs: int, samples: int):
+        d = app.RVC_TRAIN_DIR / rid
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "job.json").write_text(json.dumps({
+            "id": rid, "status": "done", "train_sec": train_sec,
+            "epochs": epochs, "samples_used": samples, "backend": "cuda",
+        }), encoding="utf-8")
+
+    def test_batch_size_follows_vram_not_a_hardcoded_4(self):
+        # 官方 WebUI 同一口径（webui.py:180 batch_size = VRAM_GB // 2），上限 8 防炸显存
+        for total_mb, want in ((6144, 3), (16384, 8), (24576, 8), (2048, 1)):
+            app.backend_mode = lambda: "cuda"
+            app._gpu_total_mb = lambda t=total_mb: t
+            self.assertEqual(app._rvc_train_batch_size()[0], want, f"{total_mb}MB 卡")
+        # CPU 模式和"查不到显存"都不能冒进
+        app.backend_mode = lambda: "cpu"
+        app._gpu_total_mb = lambda: 0
+        self.assertEqual(app._rvc_train_batch_size()[0], 4)
+        app.backend_mode = lambda: "cuda"
+        self.assertEqual(app._rvc_train_batch_size()[0], 4)
+        self.assertIn("显存未知", app._rvc_train_batch_size()[1])
+
+    def test_epoch_rate_uses_measured_pace_and_says_so(self):
+        # 1182.7 秒 / 200 轮 / 334 切片 = 0.0177 秒每切片每轮
+        self._done_job("20260927_000000_measured", 1182.7, 200, 334)
+        rate, note = app._rvc_epoch_rate({"samples_used": 400})
+        self.assertAlmostEqual(rate, 0.0177 * 400, delta=1.0)
+        self.assertIn("实测", note)
+        self.assertIn("measured", note)
+
+    def test_epoch_rate_without_any_measurement_is_marked_conservative(self):
+        """没有实测记录时不许装作知道：宁可保守，也绝不写成一个看起来像结论的公式。"""
+        rate, note = app._rvc_epoch_rate({"samples_used": 400})
+        self.assertEqual(rate, 240.0)
+        self.assertIn("保守", note)
+        # 素材数不明（还没预处理）同样不许按实测夸口
+        self._done_job("20260927_000001_other", 600.0, 100, 200)
+        self.assertEqual(app._rvc_epoch_rate({})[0], 240.0)
+
+    def test_failed_jobs_do_not_set_the_pace(self):
+        """只采信跑完的训练：中途失败/暂停的任务耗时是残缺的，拿它预估会误杀下一单。"""
+        d = app.RVC_TRAIN_DIR / "20260927_000002_dead"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "job.json").write_text(json.dumps({
+            "id": d.name, "status": "error", "train_sec": 12.0,
+            "epochs": 200, "samples_used": 400}), encoding="utf-8")
+        self.assertIsNone(app._rvc_train_pace())
+
+
+class TestRvcCheckpoints(Sandbox):
+    """P1-3/P1-4：检查点保留策略、逐点试听缓存、选点定稿、训练后自动自检。"""
+
+    NAME = "试听音色"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._saved_ck = (app.RVC_DIR, app.RVC_MODELS_DIR,
+                          app._require_headroom_for_preview, app._rvc_small_model,
+                          app._rvc_preview_infer)
+        self.rvc = self.tmp / "rvc"
+        app.RVC_DIR = self.rvc
+        app.RVC_MODELS_DIR = self.rvc / "assets" / "weights"
+        app.RVC_MODELS_DIR.mkdir(parents=True)
+        self.logs = self.rvc / "logs" / self.NAME
+        self.logs.mkdir(parents=True)
+        self.client = TestClient(app.app, base_url=LOCAL_BASE)
+        self.rid = "20260927_100000abcdef"
+        (app.RVC_TRAIN_DIR / self.rid).mkdir(parents=True)
+        (app.RVC_TRAIN_DIR / self.rid / "dataset").mkdir()
+        (app.RVC_TRAIN_DIR / self.rid / "dataset" / "s0.wav").write_bytes(b"RIFF")
+        self.job = {"id": self.rid, "name": self.NAME, "status": "done",
+                    "epochs": 200, "samples_used": 100}
+        self._write_job()
+
+    def tearDown(self) -> None:
+        (app.RVC_DIR, app.RVC_MODELS_DIR, app._require_headroom_for_preview,
+         app._rvc_small_model, app._rvc_preview_infer) = self._saved_ck
+        super().tearDown()
+
+    def _write_job(self):
+        (app.RVC_TRAIN_DIR / self.rid / "job.json").write_text(
+            json.dumps(self.job), encoding="utf-8")
+
+    def _ckpt(self, step: str, age_min: float = 0.0) -> Path:
+        p = self.logs / f"G_{step}.pth"
+        p.write_bytes(b"x")
+        t = time.time() - age_min * 60
+        os.utime(p, (t, t))
+        d = self.logs / f"D_{step}.pth"
+        d.write_bytes(b"x")
+        os.utime(d, (t, t))
+        return p
+
+    def test_prune_keeps_newest_pairs_and_the_final_export(self):
+        for i, age in enumerate((120, 90, 60, 30, 0)):
+            self._ckpt(str(1000 * (i + 1)), age_min=age)
+        removed = app._rvc_prune_checkpoints(self.NAME)
+        left = sorted(p.name for p in self.logs.glob("[GD]_*.pth"))
+        self.assertEqual(removed, 6, "5 对里最旧的 3 对应删除（G+D 各 3）")
+        self.assertEqual(left, ["D_4000.pth", "D_5000.pth", "G_4000.pth", "G_5000.pth"],
+                         "留的是最近 2 对，续跑和换点定稿都还有得用")
+
+    def test_loss_summary_reports_head_and_tail(self):
+        lines = []
+        for i in range(120):
+            lines.append("2026-09-27 10:00:00,000\tx\tINFO\t"
+                         f"loss_disc={8 - i * 0.01:.3f}, loss_gen={5 - i * 0.01:.3f}, "
+                         "loss_fm=3.000,loss_mel=40.000, loss_kl=9.000")
+        lines.append("2026-09-27 10:00:01,000\tx\tINFO\t====> 轮次：200 [2026-09-27 10:00:01]")
+        (self.logs / "train.log").write_text("\n".join(lines), encoding="utf-8")
+        s = app._rvc_loss_summary(self.NAME)
+        self.assertEqual(s["points"], 120)
+        self.assertEqual(s["epochs_logged"], 1)
+        self.assertLess(s["tail"]["loss_disc"], s["head"]["loss_disc"],
+                        "损失首尾要能看出收敛方向，否则'训练完成'四个字说明不了任何事")
+
+    def test_preview_of_a_named_checkpoint_uses_its_own_cache(self):
+        """成品和检查点共用一个缓存文件时，先听新的再听旧的会拿到错的音频。"""
+        old = self._ckpt("1111", age_min=60)
+        self._ckpt("2333333", age_min=0)
+        (app.RVC_MODELS_DIR / f"{self.NAME}.pth").write_bytes(b"final")
+        seen: dict = {}
+        app._require_headroom_for_preview = lambda need_mb=2600: None
+        real_small, real_infer = app._rvc_small_model, app._rvc_preview_infer
+
+        def spy_small(ckpt, cache):
+            seen["cache"] = Path(cache).name
+            return Path(cache)
+
+        def spy_infer(model_path, src, out, index=None):
+            seen["model"] = Path(model_path).name
+            Path(out).write_bytes(b"RIFFfake")
+
+        app._rvc_small_model = spy_small
+        app._rvc_preview_infer = spy_infer
+        try:
+            r = self.client.post(f"/api/rvc/train/preview/{self.rid}", json={"ck": old.name})
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertEqual(seen["cache"], "preview_model_1111.pth",
+                             "缓存按检查点各自存一份")
+            self.assertEqual(seen["model"], "preview_model_1111.pth")
+            self.assertIn("1111", r.json()["source"], "点名要的检查点不能偷换成成品")
+            self.assertEqual(r.json()["ckpts"], ["G_2333333.pth", "G_1111.pth"])
+            # 不点名时才是"用成品"
+            r2 = self.client.post(f"/api/rvc/train/preview/{self.rid}", json={})
+            self.assertEqual(r2.json()["source"], "成品")
+            self.assertEqual(seen["model"], f"{self.NAME}.pth")
+            bad = self.client.post(f"/api/rvc/train/preview/{self.rid}",
+                                   json={"ck": "G_9999.pth"})
+            self.assertEqual(bad.status_code, 404)
+            self.assertIn("只保留最近", bad.json()["detail"])
+        finally:
+            app._rvc_small_model = real_small
+            app._rvc_preview_infer = real_infer
+
+    def test_stale_export_never_masquerades_as_this_runs_result(self):
+        """同名音色重训：上一轮的成品比本轮检查点还旧时，试听必须听本轮的检查点，
+        否则"成品"这个标签就是假话（用户以为听的是刚练的东西）。"""
+        ck = self._ckpt("2333333", age_min=0)
+        stale = app.RVC_MODELS_DIR / f"{self.NAME}.pth"
+        stale.write_bytes(b"old")
+        t = time.time() - 3600
+        os.utime(stale, (t, t))
+        real_infer = app._rvc_preview_infer
+        seen = {}
+        app._require_headroom_for_preview = lambda need_mb=2600: None
+        app._rvc_small_model = lambda ckpt, cache: cache
+        app._rvc_preview_infer = lambda m, s, o, i=None: (seen.update(model=Path(m).name),
+                                                          Path(o).write_bytes(b"x"))
+        try:
+            r = self.client.post(f"/api/rvc/train/preview/{self.rid}", json={})
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertEqual(r.json()["source"], ck.name + "（step 2333333，非轮次）")
+            self.assertEqual(seen["model"], "preview_model_2333333.pth")
+            # 检查点也被清光、只剩成品时，才回落到成品
+            ck.unlink()
+            r2 = self.client.post(f"/api/rvc/train/preview/{self.rid}", json={})
+            self.assertEqual(r2.json()["source"], "成品")
+            stale.unlink()
+            r3 = self.client.post(f"/api/rvc/train/preview/{self.rid}", json={})
+            self.assertEqual(r3.status_code, 404)
+            self.assertIn("还没有可试听的检查点", r3.json()["detail"])
+        finally:
+            app._rvc_preview_infer = real_infer
+
+    def test_preview_prefers_short_slices_over_the_raw_upload(self):
+        """整首原始上传也能试听，但本机实测那一次跑了 143 秒；切好的 0_gt_wavs
+        只要十几秒。自检要挂在每次训练收尾，慢十倍就是给用户白等。"""
+        gt = self.logs / "0_gt_wavs"
+        gt.mkdir()
+        (gt / "00000.wav").write_bytes(b"x")
+        self.assertEqual(app._rvc_preview_source(self.rid, self.NAME).name, "00000.wav")
+        self.assertEqual(app._rvc_preview_source(self.rid).name, "s0.wav",
+                         "没有切片时仍要回退到用户上传的素材，不能直接报错")
+
+    def _fake_extract(self, size: int, calls: list):
+        """替身只做一件事：像真导出那样把产物落在专用临时目录里并交还路径。
+        定稿端点拿到什么后续处置（校验/备份/原子替换）全部走真实代码。"""
+        def fake(ckpt, stem, info, timeout=600, fail_msg=""):
+            calls.append({"ckpt": Path(ckpt).name, "stem": stem, "info": info})
+            work = app.RVC_DIR / "export_tmp" / stem
+            (work / "assets" / "weights").mkdir(parents=True, exist_ok=True)
+            produced = work / "assets" / "weights" / f"{stem}.pth"
+            produced.write_bytes(b"p" * size)
+            return produced, work
+        return fake
+
+    def test_promote_rejects_missing_checkpoint_and_records_the_choice(self):
+        rid = self.rid
+        bad = self.client.post(f"/api/rvc/train/promote/{rid}", json={"ck": "G_7.pth"})
+        self.assertEqual(bad.status_code, 404)
+        ck = self._ckpt("2333333")
+        target = app.RVC_MODELS_DIR / f"{self.NAME}.pth"
+        target.write_bytes(b"o" * 1_500_000)              # 上一版成品 1.5MB
+        calls: list = []
+        real = app._rvc_extract_small
+        app._rvc_extract_small = self._fake_extract(1_200_000, calls)
+        try:
+            r = self.client.post(f"/api/rvc/train/promote/{rid}", json={"ck": ck.name})
+        finally:
+            app._rvc_extract_small = real
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["ckpt"], "G_2333333.pth", "定稿必须真用点名那个检查点")
+        self.assertEqual(calls[0]["stem"], self.NAME)
+        self.assertEqual(target.read_bytes(), b"p" * 1_200_000, "换点后的成品就是所选点导出的")
+        bak = Path(str(target) + ".bak")
+        self.assertEqual(bak.read_bytes(), b"o" * 1_500_000,
+                         "替换前的上一版留一份 .bak 可回滚（评审 G2）")
+        self.assertFalse((app.RVC_DIR / "export_tmp" / self.NAME).exists(),
+                         "临时工作目录用完即删")
+        self.assertEqual(json.loads((app.RVC_TRAIN_DIR / rid / "job.json")
+                                    .read_text(encoding="utf-8"))["promoted_ckpt"],
+                         "G_2333333.pth", "定稿用的是哪个点必须留痕")
+        self.assertIn("已用", r.json()["message"])
+
+    def test_promote_refuses_suspect_export_and_leaves_final_intact(self):
+        """半截导出（超时被杀/磁盘满）体积远小于正常成品：拒收，原成品一个字节不动。
+        以前的判据是"文件存在且 mtime 更新过"，半截货照样被判成功（评审 G2）。"""
+        ck = self._ckpt("2222")
+        target = app.RVC_MODELS_DIR / f"{self.NAME}.pth"
+        original = b"o" * 1_500_000
+        target.write_bytes(original)
+        real = app._rvc_extract_small
+        app._rvc_extract_small = self._fake_extract(200_000, [])
+        try:
+            r = self.client.post(f"/api/rvc/train/promote/{self.rid}", json={"ck": ck.name})
+        finally:
+            app._rvc_extract_small = real
+        self.assertEqual(r.status_code, 500)
+        self.assertIn("体积不可信", r.json()["detail"])
+        self.assertEqual(target.read_bytes(), original)
+        self.assertFalse(Path(str(target) + ".bak").exists(), "拒收时连 .bak 都不该产生")
+        job = json.loads((app.RVC_TRAIN_DIR / self.rid / "job.json").read_text(encoding="utf-8"))
+        self.assertNotIn("promoted_ckpt", job, "失败的定稿不留痕")
+
+    def test_promote_fails_when_the_export_did_not_happen(self):
+        ck = self._ckpt("2222")
+        real_run = app.subprocess.run
+        app.subprocess.run = lambda *a, **kw: types.SimpleNamespace(
+            returncode=1, stderr=b"boom", stdout=b"")
+        try:
+            r = self.client.post(f"/api/rvc/train/promote/{self.rid}", json={"ck": ck.name})
+        finally:
+            app.subprocess.run = real_run
+        self.assertEqual(r.status_code, 500)
+        self.assertIn("定稿失败", r.json()["detail"])
+
+    def test_small_model_export_lands_in_tmp_not_weights_dir(self):
+        """评审 G3：走真实的 _rvc_extract_small/_rvc_small_model，只挡子进程边界。
+        导出产物一旦落进 assets/weights，音色下拉框就会多出一个 'G_xxx' 杂音色。"""
+        ck = self._ckpt("3333")
+        before = sorted(p.name for p in app.RVC_MODELS_DIR.iterdir())
+        seen: dict = {}
+
+        def fake_run(cmd, *a, **kw):
+            stem, work = cmd[4], Path(cmd[7])
+            seen["work"] = str(work)
+            self.assertTrue(str(app.RVC_DIR / "export_tmp") in str(work),
+                            "导出必须被指派到专用临时目录，而不是音色权重目录")
+            (work / "assets" / "weights").mkdir(parents=True, exist_ok=True)
+            (work / "assets" / "weights" / f"{stem}.pth").write_bytes(b"p" * 10)
+            return types.SimpleNamespace(returncode=0, stdout=b"ok", stderr=b"")
+
+        real_sub, real_run = app.subprocess, app.subprocess.run
+        app.subprocess = types.SimpleNamespace(run=fake_run)
+        cache = self.tmp / "cache_3333.pth"
+        try:
+            out = app._rvc_small_model(ck, cache)
+        finally:
+            app.subprocess = real_sub
+            app.subprocess.run = real_run
+        self.assertEqual(out, cache)
+        self.assertEqual(cache.read_bytes(), b"p" * 10, "产物应被搬进按检查点各自的缓存")
+        self.assertEqual(sorted(p.name for p in app.RVC_MODELS_DIR.iterdir()), before,
+                         "整个导出过程音色权重目录必须一个文件都不多")
+        self.assertFalse(Path(seen["work"]).exists(), "临时工作目录用完即删")
+
+
+class TestRvcDoneMeta(Sandbox):
+    """评审 G4：盘上产物 meta 里 status=done 的任务不该还挂着 step='排队中'/queue_pos。
+    前端不看它，但事后排查和 AI 侧读 meta 都会被带偏。"""
+
+    RID = "20260101_000008_gggggggg"
+
+    def test_done_meta_has_no_queue_stage_leftovers(self):
+        saved = (app.RVC_DIR, app.RVC_MODELS_DIR, dict(app._RVC_JOBS),
+                 app.subprocess, app._win_toast)
+        rvc = self.tmp / "rvc"
+        app.RVC_DIR = rvc
+        app.RVC_MODELS_DIR = rvc / "assets" / "weights"
+        app._RVC_JOBS.clear()
+        app._win_toast = lambda *a, **k: None
+        in_dir = app.RVC_JOB_DIR / self.RID
+        in_dir.mkdir(parents=True)
+        src = in_dir / "in.wav"
+        src.write_bytes(b"RIFF")
+
+        def fake_run(cmd, *a, **kw):
+            (in_dir / "converted.wav").write_bytes(b"WAVEdata")
+            return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        app.subprocess = types.SimpleNamespace(run=fake_run)
+        try:
+            job = {"id": self.RID, "status": "pending", "step": "排队中", "queue_pos": 2,
+                   "model": "x.pth", "src_name": "in.wav"}
+            app._rvc_convert_worker(self.RID, job, src, in_dir, "x.pth",
+                                    0, "rmvpe", 0.0, 0.33, 1.0)
+            meta = json.loads((app.OUTPUT_DIR / f"{self.RID}.json").read_text(encoding="utf-8"))
+        finally:
+            (app.RVC_DIR, app.RVC_MODELS_DIR) = saved[0], saved[1]
+            app._RVC_JOBS.clear()
+            app._RVC_JOBS.update(saved[2])
+            app.subprocess, app._win_toast = saved[3], saved[4]
+        self.assertEqual(meta["status"], "done")
+        self.assertNotIn("step", meta, "done 的产物里不该有排队阶段的 step")
+        self.assertNotIn("queue_pos", meta)
+        self.assertIn("sec", meta, "真实耗时字段该留着——清的是撒谎的，不是干活")
+        # 评审 C4：src 是 b"RIFF" 假文件，音域测量注定失败——不许把成功的换声改判失败，
+        # 但失败必须留痕（meta.src_f0.error），不许静默。
+        self.assertIn("src_f0", meta)
+        self.assertIn("error", meta["src_f0"])
+
+
+class TestPitchRange(Sandbox):
+    """评审 C4：音域匹配与自动变调建议。目标端只采信本机训练留下的 2a_f0 实测值；
+    源端用 pyworld 真跑（纯 CPU、毫秒级），测试不落任何真实 runtime 目录。"""
+
+    def setUp(self):
+        super().setUp()
+        self._saved_rvc = app.RVC_DIR
+        app.RVC_DIR = self.tmp / "rvc"
+        (app.RVC_DIR / "logs").mkdir(parents=True)
+        app._RVC_F0STATS_MEM.clear()
+
+    def tearDown(self):
+        app._RVC_F0STATS_MEM.clear()
+        app.RVC_DIR = self._saved_rvc
+        super().tearDown()
+
+    def test_target_range_only_from_real_training_data(self):
+        import numpy as np
+        d = app.RVC_DIR / "logs" / "试唱" / "2a_f0"
+        d.mkdir(parents=True)
+        np.save(d / "a.npy", np.array([100.0, 200.0, 300.0, 0.0]))  # 0 帧必须被剔除
+        np.save(d / "b.npy", np.array([200.0, 250.0]))
+        st = app._rvc_f0_stats("试唱.pth")
+        self.assertEqual(st["median_hz"], 200.0, "[100,200,200,250,300] 排序后中位是第 3 个 = 200")
+        self.assertEqual(st["frames"], 5)
+        self.assertEqual(st["files"], 2)
+        self.assertTrue((app.RVC_DIR / "logs" / "试唱" / "f0_stats.json").is_file(),
+                        "算过一次要落 sidecar，模型列表不该每次重扫几百个 npy")
+        self.assertIsNone(app._rvc_f0_stats("王菲.pth"),
+                          "外部下载音色没有训练素材——如实给 None，绝不拿别人的数字冒充")
+
+    def test_source_f0_measured_for_real(self):
+        """pyworld 走真路径：220Hz 正弦要量出 ~220；纯静音必须 422 而不是编一个数。"""
+        import numpy as np
+        import soundfile as sf
+        sr = 22050
+        t = np.arange(int(sr * 3.5)) / sr
+        p = self.tmp / "sine.wav"
+        sf.write(str(p), (0.5 * np.sin(2 * np.pi * 220 * t)).astype("float32"), sr)
+        got = app._rvc_f0_of_audio(p)
+        self.assertTrue(200 <= got["median_hz"] <= 242, f"220Hz 实测 {got['median_hz']}")
+        self.assertLessEqual(got["analyzed_sec"], 3.6)
+        z = self.tmp / "sil.wav"
+        sf.write(str(z), np.zeros(sr * 4, dtype="float32"), sr)
+        with self.assertRaises(HTTPException) as cm:
+            app._rvc_f0_of_audio(z)
+        self.assertEqual(cm.exception.status_code, 422)
+
+    def test_suggestion_math_and_clamp(self):
+        s = app._rvc_pitch_suggestion(220.0, 330.0, 0)   # 纯五度 = 7.02 半音
+        self.assertEqual(s["suggested_pitch"], 7)
+        self.assertTrue(s["apply"])
+        s = app._rvc_pitch_suggestion(220.0, 226.0, 0)   # 差不到一个半音不许瞎建议
+        self.assertEqual(s["suggested_pitch"], 0)
+        self.assertFalse(s["apply"])
+        s = app._rvc_pitch_suggestion(100.0, 1000.0, 0)  # 39.9 半音 → 钳 24（与闸门同口径）
+        self.assertEqual(s["suggested_pitch"], 24)
+        s = app._rvc_pitch_suggestion(440.0, 110.0, 0)   # 低八度 → -24
+        self.assertEqual(s["suggested_pitch"], -24)
+
+    def test_advice_endpoint_states_and_cleanup(self):
+        import math
+        import numpy as np
+        import soundfile as sf
+        saved_models = app._rvc_models
+        client = TestClient(app.app, base_url=LOCAL_BASE)
+        try:
+            app._rvc_models = lambda: ["试唱.pth"]
+            sr = 22050
+            t = np.arange(int(sr * 3.5)) / sr
+            p = self.tmp / "vocal.wav"
+            sf.write(str(p), (0.5 * np.sin(2 * np.pi * 220 * t)).astype("float32"), sr)
+
+            def post():
+                return client.post("/api/rvc/pitch/advice",
+                                   files={"file": ("vocal.wav", p.read_bytes(), "audio/wav")},
+                                   data={"model": "试唱.pth"})
+
+            r = post()
+            self.assertEqual(r.status_code, 200, r.text)
+            j = r.json()
+            self.assertIsNone(j["target"])
+            self.assertIn("没有音域数据", j["text"], "目标没数据就直说，不含糊")
+            self.assertNotIn("suggestion", j)
+            # 给"试唱"落一份中位 440Hz 的训练 f0 → 建议应恰为 +12
+            d = app.RVC_DIR / "logs" / "试唱" / "2a_f0"
+            d.mkdir(parents=True)
+            np.save(d / "x.npy", np.full(500, 440.0))
+            app._RVC_F0STATS_MEM.clear()
+            r = post()
+            self.assertEqual(r.status_code, 200, r.text)
+            j = r.json()
+            self.assertTrue(j.get("suggestion"), "两边都有数据就必须给出建议")
+            self.assertLess(abs(j["source"]["median_hz"] - 220), 22)
+            self.assertEqual(j["suggestion"]["suggested_pitch"],
+                             round(12 * math.log2(440.0 / j["source"]["median_hz"])))
+            self.assertEqual(list(app.RVC_JOB_DIR.glob("pitch_*")), [],
+                             "分析是一次性的，临时目录不能留在盘上")
+        finally:
+            app._rvc_models = saved_models
+
+
+class TestRvcModelsList(Sandbox):
+    """评审 G3 兜底：检查点文件/临时文件一旦误落进权重目录，也不能被列成可选音色。"""
+
+    def test_only_real_finals_are_listed(self):
+        saved = app.RVC_MODELS_DIR
+        d = self.tmp / "weights"
+        d.mkdir()
+        app.RVC_MODELS_DIR = d
+        try:
+            for n in ("王菲.pth", "G_2333333.pth", "D_2333333.pth", ".promote_tmp.pth"):
+                (d / n).write_bytes(b"x")
+            (d / "孙燕姿.pth.bak").write_bytes(b"x")
+            self.assertEqual(app._rvc_models(), ["王菲.pth"])
+        finally:
+            app.RVC_MODELS_DIR = saved
+
+
+class TestRvcIndexNamed(Sandbox):
+    """推理必须点名给索引：本机 王菲 与 王菲V6 并存时，runtime 自己的子串猜测
+    会按文件名排序选中 王菲V6 的外链——选 王菲 却在用别人的检索库。"""
+
+    RID = "20260101_000007_hhhhhhhh"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._saved_named = (app.subprocess, app._win_toast)
+        app._win_toast = lambda title, body: None
+        self.cmds: list[list[str]] = []
+
+        class _Failed:
+            returncode = 1
+            stdout = b""
+            stderr = b"intentional failure"
+
+        def fake_run(cmd, **kw):
+            self.cmds.append(list(map(str, cmd)))
+            return _Failed()
+
+        app.subprocess = types.SimpleNamespace(run=fake_run)
+        models = self.tmp / "weights-named"
+        models.mkdir()
+        self._saved_named = (app.subprocess, app._win_toast, app.RVC_MODELS_DIR)
+        app.RVC_MODELS_DIR = models
+        (models / "王菲.pth").write_bytes(b"x")
+        # 故意让"别人的"外链按文件名排在前面（IVF2574 < IVF3250）
+        (self.rvc_logs / "added_IVF2574_Flat_nprobe_1_王菲V6_v2.index").write_bytes(b"x")
+        self.mine = self.rvc_logs / "added_IVF3250_Flat_nprobe_1_王菲_v2.index"
+        self.mine.write_bytes(b"x")
+
+    def tearDown(self) -> None:
+        app.subprocess, app._win_toast, app.RVC_MODELS_DIR = self._saved_named
+        with app._RVC_LOCK:
+            app._RVC_JOBS.pop(self.RID, None)
+        super().tearDown()
+
+    def _run_worker(self, index_rate: float = 0.75):
+        in_dir = app.RVC_JOB_DIR / self.RID
+        in_dir.mkdir(parents=True, exist_ok=True)
+        job = {"id": self.RID, "status": "pending", "step": "排队中", "queue_pos": 1,
+               "model": "王菲.pth", "src_name": "x.wav", "src_duration": 30,
+               "ts": "2026-01-01T00:00:00"}
+        with app._RVC_LOCK:
+            app._RVC_JOBS[self.RID] = job
+        app._rvc_convert_worker(self.RID, job, in_dir / "src.wav", in_dir,
+                                "王菲.pth", 0, "rmvpe", index_rate, 0.33, 0.25)
+        return job
+
+    def test_worker_names_this_voices_own_index(self):
+        self._run_worker()
+        self.assertEqual(len(self.cmds), 1)
+        cmd = self.cmds[0]
+        i = cmd.index("--index") if "--index" in cmd else -1
+        self.assertGreater(i, -1, "不给 --index 就等于把选哪个索引交给猜")
+        self.assertEqual(Path(cmd[i + 1]).name, self.mine.name,
+                         "必须是 王菲 自己的那份，不是 王菲V6 的")
+        j = cmd.index("--index-rate")
+        self.assertEqual(float(cmd[j + 1]), 0.75)
+        self.assertEqual(cmd[cmd.index("--filter-radius") + 1], "3",
+                         "不显式给参的调用方也拿官方默认 3，而不是永远 0")
+        self.assertEqual(cmd[cmd.index("--resample-sr") + 1], "0")
+
+    def test_index_flag_omitted_when_retrieval_is_off(self):
+        self._run_worker(index_rate=0.0)
+        self.assertNotIn("--index", self.cmds[0],
+                         "关掉检索强度时不该还塞一个索引文件进去")
+        self.assertEqual(self.cmds[0][self.cmds[0].index("--index-rate") + 1], "0.0")
+
+    def test_worker_degrades_when_cli_lacks_filter_radius(self):
+        """评审 H2：runtime/ 不入库，重装后是上游原版——不认识 --filter-radius，
+        照传 argparse 退出码 2，等于每一单换声都失败。探测到缺能力必须**不传该参数**
+        并在任务上明写 caps_warn（不许静默），--resample-sr 是原版就有的、照常传。"""
+        app._rvc_cli_caps = lambda: {"filter_radius": False, "fcpe": False}
+        job = self._run_worker()
+        cmd = self.cmds[0]
+        self.assertNotIn("--filter-radius", cmd)
+        self.assertIn("--resample-sr", cmd)
+        self.assertIn("caps_warn", job, "跳过这一步必须留痕，不许静默退化")
+        self.assertIn("patches/rvc-infer", job["caps_warn"], "要给出路")
+
+    def test_new_knobs_reach_the_command_line(self):
+        """评审 C2/C3：平滑半径、输出采样率与 fcpe 必须按任务参数传给推理 CLI，
+        而不是被 worker 里写死的旧值吃掉（--resample-sr 曾被硬编码成 48000）。"""
+        in_dir = app.RVC_JOB_DIR / self.RID
+        in_dir.mkdir(parents=True, exist_ok=True)
+        job = {"id": self.RID, "status": "pending", "model": "王菲.pth",
+               "src_name": "x.wav", "src_duration": 30, "ts": "2026-01-01T00:00:00"}
+        with app._RVC_LOCK:
+            app._RVC_JOBS[self.RID] = job
+        app._rvc_convert_worker(self.RID, job, in_dir / "src.wav", in_dir,
+                                "王菲.pth", 0, "fcpe", 0.5, 0.33, 1.0,
+                                False, False, False, 5, 48000)
+        cmd = self.cmds[0]
+        self.assertEqual(cmd[cmd.index("--f0-method") + 1], "fcpe")
+        self.assertEqual(cmd[cmd.index("--filter-radius") + 1], "5")
+        self.assertEqual(cmd[cmd.index("--resample-sr") + 1], "48000")
+
+
+class TestRvcCapsProbe(unittest.TestCase):
+    """能力探测的实现锁（不走 Sandbox：那边把探测本身 stub 掉了）。
+    这里只假 subprocess，验证真实解析/缓存/异常路径。"""
+
+    def setUp(self):
+        self._saved = (app.subprocess, app._RVC_CAPS, app._RVC_FCPE_OK)
+
+    def tearDown(self):
+        app.subprocess, app._RVC_CAPS, app._RVC_FCPE_OK = self._saved
+
+    def test_caps_parses_help_and_caches(self):
+        calls = []
+
+        class _R:
+            stdout = b"usage: cli.py [--f0-method {pm,rmvpe,fcpe}] [--filter-radius N]"
+
+        def fake_run(cmd, **kw):
+            calls.append(list(map(str, cmd)))
+            return _R()
+
+        app.subprocess, app._RVC_CAPS = types.SimpleNamespace(run=fake_run), None
+        caps = app._rvc_cli_caps()
+        self.assertEqual(caps, {"filter_radius": True, "fcpe": True})
+        self.assertIn("--help", calls[0])
+        app._rvc_cli_caps()
+        self.assertEqual(len(calls), 1, "探测结果必须进程内缓存——每次都跑子进程会在提交路径上白等")
+
+    def test_caps_probe_failure_reports_no_capabilities(self):
+        """探测本身坏了不能反过来崩提交：按"缺能力"降级（fcpe 拒、filter-radius 跳过并留痕）。"""
+        def boom(cmd, **kw):
+            raise OSError("no python")
+        app.subprocess, app._RVC_CAPS = types.SimpleNamespace(run=boom), None
+        caps = app._rvc_cli_caps()
+        self.assertEqual(caps, {"filter_radius": False, "fcpe": False})
+
+    def test_fcpe_ok_import_and_cache(self):
+        calls = []
+
+        class _Ok:
+            returncode = 0
+
+        def fake_run(cmd, **kw):
+            calls.append(list(map(str, cmd)))
+            return _Ok()
+
+        app.subprocess, app._RVC_FCPE_OK = types.SimpleNamespace(run=fake_run), None
+        self.assertTrue(app._rvc_fcpe_ok())
+        app._rvc_fcpe_ok()
+        self.assertEqual(len(calls), 1, "import torchfcpe 实测 5 秒级，只许探一次")
+        class _Bad:
+            returncode = 1
+        app.subprocess, app._RVC_FCPE_OK = types.SimpleNamespace(
+            run=lambda cmd, **kw: _Bad()), None
+        self.assertFalse(app._rvc_fcpe_ok())
+
+
+class TestTrainClean(Sandbox):
+    """A1 素材净化锁测：两阶段 CLI 的真实命令行形状、声部实名挑选
+    （Dry / No Noise——"No Noise" 含 "Noise"，子串匹配会选错边）、
+    逐文件回退、全失败不落脏副本、续跑复用——全部挂在 _rvc_clean_dataset 的
+    真实调用路径上（stub 只放在 subprocess.run 边界）。"""
+
+    DE = "UVR-DeReverb-aufr33-jarredou_4band_v4_ms_fullband"
+    DN = "UVR-DeNoise-Lite"
+    SUFFIX = {DE: ["Dry", "Reverb"], DN: ["Noise", "No Noise"]}
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._saved_clean = (app.subprocess, app.backend_mode,
+                             app._pymss_env, app._pymss_creationflags)
+        app.backend_mode = lambda: "cpu"
+        app._pymss_env = lambda: {}
+        app._pymss_creationflags = lambda: 0
+        self.cmds: list[list[str]] = []
+        self.stage_inputs: dict[str, list[str]] = {}
+        self.no_output_for: set[tuple[str, str]] = set()   # (model, stem)→该文件无产物
+        self.dir_fail: set[str] = set()   # model→整目录批跑炸（逐文件重试应能成）
+        self.all_fail: set[str] = set()   # model→批跑与单文件都炸
+
+        class _R:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        def fake_run(cmd, **kw):
+            cmd = [str(c) for c in cmd]
+            self.cmds.append(cmd)
+            model = cmd[cmd.index("infer") + 1]
+            src = Path(cmd[cmd.index("-i") + 1])
+            out = Path(cmd[cmd.index("-o") + 1])
+            if (src.is_dir() and model in self.dir_fail) or model in self.all_fail:
+                raise RuntimeError("No module named 'tools.pymss'")
+            self.stage_inputs.setdefault(model, []).append(
+                sorted(p.name for p in src.iterdir()) if src.is_dir() else [src.name])
+            out.mkdir(parents=True, exist_ok=True)
+            items = [src] if src.is_file() else sorted(p for p in src.iterdir()
+                                                       if p.is_file())
+            for w in items:
+                if (model, w.stem) in self.no_output_for:
+                    continue
+                for s in self.SUFFIX[model]:
+                    (out / f"{w.stem}_{s}.wav").write_bytes(s.encode())
+            return _R()
+
+        app.subprocess = types.SimpleNamespace(run=fake_run)
+
+    def tearDown(self) -> None:
+        app.subprocess, app.backend_mode, app._pymss_env, app._pymss_creationflags = \
+            self._saved_clean
+        super().tearDown()
+
+    def _mk(self, *stems: str):
+        rid = "trainclean01"
+        ds = app.RVC_TRAIN_DIR / rid / "dataset"
+        ds.mkdir(parents=True, exist_ok=True)
+        for s in stems:
+            (ds / f"{s}.wav").write_bytes(b"orig")
+        out = app.RVC_TRAIN_DIR / rid / "dataset_purified"
+        return ds, out, {"id": rid}
+
+    def test_two_stages_community_order_clean_stems_only(self):
+        ds, out, job = self._mk("a", "b")
+        info = app._rvc_clean_dataset(ds, out, "light", job)
+        models = [c[c.index("infer") + 1] for c in self.cmds]
+        self.assertEqual(models, [self.DE, self.DN],
+                         "顺序必须是先去混响再降噪（社区口径），且各只批跑一次")
+        self.assertEqual(self.stage_inputs[self.DE], [["a.wav", "b.wav"]])
+        self.assertEqual(self.stage_inputs[self.DN], [["a.wav", "b.wav"]],
+                         "第二阶段入口只能是挑选后的干净人声，Reverb/Noise 声部不得混入")
+        for f in ("a.wav", "b.wav"):
+            self.assertEqual((out / f).read_bytes(), b"No Noise",
+                             "最终留下的必须是降噪模型的干净一路")
+        self.assertEqual((ds / "a.wav").read_bytes(), b"orig",
+                         "原始素材必须原样留档（A/B 的前提）")
+        self.assertEqual((info["fully_cleaned"], info["carried"], info["label"]),
+                         (2, 0, "轻"))
+        self.assertFalse((out.parent / "_clean_tmp").exists(), "中间产物用完即清")
+        self.assertEqual(self.cmds[0][:4], [str(app.RVC_PY), "-m", "pymss.cli", "infer"],
+                         "包名必须是 pymss.cli：VR 模型的 modules 别名层只认 pymss.* 前缀，"
+                         "沿用分离链的 tools.pymss.cli 会当场崩（真机实测）")
+        self.assertIn("--download", self.cmds[0],
+                      "换机器缺权重时 CLI 自己补下载，而不是静默失败")
+
+    def test_missing_output_falls_back_per_file_and_is_counted(self):
+        ds, out, job = self._mk("a", "b")
+        self.no_output_for = {(self.DE, "a"), (self.DN, "a")}
+        info = app._rvc_clean_dataset(ds, out, "light", job)
+        self.assertEqual((out / "a.wav").read_bytes(), b"orig",
+                         "两阶段都没产物的文件带着净化前版本进最终目录，绝不丢样本")
+        self.assertEqual((out / "b.wav").read_bytes(), b"No Noise")
+        self.assertEqual((info["fully_cleaned"], info["carried"]), (1, 2),
+                         "回退必须计数留痕，不能装作整批都净化过")
+
+    def test_batch_failure_retries_per_file(self):
+        ds, out, job = self._mk("a", "b")
+        self.dir_fail = {self.DE}
+        info = app._rvc_clean_dataset(ds, out, "light", job)
+        de_calls = [c for c in self.cmds if c[c.index("infer") + 1] == self.DE]
+        self.assertEqual(len(de_calls), 3, "整批炸一次后必须逐文件重试（1 批 + 2 单）")
+        self.assertEqual(info["fully_cleaned"], 2)
+
+    def test_rc0_with_zero_output_is_not_success(self):
+        """评审 J3（真机撞过）：-i 指到不存在的目录时 PyMSS 退 0、零产出。
+        "退 0 即成功"必须被堵死——否则净化静默跳过，拿未净化素材继续练还报告成功。"""
+        src = self.tmp / "j3_in"
+        src.mkdir()
+        (src / "a.wav").write_bytes(b"x")
+        self.no_output_for = {(self.DE, "a")}
+        err = app._rvc_pymss_stage(self.DE, src, self.tmp / "j3_out", "cpu")
+        self.assertIn("退出码 0 但没有任何产物", err,
+                      "rc=0 + 零产出必须返回错误文案，不许是约定的成功哨兵 \"\"")
+        self.no_output_for = set()  # 恢复正常：有产物时防护不该误伤
+        self.assertEqual(app._rvc_pymss_stage(self.DE, src, self.tmp / "j3_out2", "cpu"),
+                         "")  # 有产物时仍判成功——别把防护变成误伤
+
+    def test_zero_output_tries_per_file_and_reports(self):
+        # 整批 rc0 零产出 → 走逐文件重试链，最终全败时报错文案带上这个原因
+        ds, out, job = self._mk("a", "b")
+        self.no_output_for = {(self.DE, "a"), (self.DE, "b"),
+                              (self.DN, "a"), (self.DN, "b")}
+        with self.assertRaises(RuntimeError) as cm:
+            app._rvc_clean_dataset(ds, out, "light", job)
+        self.assertIn("素材净化全部失败", str(cm.exception))
+        self.assertIn("退出码 0", str(cm.exception),
+                      "报错要能看出是 rc0 零产出，不是别的原因")
+        self.assertEqual(list(out.iterdir()), [], "全失败时输出目录必须空着")
+
+    def test_total_failure_leaves_no_unclean_copies(self):
+        ds, out, job = self._mk("a")
+        self.all_fail = {self.DE, self.DN}
+        with self.assertRaises(RuntimeError) as cm:
+            app._rvc_clean_dataset(ds, out, "light", job)
+        self.assertIn("素材净化全部失败", str(cm.exception))
+        self.assertIn("取消净化", str(cm.exception), "报错要给出路，不是只甩栈")
+        self.assertEqual(list(out.iterdir()), [],
+                         "全失败时输出目录必须空着——否则续跑会把未净化副本误判成已净化跳过")
+
+    def test_resume_reuses_finished_purification(self):
+        ds, out, job = self._mk("a", "b")
+        out.mkdir(parents=True)
+        for s in ("a", "b"):
+            (out / f"{s}.wav").write_bytes(b"No Noise")
+        info = app._rvc_clean_dataset(ds, out, "light", job, resume=True)
+        self.assertEqual(self.cmds, [], "产物已齐就不该再跑任何推理")
+        self.assertTrue(info["skipped"])
+
+    def test_select_ignores_files_stolen_by_prefix_stems(self):
+        d = self.tmp / "sel"
+        d.mkdir()
+        (d / "s0_Dry.wav").write_bytes(b"x")
+        self.assertIsNone(app._rvc_clean_select(d, "s"),
+                          "stem='s' 不许把 s0_Dry.wav 认成自己的声部（前缀撞名）")
+        self.assertEqual(app._rvc_clean_select(d, "s0").name, "s0_Dry.wav")
+
+    def test_tier_models_are_supported_in_vendored_catalog(self):
+        cat = json.loads((app.RVC_DIR / "tools" / "pymss" / "resources"
+                          / "model_catalog.json").read_text(encoding="utf-8"))
+        for tier, models in app._RVC_CLEAN_TIERS.items():
+            for m in models:
+                hit = next((e for e in cat["models"]
+                            if m == e["name"] or m in (e.get("aliases") or [])), None)
+                self.assertIsNotNone(hit, f"{tier} 档模型 {m} 不在 PyMSS 目录里")
+                self.assertTrue(hit["supported"])
+
+
+class TestTrainSubmitClean(Sandbox):
+    """A1 提交闸门：档位非法在落盘前 400；合法档位必须原样抵达任务与 worker 参数。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._saved_sub = (app.RVC_MODELS_DIR, app.threading,
+                           app._RVC_TRAIN_WORKER, app.backend_mode,
+                           dict(app.RVC_TRAIN_JOBS))
+        app.RVC_MODELS_DIR = self.tmp / "weights-clean"
+        app.RVC_MODELS_DIR.mkdir()
+        app.backend_mode = lambda: "cpu"
+        app._RVC_TRAIN_WORKER = None
+        app.RVC_TRAIN_JOBS.clear()
+        self.started: list[tuple] = []
+
+        class _FakeThread:
+            def __init__(self, target=None, args=(), daemon=None):
+                self.args, self.alive = args, False
+
+            def start(self):
+                self.alive = True
+
+            def is_alive(self):
+                return False
+        self.thread_cls = _FakeThread
+        app.threading = types.SimpleNamespace(
+            Thread=lambda target=None, args=(), daemon=None: (
+                self.started.append(args), _FakeThread())[1],
+            Lock=threading.Lock)
+        self.client = TestClient(app.app, base_url=LOCAL_BASE)
+
+    def tearDown(self) -> None:
+        (app.RVC_MODELS_DIR, app.threading, app._RVC_TRAIN_WORKER,
+         app.backend_mode) = self._saved_sub[:4]
+        app.RVC_TRAIN_JOBS.clear()
+        app.RVC_TRAIN_JOBS.update(self._saved_sub[4])
+        super().tearDown()
+
+    def _post(self, **data):
+        form = {"name": "cleantest", "epochs": "30"}
+        form.update({k: str(v) for k, v in data.items()})
+        return self.client.post("/api/rvc/train",
+                                files=[("files", ("s.wav", b"RIFF" + b"\0" * 400_000,
+                                                  "audio/wav"))],
+                                data=form)
+
+    def test_bad_clean_tier_400_before_anything_lands(self):
+        r = self._post(clean_tier="ultra")
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("off/light/medium", r.json()["detail"])
+        self.assertEqual(self.started, [], "坏档位不许把任务放进展队")
+
+    def test_clean_tier_reaches_job_and_worker(self):
+        r = self._post(clean_tier="light")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self.started[0][-1], "light",
+                         "worker 第 6 参就是净化档位（离线参数不许在传参处被吃掉）")
+        with app.RVC_TRAIN_LOCK:
+            job = next(iter(app.RVC_TRAIN_JOBS.values()))
+        self.assertEqual(job["clean_tier"], "light")
+
+    def test_default_is_off_for_existing_clients(self):
+        r = self._post()
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self.started[0][-1], "off",
+                         "不带新参数的老调用方（含 resume 老任务）行为不变")
+
+
+class TestCheckupCleanAdvice(Sandbox):
+    """A1 体检分档：底噪＝最安静 10% 帧的中位电平。必须能在噪声大到没有帧低于
+    -45 静音门时照样报出高底噪（这正是分位数口径存在的理由）。"""
+
+    def _scan_with(self, amp: float) -> dict:
+        import numpy as np
+        import soundfile as sf
+        d = self.tmp / "ds"
+        d.mkdir(exist_ok=True)
+        sr = 40000
+        t = np.arange(sr * 4) / sr
+        seg = np.where(t < 2.0, 0.4 * np.sin(2 * np.pi * 220 * t),
+                       np.random.default_rng(7).uniform(-amp, amp, sr * 4))
+        sf.write(str(d / "s.wav"), seg.astype("float32"), sr)
+        return app._rvc_dataset_scan(d)
+
+    def test_noisy_gaps_still_measured_and_advised_medium(self):
+        rep = self._scan_with(0.02)      # 安静段 RMS ≈ -39 dBFS：高于 -45 静音门
+        self.assertTrue(rep["clean_advice"]["measured"],
+                        "噪声大到没有'静音帧'时更得测出来，不能装看不见")
+        self.assertEqual(rep["clean_advice"]["tier"], "medium")
+        self.assertTrue(any("净化" in w or "底噪" in w for w in rep["warnings"]))
+
+    def test_mild_noise_advises_light(self):
+        rep = self._scan_with(0.006)     # RMS ≈ -49 dBFS
+        self.assertEqual(rep["clean_advice"]["tier"], "light")
+
+    def test_clean_material_advises_off_without_panic(self):
+        rep = self._scan_with(1e-4)      # RMS ≈ -85 dBFS
+        ca = rep["clean_advice"]
+        self.assertEqual(ca["tier"], "off")
+        self.assertTrue(any("混响" in r for r in ca["reasons"]),
+                        "老实交代混响判不准，而不是宣布素材完美")
+
+
+class TestF0Reference(Sandbox):
+    """评审 J1：下载音色没有 2a_f0，C4 对本机 4/4 个现役音色 0% 生效。
+    补救=传该音色本人一段歌建"参考音域"档案。锁三件事：建档真能解锁变调建议、
+    训练实测永远优先且不许被参考覆盖（409）、来源标注不许撒谎。"""
+
+    NAME = "试音.pth"
+
+    def setUp(self):
+        super().setUp()
+        self._saved_f0r = (app.RVC_DIR, app.RVC_MODELS_DIR)
+        app.RVC_DIR = self.tmp / "rvc"
+        (app.RVC_DIR / "logs").mkdir(parents=True)
+        app.RVC_MODELS_DIR = self.tmp / "weights"
+        app.RVC_MODELS_DIR.mkdir()
+        (app.RVC_MODELS_DIR / self.NAME).write_bytes(b"0")  # 只按文件名列举，不读内容
+        app._RVC_F0STATS_MEM.clear()
+        self.client = TestClient(app.app, base_url=LOCAL_BASE)
+
+    def tearDown(self):
+        app._RVC_F0STATS_MEM.clear()
+        app.RVC_DIR, app.RVC_MODELS_DIR = self._saved_f0r
+        super().tearDown()
+
+    def _sine(self, hz, name="v.wav"):
+        import numpy as np
+        import soundfile as sf
+        sr = 22050
+        t = np.arange(int(sr * 3.5)) / sr
+        p = self.tmp / name
+        sf.write(str(p), (0.5 * np.sin(2 * np.pi * hz * t)).astype("float32"), sr)
+        return p
+
+    def _post_ref(self, wav, name=NAME):
+        return self.client.post(f"/api/rvc/models/{name}/f0-reference",
+                                files={"file": (wav.name, wav.read_bytes(), "audio/wav")})
+
+    def test_reference_unlocks_advice_and_is_labelled(self):
+        r = self._post_ref(self._sine(220))
+        self.assertEqual(r.status_code, 200, r.text)
+        st = r.json()["stats"]
+        self.assertEqual(st["source"], "reference", "参考档案必须自带来源标，不许冒充训练实测")
+        self.assertTrue(200 <= st["median_hz"] <= 242)
+        got = app._rvc_f0_stats(self.NAME)
+        self.assertEqual(got["source"], "reference")
+        # 建档后换声页的建议链路真的活了（源 440 → 目标 220 ≈ -12 半音）
+        a = self.client.post("/api/rvc/pitch/advice",
+                             files={"file": ("s.wav", self._sine(440, "s440.wav").read_bytes(),
+                                             "audio/wav")},
+                             data={"model": self.NAME})
+        j = a.json()
+        self.assertEqual(a.status_code, 200, a.text)
+        self.assertTrue(j.get("suggestion"), "建档前 0% 生效、建档后必须出建议")
+        self.assertIn("参考音频实测", j["text"], "文案要说清数字是参考音频量的，不是训练实测")
+
+    def test_training_data_refuses_downgrade_by_reference(self):
+        import numpy as np
+        d = app.RVC_DIR / "logs" / self.NAME.removesuffix(".pth") / "2a_f0"
+        d.mkdir(parents=True)
+        np.save(d / "x.npy", np.full(500, 440.0))
+        r = self._post_ref(self._sine(220))
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertIn("不许", r.json()["detail"])
+        self.assertFalse((d.parent / "f0_stats.json").is_file(),
+                         "被拒的建档不能偷偷先把文件落下去")
+
+    def test_training_wins_when_both_present(self):
+        import numpy as np
+        stem = self.NAME.removesuffix(".pth")
+        side = app.RVC_DIR / "logs" / stem / "f0_stats.json"
+        side.parent.mkdir(parents=True)
+        side.write_text(json.dumps({"median_hz": 200.0, "p5_hz": 190.0, "p95_hz": 210.0,
+                                    "source": "reference", "_stamp": 1}), encoding="utf-8")
+        d = side.parent / "2a_f0"
+        d.mkdir()
+        np.save(d / "x.npy", np.full(500, 440.0))
+        got = app._rvc_f0_stats(self.NAME)
+        self.assertEqual((got["source"], got["median_hz"]), ("training", 440.0),
+                         "几百切片的训练实测永远赢过一段 12 秒参考——不许降级")
+
+    def test_empty_2a_f0_falls_back_to_reference(self):
+        stem = self.NAME.removesuffix(".pth")
+        side = app.RVC_DIR / "logs" / stem / "f0_stats.json"
+        side.parent.mkdir(parents=True)
+        side.write_text(json.dumps({"median_hz": 200.0, "source": "reference",
+                                    "_stamp": 1}), encoding="utf-8")
+        (side.parent / "2a_f0").mkdir()  # 空目录：一个 npy 都没留下
+        got = app._rvc_f0_stats(self.NAME)
+        self.assertEqual(got["source"], "reference",
+                         "2a_f0 空壳不该把参考档案也挡没")
+
+    def test_unknown_voice_404_and_silence_422_no_lie(self):
+        r = self._post_ref(self._sine(220), name="查无此人.pth")
+        self.assertEqual(r.status_code, 404)
+        import numpy as np
+        import soundfile as sf
+        z = self.tmp / "z.wav"
+        sf.write(str(z), np.zeros(22050 * 4, dtype="float32"), 22050)
+        r = self._post_ref(z)
+        self.assertEqual(r.status_code, 422, "量不出人声就 422，不许编一个档案")
+        self.assertFalse((app.RVC_DIR / "logs" / "试音" / "f0_stats.json").is_file())
 
 
 if __name__ == "__main__":

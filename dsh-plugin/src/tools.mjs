@@ -24,7 +24,7 @@ const SPECS = {
   tool_get_progress: ['查询当前生成任务进度与预计剩余时间', {
     type: 'object', properties: {}, additionalProperties: false,
   }],
-  tool_rvc_convert: ['对已生成的歌曲做 RVC 换声', {
+  tool_rvc_convert: ['对已生成的歌曲做 RVC 换声（串行队列，一次只跑一个，连点会排队）', {
     type: 'object',
     properties: {
       source: { type: 'string', description: '历史任务 id（tool_list_history 获取）' },

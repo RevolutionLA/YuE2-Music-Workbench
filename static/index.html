@@ -748,35 +748,70 @@ We will sing beyond the night</textarea>
             <button class="ghost" type="button" data-pitch="-4">微调 -4</button>
             <button class="ghost" type="button" data-pitch="4">微调 +4</button>
           </div>
+          <div style="grid-column: 1 / -1; display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
+            <button class="ghost" type="button" id="rvcAnalyze">分析音域 → 变调建议</button>
+            <button class="ghost" type="button" id="rvcApplyAdvice" style="display:none;"></button>
+            <span id="rvcAdvice" style="color:var(--muted); font-size:12px;">量源唱的音高中枢、对照所选音色的舒适音域，给出该变几个半音（CPU 几秒，不进换声队列）。💡 只放源歌的 10~30 秒人声片段来分析即可，不必丢整首（只读前 5 分钟，带伴奏数字会被污染）。</span>
+          </div>
           <div class="hint-xs" style="grid-column: 1 / -1;">💡 变调怎么填：先判断「歌曲里原唱的性别」和「目标音色的性别」——不同性别必须 ±12（女转男 -12 / 男转女 +12），否则会闷哑或尖细；同性别可先用 0，听感偏高/偏低再 ±3~5 微调。判断不准就先试 0，跑完听「换声人声」再调。</div>
           <div><label for="rvcF0">变调算法</label>
             <select id="rvcF0">
-              <option value="rmvpe" selected>rmvpe · 精准（推荐）</option>
-              <option value="pm">pm · 快速（音准略差）</option>
+              <option value="rmvpe" selected>rmvpe · 通用首选（精准）</option>
+              <option value="fcpe">fcpe · 新一代（更快更准，Applio 同款）</option>
+              <option value="pm">pm · 最快（质量最低，容易飘）</option>
             </select>
           </div>
           <div><label for="rvcIndexRate">音色检索强度</label><input id="rvcIndexRate" type="number" step="0.05" value="0.75" min="0" max="1" /></div>
-          <div><label for="rvcProtect">protect（防气声）</label><input id="rvcProtect" type="number" step="0.01" value="0.33" min="0" max="0.5" /></div>
+          <div><label for="rvcProtect">protect（原唱细节保留）</label><input id="rvcProtect" type="number" step="0.01" value="0.33" min="0" max="0.5" /></div>
+          <div><label for="rvcRms">音量跟随原唱</label><input id="rvcRms" type="number" step="0.1" value="1" min="0" max="1" /></div>
+          <div><label for="rvcFilter">音高平滑半径</label>
+            <select id="rvcFilter">
+              <option value="3" selected>3（默认）</option>
+              <option value="0">0（关：保留原始音高轨迹）</option>
+              <option value="5">5（哑音/毛刺明显）</option>
+              <option value="7">7（断续严重）</option>
+            </select>
+          </div>
+          <div><label for="rvcResample">输出采样率</label>
+            <select id="rvcResample">
+              <option value="0" selected>模型原生（推荐）</option>
+              <option value="40000">40000</option>
+              <option value="44100">44100</option>
+              <option value="48000">48000</option>
+            </select>
+          </div>
           <div style="grid-column: 1 / -1; display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
             <span style="color:var(--muted); font-size:12px;">效果预设：</span>
             <button class="ghost" type="button" data-preset="0.75,0.33" title="多数场景的最佳起点">⭐ 标准</button>
             <button class="ghost" type="button" data-preset="0.85,0.33" title="更像目标音色，但可能轻微电音">更像音色</button>
-            <button class="ghost" type="button" data-preset="0.65,0.45" title="咬字更清晰，音色略淡">咬字更清</button>
+            <button class="ghost" type="button" data-preset="0.6,0.15" title="检索减弱、清辅音/呼吸更多保留；高音电音明显时用它">🔇 防电音</button>
           </div>
-          <div class="hint-xs" style="grid-column: 1 / -1;">💡 检索强度越高音色越像、但可能带电音；protect 越高咬字越清楚、气声越多。调不准就保持「标准」预设。</div>
+          <div class="hint-xs" style="grid-column: 1 / -1;">💡 检索强度越高音色越像，也越容易在长音/高音上出电音——出电音就往下调（0.6 起）。官方 FAQ 的取舍说得更准：<b>调到 1 理论上完全没有推理源音色泄露，但音质会倒向你的训练素材——素材比原曲差时，调高反而更糊</b>；素材优质且量大时这个旋钮不重要。protect 的含义是"没人声/气声帧里保留多少原唱特征"：<b>数值越小越保留原唱咬字与呼吸（电音更少），拉到 0.5 = 完全不保留</b>。「音量跟随原唱」管强弱起伏：1 = 原唱该轻的地方换声也轻（保留原曲的动态），调 0 = 完全用模型自己的音量，副歌和主歌会一样响；发现整首忽大忽小或压不住伴奏就往下调（0.5 起）。「音高平滑半径」是音高轨迹的中值滤波（官方 WebUI 同名旋钮，滤波核只认奇数）：默认 3；<b>哑音、毛刺、断续明显时调到 5~7</b>，调大会发闷，选 0 关闭。「输出采样率」默认跟随模型原生：40k 音色上采样到 48k 不会凭空补出高频，只多一次重采样，除非特殊需要别改。</div>
           <div style="grid-column: 1 / -1;">
             <label for="rvcSep" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
               <input id="rvcSep" type="checkbox" checked style="width:auto;" />
               <span>先做人声分离再换声（歌曲带伴奏时必勾；官方 PyMSS 分离，约 1.5 分钟/3.5 分钟歌）</span>
             </label>
           </div>
-          <div class="hint-xs" style="grid-column: 1 / -1;">💡 输入是完整歌曲（人声+伴奏）→ 保持勾选，换声前会自动分离出纯净人声，完成后可下载「换声人声 / 原人声 / 伴奏 / 完整歌曲」四份产物；输入已经是纯干声（录音、清唱）→ 取消勾选直接换声，速度更快。</div>
+          <div style="grid-column: 1 / -1;">
+            <label for="rvcHarmony" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+              <input id="rvcHarmony" type="checkbox" style="width:auto;" />
+              <span>分离后再去和声（HP5 只留主唱；副歌有叠唱/和声时能减少高音电音，多约 1 分钟）</span>
+            </label>
+          </div>
+          <div style="grid-column: 1 / -1;">
+            <label for="rvcGate" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+              <input id="rvcGate" type="checkbox" checked style="width:auto;" />
+              <span>静音门：前奏/间奏这些没人声的地方自动压到接近无声（推荐开——模型会在静音处自己"哼"出一个音，即底噪）</span>
+            </label>
+          </div>
+          <div class="hint-xs" style="grid-column: 1 / -1;">💡 输入是完整歌曲（人声+伴奏）→ 保持勾选，换声前会自动分离出纯净人声，完成后可下载/播放「换声成品（带伴奏） / 换声人声（干声） / 原人声 / 伴奏」四份产物；输入已经是纯干声（录音、清唱）→ 取消勾选直接换声，速度更快。</div>
         </div>
         <div class="actions">
           <button class="primary" id="rvcGo">开始换声</button>
         </div>
         <div class="progress" id="rvcProgress"><div id="rvcProgressBar"></div></div>
-        <div class="status" id="rvcStatus">选择文件与音色后点击「开始换声」。转换在服务端进行，可离开页面。</div>
+        <div class="status" id="rvcStatus">选择文件与音色后点击「开始换声」。转换在服务端进行，可离开页面；连点不会并行，会排成队一次只跑一个。</div>
       </div>
 
       <div>
@@ -804,18 +839,34 @@ We will sing beyond the night</textarea>
             <span>上传的是完整歌曲（含伴奏）→ 自动分离出干净人声再训练（官方 PyMSS，约 1.5 分钟/3.5 分钟歌）</span>
           </label>
         </div>
+        <div style="margin-top:10px;">
+          <label for="rvcTrainClean">素材净化（在分离之后、切片之前：去混响 → 轻降噪，官方 PyMSS 净化模型；原始素材原样留档，随时能前后对比）</label>
+          <select id="rvcTrainClean">
+            <option value="light" selected>轻（推荐：保守处理，去混响 + 轻降噪）</option>
+            <option value="off">不净化（素材是棚录干声）</option>
+            <option value="medium">中（混响/噪声很重时；模型更大、更耗时）</option>
+          </select>
+        </div>
         <div class="hint-xs">🎤 怎么录音：手机自带的录音机即可（m4a 能直接用）——安静房间（关窗、关风扇空调）、离麦 20-30cm 正常说话或唱歌，录 4-6 段每段 1-2 分钟；不要加伴奏、混响、变声特效，不要背景音乐。唱歌音色选唱段、说话音色选说话，或两者混录。手机录的先传到电脑再选文件。</div>
         <div class="hint-xs">✅ 好素材的判断：回放录音能听清每个字、没有嗡嗡的房间声、音量稳定——素材质量决定音色上限，比任何参数都重要。上传完整歌曲时务必勾选自动分离，否则伴奏会被当成"人声"学进去，音色会发糊。</div>
         <div class="pgrid" style="margin-top:10px;">
-          <div><label for="rvcTrainEpochs">训练轮数（150-400，推荐 200；约 2.5 分钟/轮）</label><input id="rvcTrainEpochs" type="number" value="200" min="150" max="400" step="10" /></div>
+          <div><label for="rvcTrainEpochs">训练轮数（1-1200；30 试听 / 100 常用 / 200 精训）</label><input id="rvcTrainEpochs" type="number" value="200" min="1" max="1200" step="10" /></div>
+          <div style="grid-column: 1 / -1; display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
+            <span style="color:var(--muted); font-size:12px;">轮数档位：</span>
+            <button class="ghost" type="button" data-epochs="30" title="先看看素材能不能练出个像样的东西，几十分钟就有结果">🔎 30 轮试听</button>
+            <button class="ghost" type="button" data-epochs="100" title="常规档，多数素材够用">⭐ 100 轮常用</button>
+            <button class="ghost" type="button" data-epochs="200" title="官方推荐口径：10 分钟以上素材练到 200 轮">🏆 200 轮精训</button>
+          </div>
         </div>
-        <div class="hint-xs">💡 轮数怎么选：200 轮适合 5 分钟以上素材（推荐）；素材偏少（3-5 分钟）用 300 轮补足；400 轮仅素材很干净时使用，过高可能过拟合（音色发劈）。训练太少的音色会发虚、发闷——不满意请加轮数重训，不要反复换声调试。</div>
+        <div class="hint-xs">💡 轮数不是越高越好：素材不足时加轮数只会把毛病学得更像（发虚、电音都在）。先点「先体检素材」看时长/静音/爆音，体检给的档位就是这批素材该用的轮数；1200 轮在这张 6GB 卡上要跑一整天，只在素材极干净且要出成品时用。</div>
         <div class="actions">
+          <button class="ghost" id="rvcTrainCheck">先体检素材（不训练，几分钟出报告）</button>
           <button class="primary" id="rvcTrainGo">开始制作音色</button>
         </div>
+        <div id="rvcTrainCheckReport" class="hint-xs" style="display:none; white-space:pre-wrap;"></div>
         <div class="status" id="rvcTrainStatus">训练在服务端进行（独占 GPU，期间不要同时生成歌曲/换声）。完成后新音色自动出现在换声页的音色下拉框，只保留最终成品。</div>
         <div class="progress" id="rvcTrainProgress"><div id="rvcTrainProgressBar"></div></div>
-        <div class="hint-xs">🎓 训练完成后怎么验收：到换声页用新音色换一段 30 秒的清唱或歌曲（先勾人声分离）试听——音色像、咬字清即合格；如果发虚发闷→素材太少或轮数不够，加轮数重训；如果有电音→换声时把「音色检索强度」降到 0.65。</div>
+        <div class="hint-xs">🎓 训练完成后怎么验收：到换声页用新音色换一段 30 秒的清唱或歌曲（先勾人声分离）试听——音色像、咬字清即合格；如果发虚发闷→素材太少或轮数不够，加轮数重训；如果有电音（尤其高音处）→素材里高音段太少，换声时勾「分离后再去和声」并把「音色检索强度」降到 0.6、protect 降到 0.15。</div>
       </div>
 
       <div>
@@ -2037,7 +2088,9 @@ async function fetchExtraTasks() {
     (d.items || []).filter(j => j.id).forEach(j => {
       const kind = j.kind || (j.step !== undefined ? "train" : (j.model && j.src_duration !== undefined ? "rvc" : "generate"));
       out.push({
-        id: j.id, kind, status: "running", ts: j.ts || "",
+        // 状态如实透传：写死 running 会把"排队等前一个换声算完"显示成"正在转换"
+        id: j.id, kind, status: j.status || "running", ts: j.ts || "",
+        queue_pos: j.queue_pos || 0,
         task_name: j.task_name || j.name || (j.model || "").replace(/\.pth$/i, "") || "未命名",
         style: j.style || "", lyrics: j.lyrics || "", cot: j.cot || "full", abc: j.abc || "",
         params: j.params || {}, sec: j.sec, bytes: j.bytes,
@@ -2091,8 +2144,10 @@ async function renderHistory() {
       const size = h.bytes ? " · " + fmtBytes(h.bytes) : "";
       const isTrain = h.kind === "train";
       const isRvc = h.kind === "rvc";
-      const stMap = { done: "✓ 成功", error: "✕ 失败", cancelled: "⏹ 已终止" };
-      const stTxt = h.status === "done" ? stMap.done : stMap[h.status] || "⏳ 进行中";
+      const stMap = { done: "✓ 成功", error: "✕ 失败", cancelled: "⏹ 已终止", pending: "⏳ 排队中" };
+      const stTxt = h.status === "done" ? stMap.done
+        : (h.status === "pending" && Number(h.queue_pos) > 1) ? `⏳ 排队中（第 ${h.queue_pos} 位）`
+        : stMap[h.status] || "⏳ 进行中";
       const stColor = h.status === "done" ? "#2c8a4b" : (h.status === "error" || h.status === "cancelled") ? "#c33" : "var(--acc)";
       const firstLyric = (h.lyrics || "").split("\n").map(s => s.trim()).find(s => s && !s.startsWith("[")) || "";
       const dur = h.sec ? (typeof h.sec === "number" ? Math.round(h.sec) + "s" : h.sec) : "";
@@ -2113,12 +2168,13 @@ async function renderHistory() {
           ${[dur && '🎵 ' + dur, elapsed && '⏱ ' + elapsed, h.bytes && fmtBytes(h.bytes)].filter(Boolean).join(' · ') || '—'}
         </div>
         <div class="h-actions">
-          ${h.status === "done" && !isTrain ? '<button class="ghost" data-play>▶ 播放</button>' : ''}
+          ${h.status === "done" && !isTrain && !(isRvc && h.assets && h.assets.full_song) ? '<button class="ghost" data-play>▶ 播放</button>' : ''}
+          ${h.status === "done" && isRvc && h.assets && h.assets.full_song ? '<button class="ghost" data-play="full">▶ 成品（带伴奏）</button><button class="ghost" data-play="dry">🎤 干人声</button>' : ''}
           ${h.status === "done" && isTrain ? '<button class="ghost" data-use>去使用</button>' : ''}
           ${h.status === "done" && !isTrain ? '<button class="ghost" data-dl>⬇ 下载</button>' : ''}
           ${h.status !== "pending" ? '<button class="ghost" data-more>⋯ 更多</button>' : ''}
           <div class="h-more" data-more-menu style="display:none;">
-            ${h.status === "running" ? '<button class="danger" data-stop>⏹ 终止</button><button class="ghost" data-restart>↻ 重启任务</button>' : ''}
+            ${h.status === "running" && !isRvc && !isTrain ? '<button class="danger" data-stop>⏹ 终止</button><button class="ghost" data-restart>↻ 重启任务</button>' : ''}
             ${h.status === "done" && !isTrain && !isRvc ? '<button class="ghost" data-rvc>🎙 送去换声</button>' : ''}
             ${!isTrain && !isRvc && (h.lyrics || "").trim() ? '<button class="ghost" data-lyrics>⬇ LRC歌词</button>' : ''}
             ${!isTrain && !isRvc && (h.lyrics || "").trim() ? '<button class="ghost" data-elrc>⬇ 逐字 eLRC</button>' : ''}
@@ -2129,8 +2185,8 @@ async function renderHistory() {
           </div>
           ${h.status === "done" && isRvc && h.assets && Object.keys(h.assets).length ? `
           <div class="h-more" data-dl-menu style="display:none;">
-            <button class="ghost" data-part-dl="full_song">🎵 完整歌曲</button>
-            <button class="ghost" data-part-dl="">🎙 换声人声</button>
+            <button class="ghost" data-part-dl="full_song">🎵 成品（带伴奏）</button>
+            <button class="ghost" data-part-dl="">🎙 换声人声（干声）</button>
             ${h.assets.vocals_original ? '<button class="ghost" data-part-dl="vocals_original">🎤 原人声</button>' : ''}
             ${h.assets.accompaniment ? '<button class="ghost" data-part-dl="accompaniment">🎹 伴奏</button>' : ''}
           </div>` : ''}
@@ -2151,28 +2207,32 @@ async function renderHistory() {
       };
       // 播放 + 回填二合一：整条记录可点；失败/进行中的记录点击仅回填参数。
       // 播放不跳页：留在历史页，音频在底部播放坞播放。
-      // 换声任务且合成过完整歌曲时，播放优先用「换声人声+伴奏」合成版，而非纯人声。
-      const playAndRestore = async () => {
+      // 换声任务给两份：mode="full" 播「换声人声+伴奏」成品，mode="dry" 播干人声；
+      // 整条记录点击（mode 省略）默认播成品——只有干声时自动退回干声。
+      const hasFullMix = isRvc && h.assets && h.assets.full_song;
+      const playAndRestore = async (mode) => {
         if (h.status !== "done") { restore(false); toast("已回填该次生成参数", "ok"); return; }
-        const wantFull = isRvc && h.assets && h.assets.full_song;
+        const wantFull = hasFullMix && mode !== "dry";
         const rr = await fetch("/api/generate/audio/" + h.id);
         if (rr.ok) {
           if (wantFull) {
             const fr = await fetch("/api/rvc/audio/" + h.id + "?part=full_song");
             if (fr.ok) {
-              loadAudio(await fr.blob(), h.id + "_full_song.wav", h.task_name + " · 完整歌曲");
+              loadAudio(await fr.blob(), h.id + "_full_song.wav", h.task_name + " · 成品（人声+伴奏）");
               restore(false);
-              toast("已回填参数并播放完整歌曲（换声人声+伴奏）", "ok");
+              toast("已回填参数并播放成品（换声人声+伴奏）", "ok");
               return;
             }
+            toast("成品文件缺失，改播干人声", "err");
           }
-          loadAudio(await rr.blob(), h.id + ".wav", h.task_name);
+          loadAudio(await rr.blob(), h.id + ".wav",
+                    h.task_name + (isRvc ? " · 干人声（无伴奏）" : ""));
           restore(false);
-          toast("已回填参数并开始播放", "ok");
+          toast(isRvc ? "正在播放干人声（无伴奏）" : "已回填参数并开始播放", "ok");
         }
         else { toast("音频文件缺失，仅回填参数", "err"); restore(false); }
       };
-      d.onclick = playAndRestore;
+      d.onclick = () => playAndRestore();
       // 错误详情：点击展开/收起完整错误信息（不触发行点击的回填）
       const errLine = d.querySelector("[data-err]");
       if (errLine) errLine.onclick = (e) => {
@@ -2186,8 +2246,9 @@ async function renderHistory() {
           errLine.textContent = "⚠ " + full;
         }
       };
-      const pb = d.querySelector("[data-play]");
-      if (pb) pb.onclick = (e) => { e.stopPropagation(); playAndRestore(); };
+      d.querySelectorAll("[data-play]").forEach((one) => {
+        one.onclick = (e) => { e.stopPropagation(); playAndRestore(one.dataset.play || undefined); };
+      });
       // 进行中任务的终止/重启（仅队列条目有这两个按钮）
       const sb = d.querySelector("[data-stop]");
       if (sb) sb.onclick = async (e) => {
@@ -2258,7 +2319,7 @@ async function renderHistory() {
             const blob = await rr.blob();
             const a = document.createElement("a");
             a.href = URL.createObjectURL(blob);
-            const partLabel = { "vocals_original": "原人声", "accompaniment": "伴奏", "full_song": "完整歌曲" }[part] || "换声人声";
+            const partLabel = { "vocals_original": "原人声", "accompaniment": "伴奏", "full_song": "成品（带伴奏）" }[part] || "换声人声（干声）";
             a.download = dlName((h.task_name || (h.style || "").split(",")[0]) + " " + partLabel);
             document.body.appendChild(a); a.click(); a.remove();
             setTimeout(() => URL.revokeObjectURL(a.href), 5000);
@@ -2336,16 +2397,29 @@ async function renderHistory() {
         const name = prompt(`将这首歌送去换声。\n可用音色：\n${models.map(m => "· " + m.replace(/\.pth$/i, "")).join("\n")}\n\n输入音色名（默认第一个）：`, models[0].replace(/\.pth$/i, ""));
         if (name === null) return;
         const model = models.includes(name.trim() + ".pth") ? name.trim() + ".pth" : models.includes(name.trim()) ? name.trim() : models[0];
-        const pitch = Number(prompt("变调半音（男转女 +12 / 女转男 -12 / 不变 0）：", "0")) || 0;
+        const pitchRaw = prompt("变调半音（男转女 +12 / 女转男 -12 / 不变 0）：",
+                                $("rvcPitch").value || "0");
+        if (pitchRaw === null) return;
+        const pitch = Number(pitchRaw) || 0;
         rv.disabled = true; rv.textContent = "提交中…";
         try {
           const r = await fetch(`/api/rvc/convert/${h.id}`, {
             method: "POST", headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({ model, pitch, task_name: ((h.task_name || (h.style || "").split(",")[0] || "") + "·" + model.replace(/\.pth$/i, "")).slice(0, 100) }),
+            body: JSON.stringify({
+              model,
+              task_name: ((h.task_name || (h.style || "").split(",")[0] || "") + "·" + model.replace(/\.pth$/i, "")).slice(0, 100),
+              ...rvcParamValues(pitch),
+            }),
           });
           const j = await r.json();
           if (!r.ok) throw new Error(j.detail || "提交失败");
-          toast(`已送入换声（${model.replace(/\.pth$/i, "")}），去「换声」页看进度`, "ok");
+          // 直接并入换声页的任务列表：状态由服务端回包给（排队 or 开跑），位次也一并带上
+          rvcJobs.unshift({ model, ...(j.job || {}), id: j.id });
+          renderRvcList();
+          pollRvc(j.id);
+          const ahead = Math.max(0, Number(j.position || 1) - 1);
+          toast(ahead ? `已排队（第 ${j.position} 位，前面还有 ${ahead} 个），去「换声」页看进度`
+                      : `已送入换声（${model.replace(/\.pth$/i, "")}），去「换声」页看进度`, "ok");
           switchTab("rvc");
         } catch (err) { toast(err.message, "err"); }
         finally { rv.disabled = false; rv.textContent = "送去换声"; }
@@ -2542,27 +2616,64 @@ function renderRvcList() {
   const el = $("rvcList");
   if (!rvcJobs.length) { el.innerHTML = '<div class="empty">暂无换声任务。结果也会出现在「历史」页（标注 RVC 换声）。</div>'; return; }
   el.innerHTML = "";
-  rvcJobs.forEach(j => {
+  // 列表顺序 = 执行顺序：正在转换的排第一，其后按排队位次，已结束的最后（新→旧）。
+  // 直接遍历 rvcJobs 会让"刚提交的"永远显示在最上面，看着像插队。
+  const _rk = (j) => j.status === "running" ? 0 : j.status === "pending" ? 1 : 2;
+  const shown = rvcJobs.slice().sort((a, b) =>
+    _rk(a) - _rk(b)
+    || (Number(a.queue_pos || 1) - Number(b.queue_pos || 1))
+    || String(b.ts || "").localeCompare(String(a.ts || "")));
+  shown.forEach(j => {
     const d = document.createElement("div");
     d.className = "hist-item";
+    const pos = Number(j.queue_pos || 0);
     const st = j.status === "done" ? "✓ 完成" : j.status === "error" ? "✕ 失败"
-      : j.status === "lost" ? "⚠ 状态丢失（服务重启过，结果见历史页）" : "🎵 转换中";
+      : j.status === "cancelled" ? "⊘ 已取消（未开始转换）"
+      : j.status === "lost" ? "⚠ 状态丢失（服务重启过，结果见历史页）"
+      : j.status === "pending" ? `⏳ 排队中（第 ${pos || 1} 位）` : "🎵 转换中";
     const rvcTitle = j.task_name || (j.model || "").replace(/\.pth$/i, "");
+    // 换声结果有两份：合成好的成品（人声+伴奏）与干人声。以前只给一个"播放"
+    // 按钮且固定播干声，用户听到的是半成品——这里两份都给，各自点名放的是哪个。
+    const hasFull = !!(j.assets && j.assets.full_song);
+    const gateTxt = j.gate && j.gate.gate_closed_ratio != null
+      ? ` · 🔇 静音门已压 ${Math.round(j.gate.gate_closed_ratio * 100)}% 无人声段` : "";
     d.innerHTML = `
       <div class="h-body">
         <div class="h-title">${escapeHtml(rvcTitle)} · ${st}${j.sec ? " · " + j.sec + "s" : ""}</div>
-        <div class="h-sub truncate">${escapeHtml((j.model || "").replace(/\.pth$/i, ""))} · ${escapeHtml(j.src_name || j.srcName || "")}</div>
+        <div class="h-sub truncate">${escapeHtml((j.model || "").replace(/\.pth$/i, ""))} · ${escapeHtml(j.src_name || j.srcName || "")}${escapeHtml(gateTxt)}</div>
         <div class="h-sub">${idTag(j.id)}</div>
+        ${j.status === "done" && j.src_f0 && !j.src_f0.error ? `<div class="h-sub" title="分离后真实人声实测（比换声前整曲探针可信）${j.pitch_advice? ' · 建议变调 '+(j.pitch_advice.suggested_pitch>0?'+':'')+j.pitch_advice.suggested_pitch+' 半音':''}">🎼 源音域 ≈ 中位 ${j.src_f0.median_hz}Hz</div>` : ""}
+        ${j.status === "done" && j.pitch_note ? `<div class="h-sub" title="${escapeHtml(j.pitch_note)}">🎼 ${escapeHtml(j.pitch_note)}</div>` : ""}
         ${j.status === "error" ? `<div class="h-sub truncate" title="${escapeHtml(j.error || "")}">${escapeHtml((j.error || "").slice(0, 80))}</div>` : ""}
+        ${j.status === "pending" ? `<div class="h-sub">${j.step && j.step !== "排队中" ? escapeHtml(j.step) + "，等到空闲就自动开跑" : "换声一次只跑一个（分离和推理都吃满显存），排队是正常状态"}</div>` : ""}
       </div>
-      ${j.status === "done" ? '<button class="ghost" data-play>▶ 播放</button>' : ''}`;
-    const pb = d.querySelector("[data-play]");
-    if (pb) pb.onclick = async (e) => {
+      ${j.status === "done" ? (hasFull
+        ? '<button class="ghost" data-play="full_song">▶ 播放成品（带伴奏）</button><button class="ghost" data-play="">🎤 干人声</button>'
+        : '<button class="ghost" data-play="">▶ 播放干人声</button>') : ''}
+      ${j.status === "pending" ? '<button class="ghost" data-cancel>✕ 取消排队</button>' : ''}`;
+    const cb = d.querySelector("[data-cancel]");
+    if (cb) cb.onclick = async (e) => {
       e.stopPropagation();
-      const rr = await fetch("/api/rvc/audio/" + j.id);
-      if (rr.ok) { loadAudio(await rr.blob(), j.id + ".wav", j.task_name); }
-      else toast("结果文件缺失", "err");
+      const rr = await fetch("/api/rvc/cancel/" + j.id, { method: "POST" });
+      if (rr.ok) { toast("已取消排队的换声任务", "ok"); pollRvc(j.id); }
+      else {
+        const ej = await rr.json().catch(() => ({}));
+        toast(ej.detail || "取消失败（任务可能已经开跑）", "err");
+        pollRvc(j.id);   // 状态已被服务端改判，拉一次真实状态回来
+      }
     };
+    d.querySelectorAll("[data-play]").forEach(pb => {
+      pb.onclick = async (e) => {
+        e.stopPropagation();
+        const part = pb.dataset.play;
+        const rr = await fetch("/api/rvc/audio/" + j.id + (part ? "?part=" + part : ""));
+        if (rr.ok) {
+          loadAudio(await rr.blob(), j.id + (part ? "_full_song.wav" : ".wav"),
+                    (j.task_name || "换声结果") + (part ? " · 成品（人声+伴奏）" : " · 干人声"));
+          toast(part ? "正在播放合成成品（换声人声+伴奏）" : "正在播放干人声（无伴奏）", "ok");
+        } else toast(part ? "成品文件缺失，可改播干人声" : "结果文件缺失", "err");
+      };
+    });
     el.appendChild(d);
   });
 }
@@ -2608,20 +2719,53 @@ async function pollRvc(rid) {
         $("rvcStatus").textContent = "换声失败：" + (j.error || "未知错误").slice(0, 160);
         return;
       }
-      // 进度估算：本机 3 次实测（29.4s 源音频：首跑 43.7s，缓存后 18.9~20.2s）。
-      // 首跑 ≈ 15s模型加载 + 1×时长；缓存后 ≈ 0.65×时长 → 显示区间而不是单点。
+      if (j.status === "cancelled") {
+        stopRvcPoll(rid);
+        $("rvcProgress").classList.remove("show");
+        $("rvcStatus").className = "status";
+        $("rvcStatus").textContent = "该换声任务已在排队阶段取消。";
+        renderHistory();
+        return;
+      }
+      if (j.status === "pending") {
+        // 排队中的条目一行算力都没花，画进度条就是撒谎——只报位次，然后继续轮询
+        $("rvcProgress").classList.remove("show");
+        const ahead = Math.max(0, Number(j.queue_pos || 1) - 1);
+        $("rvcStatus").className = "status";
+        $("rvcStatus").textContent = ahead
+          ? `已排队：前面还有 ${ahead} 个换声任务，串行执行，轮到会自动开始（可离开页面）`
+          : (j.step && j.step !== "排队中"
+            ? `已轮到本任务，${j.step}（可离开页面）`
+            : "已轮到本任务，正在启动…（可离开页面）");
+        if (!rvcPolls.has(rid)) rvcPolls.set(rid, setInterval(() => pollRvc(rid), 5000));
+        return;
+      }
+      // 耗时两套口径：
+      //  · 只换声（干声输入）：本机 3 次实测（29.4s 源音频首跑 43.7s、缓存后 18.9~20.2s）
+      //    → 15s 模型加载 + 1×时长，可以给区间。
+      //  · 带人声分离：最早那次"828s ≈ 3.75×"的样本被三任务并发抢 GPU 污染（正是 v1.1.3
+      //    串行队列要修的根因），系数虚高 3.8 倍（评审 v1.2.0 G1）。同一首 221.1s 的歌
+      //    干净串行两次实测：222.0s / 226.4s ≈ 1.0×时长——与干声口径基本重合。
       const dur = j.src_duration || (rvcJobs.find(x => x.id === rid) || {}).src_duration || 30;
-      const total = Math.max(20, 15 + 1.0 * dur);
-      const t0 = new Date(j.ts).getTime() || Date.now();
+      const sep = !!(j.separate_vocal || j.sep_stage);
+      const total = Math.max(20, sep ? 20 + 1.0 * dur : 15 + 1.0 * dur);
+      const t0 = new Date(j.started_ts || j.ts).getTime() || Date.now();   // 按真正开跑计时
       const elapsed = (Date.now() - t0) / 1000;
       const ratio = Math.min(1, elapsed / total);
       $("rvcProgress").classList.add("show");
-      $("rvcProgressBar").style.width = Math.min(97, 5 + 92 * ratio).toFixed(1) + "%";
-      const etaLo = Math.max(0, 0.65 * dur + 10 - elapsed);   // 缓存后快路径
-      const etaHi = Math.max(0, total - elapsed);              // 首跑慢路径
+      $("rvcProgressBar").style.width = Math.min(sep ? 90 : 97, 5 + (sep ? 85 : 92) * ratio).toFixed(1) + "%";
       const fmtR = (t) => t > 90 ? Math.round(t / 60) + " 分钟" : Math.round(t) + " 秒";
-      const etaStrR = etaHi <= 0 ? "" : etaLo > 0 ? fmtR(etaLo) + "~" + fmtR(etaHi) : "不超过 " + fmtR(etaHi);
-      $("rvcStatus").textContent = `转换中（${j.model || ""}）… 已 ${Math.floor(elapsed/60)}分${Math.round(elapsed%60)}秒` + (etaStrR ? ` · 预计还需 ${etaStrR}` : "") + "（可离开页面）";
+      let etaStrR;
+      if (sep) {
+        etaStrR = elapsed < total ? `粗估还需 ${fmtR(total - elapsed)}（含分离按两次干净串行实测 ≈1×时长）`
+                                  : "已超出粗估，仍在正常转换";
+      } else {
+        const etaLo = Math.max(0, 0.65 * dur + 10 - elapsed);   // 缓存后快路径
+        const etaHi = Math.max(0, total - elapsed);             // 首跑慢路径
+        etaStrR = etaHi <= 0 ? "" : etaLo > 0 ? fmtR(etaLo) + "~" + fmtR(etaHi) : "不超过 " + fmtR(etaHi);
+        if (etaStrR) etaStrR = "预计还需 " + etaStrR;
+      }
+      $("rvcStatus").textContent = `转换中（${j.model || ""}）${sep ? " · 含人声分离" : ""}… 已 ${Math.floor(elapsed/60)}分${Math.round(elapsed%60)}秒` + (etaStrR ? ` · ${etaStrR}` : "") + "（可离开页面）";
     } else if (r.status === 404) {
       // 服务端重启过、任务记录已丢：轮下去永远不会有心，连 3 次就停表并如实标状态丢失
       const n = (rvcMiss.get(rid) || 0) + 1;
@@ -2644,6 +2788,38 @@ async function pollRvc(rid) {
 $$("[data-pitch]").forEach(b => {
   b.onclick = () => { $("rvcPitch").value = b.dataset.pitch; };
 });
+// 音域分析（评审 C4）：源唱 f0 中枢 vs 目标音色舒适音域 → 一句人话建议 + 一键应用
+$("rvcAnalyze").onclick = async () => {
+  const f = $("rvcFile").files[0];
+  if (!f) { toast("先在上方选择音频文件", "err"); return; }
+  const box = $("rvcAdvice"), btn = $("rvcAnalyze"), apply = $("rvcApplyAdvice");
+  apply.style.display = "none";
+  btn.disabled = true; btn.textContent = "分析中…";
+  box.textContent = "";
+  try {
+    const fd = new FormData();
+    fd.append("file", f);
+    fd.append("model", $("rvcModel").value);
+    const r = await fetch("/api/rvc/pitch/advice", { method: "POST", body: fd });
+    const j = await r.json();
+    if (!r.ok) { box.textContent = "分析失败：" + (j.detail || r.status); return; }
+    box.textContent = j.text + "　" + (j.caveat || "");
+    if (j.suggestion && j.suggestion.apply) {
+      const p = j.suggestion.suggested_pitch;
+      apply.textContent = `应用 ${p > 0 ? "+" : ""}${p}（当前 ${$("rvcPitch").value}）`;
+      apply.style.display = "";
+      apply.onclick = () => {
+        $("rvcPitch").value = p;
+        apply.style.display = "none";
+        toast("变调已设为 " + p, "ok");
+      };
+    }
+  } catch (e) {
+    box.textContent = "分析请求失败：" + e;
+  } finally {
+    btn.disabled = false; btn.textContent = "分析音域 → 变调建议";
+  }
+};
 // 效果预设：一键设置检索强度 + protect
 $$("[data-preset]").forEach(b => {
   b.onclick = () => {
@@ -2652,6 +2828,25 @@ $$("[data-preset]").forEach(b => {
     $("rvcProtect").value = pr;
   };
 });
+
+function rvcParamValues(pitch) {
+  // 换声页这套滑杆只在这里读一次：历史页「送去换声」也复用同一份。
+  // 以前送去换声只带 model + pitch，检索强度/protect/去和声/静音门全走服务端默认，
+  // 于是同一个滑杆在两个入口含义不同——页面上调到 0.6，从历史页走一遍还是 0.75。
+  const v = {
+    pitch: pitch === undefined ? (Number($("rvcPitch").value) || 0) : pitch,
+    f0_method: $("rvcF0").value,
+    index_rate: Number($("rvcIndexRate").value || "0.75"),
+    protect: Number($("rvcProtect").value || "0.33"),
+    rms_mix_rate: Number($("rvcRms").value || "1"),
+    filter_radius: Number.isFinite(Number($("rvcFilter").value)) ? Number($("rvcFilter").value) : 3,
+    resample_sr: Number($("rvcResample").value || "0"),
+    separate_vocal: $("rvcSep").checked ? "auto" : "off",
+    strip_harmony: $("rvcHarmony").checked ? "on" : "off",
+    gate: $("rvcGate").checked ? "on" : "off",
+  };
+  return v;
+}
 
 $("rvcGo").onclick = async () => {
   const f = $("rvcFile").files && $("rvcFile").files[0];
@@ -2662,11 +2857,7 @@ $("rvcGo").onclick = async () => {
   fd.append("file", f);
   fd.append("model", model);
   fd.append("task_name", $("rvcTaskName").value.trim());
-  fd.append("pitch", $("rvcPitch").value || "0");
-  fd.append("f0_method", $("rvcF0").value);
-  fd.append("index_rate", $("rvcIndexRate").value || "0.75");
-  fd.append("protect", $("rvcProtect").value || "0.33");
-  fd.append("separate_vocal", $("rvcSep").checked ? "auto" : "off");
+  Object.entries(rvcParamValues()).forEach(([k, val]) => fd.append(k, val));
   $("rvcGo").disabled = true;
   $("rvcStatus").className = "status";
   $("rvcStatus").textContent = $("rvcSep").checked
@@ -2674,12 +2865,19 @@ $("rvcGo").onclick = async () => {
     : "上传并提交转换…";
   try {
     const r = await fetch("/api/rvc/convert", { method: "POST", body: fd });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.detail || "提交失败");
-    rvcJobs.unshift({ id: j.id, status: "running", model, src_name: f.name, task_name: $("rvcTaskName").value.trim() });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "提交失败");
+    // 状态一律以服务端回包为准（排队 or 开跑），不在前端写死 running——
+    // 写死会让第二条明明在排队也画出进度条，这正是"看起来在并行"的来源。
+    rvcJobs.unshift({ id: d.id, model, src_name: f.name,
+                      task_name: $("rvcTaskName").value.trim(), ...(d.job || {}) });
     renderRvcList();
-    $("rvcStatus").textContent = "转换进行中（首次加载模型需 1-2 分钟），可离开页面。";
-    pollRvc(j.id);
+    const ahead = Math.max(0, Number(d.position || 1) - 1);
+    $("rvcStatus").textContent = ahead
+      ? `已排队：前面还有 ${ahead} 个换声任务，一次只跑一个，轮到会自动开始。`
+      : ($("rvcSep").checked ? "转换已开始（含人声分离，整条耗时会明显拉长），可离开页面。"
+                             : "转换进行中（首次加载模型需 1-2 分钟），可离开页面。");
+    pollRvc(d.id);
   } catch (e) {
     $("rvcStatus").className = "status err";
     $("rvcStatus").textContent = "提交失败：" + e.message;
@@ -2737,17 +2935,51 @@ async function renderRvcModels() {
     items.forEach(m => {
       const d = document.createElement("div");
       d.className = "hist-item";
+      const fr = m.f0_range;
+      const range = fr
+        ? ` · 舒适音域 ≈ ${fr.p5_hz}–${fr.p95_hz}Hz（中位 ${fr.median_hz}，` +
+          (fr.source === "reference"
+            ? `来源：参考音频${fr.analyzed_sec ? " " + Math.round(fr.analyzed_sec) + " 秒" : ""}）`
+            : "训练素材实测）")
+        : " · 无音域数据（下载音色可在本卡「建档音域」传该歌手本人 10~30 秒片段）";
+      // 建档按钮：训练实测过的音色不显示（后端 409 拒绝，一段片段不许降级几百切片实测）
+      const canRef = !fr || fr.source !== "training";
       d.innerHTML = `
         <div class="h-body">
           <div class="h-title">${escapeHtml(m.name.replace(/\.pth$/i, ""))}</div>
-          <div class="h-sub">${m.size_mb} MB · ${escapeHtml((m.mtime || "").replace("T", " "))}</div>
+          <div class="h-sub">${m.size_mb} MB · ${escapeHtml((m.mtime || "").replace("T", " "))}${escapeHtml(range)}</div>
         </div>
         <div class="h-actions">
           <button class="ghost" data-check>体检</button>
+          ${canRef ? `<button class="ghost" data-f0ref title="上传该音色本人的一段歌（干声最佳，10~30 秒），量出舒适音域给变调建议用${fr ? "；重传会覆盖旧参考档案" : ""}">${fr ? "↻ 重建档" : "🎯 建档音域"}</button>` : ""}
           <button class="ghost" data-merge>融合</button>
           <button class="ghost" data-rename>重命名</button>
           <button class="danger" data-del>删除</button>
         </div>`;
+      const fb = d.querySelector("[data-f0ref]");
+      if (fb) fb.onclick = (e) => {
+        e.stopPropagation();
+        const inp = document.createElement("input");
+        inp.type = "file"; inp.accept = "audio/*";
+        inp.onchange = async () => {
+          const f = inp.files[0];
+          if (!f) return;
+          fb.disabled = true; fb.textContent = "建档中…";
+          try {
+            const fd = new FormData();
+            fd.append("file", f);
+            const rr = await fetch(`/api/rvc/models/${encodeURIComponent(m.name)}/f0-reference`,
+                                   { method: "POST", body: fd });
+            const jj = await rr.json().catch(() => ({}));
+            if (!rr.ok) throw new Error(jj.detail || "建档失败");
+            const s = jj.stats || {};
+            toast(`「${m.name.replace(/\.pth$/i, "")}」音域已建档：中位 ${s.median_hz}Hz` +
+                  `（${s.p5_hz}–${s.p95_hz}，分析 ${s.analyzed_sec || "?"} 秒，来源：参考音频）`, "ok");
+            renderRvcModels(); renderRvc();
+          } catch (err) { toast(err.message, "err"); fb.disabled = false; fb.textContent = "🎯 建档音域"; }
+        };
+        inp.click();
+      };
       d.querySelector("[data-check]").onclick = async (e) => {
         e.stopPropagation();
         const btn = e.currentTarget; btn.disabled = true; btn.textContent = "体检中…";
@@ -2842,8 +3074,8 @@ function renderRvcTrainList() {
     const pct = inTrain ? Math.min(100, Math.round(j.epoch / total * 100)) : null;
     let eta = "";
     // 优先用服务端从训练日志稳健解析的每轮耗时（剔除偶发卡顿轮）；
-    // 老网关没有该字段时退回前端两次轮询观测值
-    const perEpoch = j.per_epoch_sec || j._per_epoch_last;
+    // 其次退回前端两次轮询观测值；刚开跑还没数据时用服务端的规模预估（实测或保守回落）
+    const perEpoch = j.per_epoch_sec || j._per_epoch_last || j.epoch_est_sec;
     if (inTrain && perEpoch) {
       const remain = Math.max(0, (total - j.epoch) * perEpoch);
       eta = " · 剩余约 " + (remain > 90 ? Math.round(remain / 60) + " 分" : Math.round(remain) + " 秒");
@@ -2854,10 +3086,26 @@ function renderRvcTrainList() {
       const lines = String(j.log_tail).split(/[\r\n]+/).filter(s => s.trim());
       liveLog = (lines[lines.length - 1] || "").trim();
     }
+    // 检查点：训练完成后服务端只保留最近 2 个（kept_ckpts）；训练中则以最近一次
+    // 试听返回的列表为准。有得选才显示选择器，不然凭空多一排死按钮。
+    const cks = (j.ckpts && j.ckpts.length ? j.ckpts : (j.kept_ckpts || [])).filter(Boolean);
+    const loss = j.loss && j.loss.head && j.loss.tail
+      ? `损失 g ${(j.loss.head.loss_gen ?? "?")}→${(j.loss.tail.loss_gen ?? "?")} · d ${(j.loss.head.loss_disc ?? "?")}→${(j.loss.tail.loss_disc ?? "?")}`
+      : "";
+    const sc = j.self_check
+      ? (j.self_check.ok ? "自检片段已生成" : "自检片段失败：" + (j.self_check.error || ""))
+      : "";
+    // 净化留痕（评审 A1）：跑了哪两个模型、几个文件、有没有回退——原始与净化后
+    // 两个目录都写进悬停提示，A/B 对比不用猜路径
+    const cleanInfo = j.clean
+      ? `🧹 已净化（${j.clean.label}档：去混响 → 降噪）· ${j.clean.files} 个文件 · 完整净化 ${j.clean.fully_cleaned}${j.clean.carried ? " · " + j.clean.carried + " 次回退用净化前版本" : ""}${j.clean.sec ? " · " + (j.clean.sec > 90 ? Math.round(j.clean.sec / 60) + "分" : j.clean.sec + "s") : ""}`
+      : "";
     d.innerHTML = `
       <div class="h-body">
         <div class="h-title">${escapeHtml(j.name || "")} · ${st}${inTrain ? `（${j.epoch}/${total} · ${pct}%）` : ""}${j.sec && j.status !== "running" ? " · " + (j.sec > 90 ? Math.round(j.sec / 60) + "分" : j.sec + "s") : ""}</div>
-        <div class="h-sub truncate">${escapeHtml(`${j.samples || "?"} 个样本 · ${j.epochs || "?"} 轮`)}${j.model ? " · 产出 " + escapeHtml(j.model) : ""}${eta}</div>
+        <div class="h-sub truncate">${escapeHtml(`${j.samples || "?"} 个样本 · ${j.epochs || "?"} 轮`)}${j.batch_note ? " · " + escapeHtml(j.batch_note) : ""}${j.model ? " · 产出 " + escapeHtml(j.model) : ""}${j.promoted_ckpt ? " · 定稿 " + escapeHtml(j.promoted_ckpt) : ""}${eta}</div>
+        ${loss || sc ? `<div class="h-sub truncate" title="${escapeHtml([loss, sc].filter(Boolean).join(" · "))}">${escapeHtml([loss, sc].filter(Boolean).join(" · "))}</div>` : ""}
+        ${cleanInfo ? `<div class="h-sub truncate" title="原始素材：${escapeHtml(j.clean.before || "")}｜净化后：${escapeHtml(j.clean.after || "")}｜模型：${escapeHtml(j.clean.dereverb || "")} + ${escapeHtml(j.clean.denoise || "")}">${escapeHtml(cleanInfo)}</div>` : ""}
         <div class="h-sub">${idTag(j.id)}</div>
         ${pct !== null ? `<div class="progress show" style="margin-top:6px;"><div style="width:${pct}%;"></div></div>` : ""}
         ${j.status === "error" ? `<div class="h-sub truncate" title="${escapeHtml(j.error || "")}">${escapeHtml((j.error || "").slice(0, 100))}</div>` : ""}
@@ -2868,7 +3116,13 @@ function renderRvcTrainList() {
       ${j.status === "paused" ? '<button class="ghost" data-resume>▶ 继续</button>' : ''}
       ${j.status === "running" ? '<button class="ghost" data-pause>⏸ 暂停</button>' : ''}
       ${(j.status === "running" || j.status === "done") ? '<button class="ghost" data-preview>🎧 试听</button>' : ''}
-      ${j.preview_url ? `<audio controls preload="none" src="${j.preview_url}" style="width:100%;margin-top:6px;height:32px;"></audio>` : ''}`;
+      ${j.preview_url ? `<audio controls preload="none" src="${j.preview_url}" style="width:100%;margin-top:6px;height:32px;"></audio>` : ''}
+      ${cks.length ? `<div style="width:100%;display:flex;gap:6px;align-items:center;margin-top:6px;">
+        <select class="rvc-ck" style="flex:1;min-width:0;">${cks.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("")}</select>
+        <button class="ghost" data-ckplay>试听这个点</button>
+        <button class="ghost" data-ckpromote title="把这个检查点导出为最终成品（音色名不变，索引照用）">📌 定稿</button>
+      </div>
+      ${j.preview_source ? `<div class="h-sub">当前试听：${escapeHtml(j.preview_source)}</div>` : ''}` : ''}`;
     const rb = d.querySelector("[data-resume]");
     if (rb) rb.onclick = async (e) => {
       e.stopPropagation();
@@ -2919,16 +3173,67 @@ function renderRvcTrainList() {
       e.stopPropagation();
       pb.disabled = true; pb.textContent = "试听生成中…（CPU 推理约 20-40 秒）";
       try {
-        const r = await fetchT("/api/rvc/train/preview/" + j.id, { method: "POST" }, 180000);
+        const r = await fetchT("/api/rvc/train/preview/" + j.id, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+        }, 180000);
         const x = await r.json();
         if (!r.ok) throw new Error(x.detail || "试听失败");
         const i = rvcTrainJobs.findIndex(t => t.id === j.id);
-        if (i >= 0) rvcTrainJobs[i] = { ...rvcTrainJobs[i], preview_url: x.url, preview_source: x.source };
+        if (i >= 0) rvcTrainJobs[i] = { ...rvcTrainJobs[i], preview_url: x.url,
+          preview_source: x.source, ckpts: x.ckpts || [] };
         renderRvcTrainList();
         toast("试听已生成（" + x.source + "），播放器在任务卡片下方", "ok");
       } catch (err) {
         pb.disabled = false; pb.textContent = "🎧 试听";
         toast(err.message, "err");
+      }
+    };
+    // 逐点试听 / 选点定稿：训练完成只剩最近两个检查点，听完再决定用哪个定稿，
+    // 不必"练到第几轮"全凭运气
+    const cp = d.querySelector(".rvc-ck");
+    const cb = d.querySelector("[data-ckplay]");
+    if (cb) cb.onclick = async (e) => {
+      e.stopPropagation();
+      if (!cp || !cp.value) { toast("请先选一个检查点", "err"); return; }
+      cb.disabled = true; cb.textContent = "生成中…";
+      try {
+        const r = await fetchT("/api/rvc/train/preview/" + j.id, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ck: cp.value }),
+        }, 180000);
+        const x = await r.json();
+        if (!r.ok) throw new Error(x.detail || "试听失败");
+        const i = rvcTrainJobs.findIndex(t => t.id === j.id);
+        if (i >= 0) rvcTrainJobs[i] = { ...rvcTrainJobs[i], preview_url: x.url,
+          preview_source: x.source, ckpts: x.ckpts || [], ck: cp.value };
+        renderRvcTrainList();
+        toast("试听已生成（" + x.source + "）", "ok");
+      } catch (err) {
+        cb.disabled = false; cb.textContent = "试听这个点";
+        toast(err.message, "err");
+      }
+    };
+    const cb2 = d.querySelector("[data-ckpromote]");
+    if (cb2) cb2.onclick = async (e) => {
+      e.stopPropagation();
+      if (!cp || !cp.value) { toast("请先选一个检查点", "err"); return; }
+      if (!window.confirm(`用 ${cp.value} 覆盖现有成品音色「${j.name}」？\n音色名与索引都不变，换声页立即生效。`)) return;
+      cb2.disabled = true;
+      try {
+        const r = await fetchT("/api/rvc/train/promote/" + j.id, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ck: cp.value }),
+        }, 120000);
+        const x = await r.json();
+        if (!r.ok) throw new Error(x.detail || "定稿失败");
+        const i = rvcTrainJobs.findIndex(t => t.id === j.id);
+        if (i >= 0) rvcTrainJobs[i] = { ...rvcTrainJobs[i], promoted_ckpt: x.ckpt, model: x.model };
+        renderRvcTrainList();
+        renderRvcModels(); renderRvc();
+        toast(x.message, "ok");
+      } catch (err) {
+        cb2.disabled = false;
+        toast("定稿失败：" + err.message, "err");
       }
     };
     const ub = d.querySelector("[data-use]");
@@ -3042,27 +3347,98 @@ document.addEventListener("visibilitychange", () => {
   rvcTrainPolls.forEach((_t, rid) => pollRvcTrain(rid));
 });
 
+// 素材体检：结果与服务端那份素材的指纹放在一起。换了文件就必须重传，
+// 没换则训练直接复用（dataset_id），几十分钟的素材不必传两遍。
+let rvcChecked = { id: "", sig: "" };
+const rvcFileSig = () => [...(($("rvcTrainFiles") || {}).files || [])]
+  .map(f => f.name + ":" + f.size).join("|");
+
+function rvcCheckText(rep) {
+  const min = (rep.total_sec || 0) / 60;
+  const pct = v => (v == null ? "?" : Math.round(v * 100) + "%");
+  const sr = (rep.sample_rates || []).join("/") || "?";
+  const ca = rep.clean_advice;
+  const caCn = { light: "轻", medium: "中", off: "不净化" }[(ca || {}).tier] || "?";
+  let s = `样本 ${rep.files} 个 · 共 ${min.toFixed(1)} 分钟 · 采样率 ${sr} sr · `
+        + `静音占 ${pct(rep.silence_ratio)} · 人声响度约 ${rep.voiced_dbfs == null ? "?" : rep.voiced_dbfs} dBFS · `
+        + `底噪约 ${rep.noise_floor_dbfs == null ? "?" : rep.noise_floor_dbfs} dBFS · 爆音 ${pct(rep.clipped_ratio)}\n`
+        + `净化建议：${caCn}${ca && ca.reasons && ca.reasons.length ? " —— " + ca.reasons.join("；") : ""}\n`
+        + `建议轮数：${rep.suggest_epochs} 档 —— ${rep.advice}\n`
+        + `${rep.est_min ? `耗时预估：训练那一步约 ${Math.round(rep.est_min)} 分钟（${rep.pace_note}）`
+                        : `耗时预估：${rep.pace_note}`}`;
+  (rep.warnings || []).forEach(w => { s += "\n⚠ " + w; });
+  return s;
+}
+
+// 用户手动改过净化档位后，体检建议就不再自动覆盖他的选择
+$("rvcTrainClean").onchange = () => { $("rvcTrainClean").dataset.touched = "1"; };
+
+$$("[data-epochs]").forEach(b => {
+  b.onclick = () => { $("rvcTrainEpochs").value = b.dataset.epochs; };
+});
+
+$("rvcTrainCheck").onclick = async () => {
+  const files = $("rvcTrainFiles").files;
+  if (!files || !files.length) {
+    $("rvcTrainStatus").className = "status err";
+    $("rvcTrainStatus").textContent = "请先选择样本文件，再点体检。";
+    return;
+  }
+  const fd = new FormData();
+  for (const f of files) fd.append("files", f);
+  const box = $("rvcTrainCheckReport");
+  $("rvcTrainCheck").disabled = true;
+  box.style.display = "block";
+  box.textContent = "上传并体检中…（只读音频头部与波形，不训练，几十秒到一两分钟）";
+  try {
+    const r = await fetch("/api/rvc/train/check", { method: "POST", body: fd });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || "体检失败");
+    rvcChecked = { id: j.id, sig: rvcFileSig() };
+    box.textContent = rvcCheckText(j.report);
+    if (j.report.suggest_epochs) {
+      $("rvcTrainEpochs").value = j.report.suggest_epochs;
+      toast(`体检完成，轮数已设为 ${j.report.suggest_epochs} 档`, "ok");
+    }
+    if (j.report.clean_advice && !$("rvcTrainClean").dataset.touched
+        && $("rvcTrainClean").value !== j.report.clean_advice.tier) {
+      $("rvcTrainClean").value = j.report.clean_advice.tier;
+      const t = { light: "轻", medium: "中", off: "不净化" }[j.report.clean_advice.tier];
+      toast(`体检按底噪把净化档位定为「${t}」`, "ok");
+    }
+    $("rvcTrainStatus").className = "status";
+    $("rvcTrainStatus").textContent = "体检完成：确认没问题就点「开始制作音色」（素材已在服务器，不会重传）。";
+  } catch (e) {
+    box.textContent = "体检失败：" + e.message;
+  } finally { $("rvcTrainCheck").disabled = false; }
+};
+
 $("rvcTrainGo").onclick = async () => {
   const name = $("rvcTrainName").value.trim();
   const files = $("rvcTrainFiles").files;
   if (!name) { $("rvcTrainStatus").className = "status err"; $("rvcTrainStatus").textContent = "请先填写音色名称。"; return; }
   if (!files || !files.length) { $("rvcTrainStatus").className = "status err"; $("rvcTrainStatus").textContent = "请选择至少一个干声样本文件。"; return; }
   const fd = new FormData();
-  for (const f of files) fd.append("files", f);
+  const reuse = rvcChecked.id && rvcChecked.sig === rvcFileSig();
+  if (reuse) fd.append("dataset_id", rvcChecked.id);
+  else for (const f of files) fd.append("files", f);
   fd.append("name", name);
   const ep = parseInt($("rvcTrainEpochs").value || "200", 10);
-  if (!(ep >= 150 && ep <= 400)) {
+  if (!(ep >= 1 && ep <= 1200)) {
     $("rvcTrainStatus").className = "status err";
-    $("rvcTrainStatus").textContent = "训练轮数须在 150-400 之间（推荐 200；样本少可用 300）";
+    $("rvcTrainStatus").textContent = "训练轮数须在 1-1200 之间（30 试听 / 100 常用 / 200 精训）";
     return;
   }
   fd.append("epochs", String(ep));
   fd.append("separate_vocal", $("rvcTrainSep").checked ? "auto" : "off");
+  fd.append("clean_tier", $("rvcTrainClean").value);
   $("rvcTrainGo").disabled = true;
   $("rvcTrainStatus").className = "status";
-  $("rvcTrainStatus").textContent = $("rvcTrainSep").checked
-    ? "上传样本并提交训练…（已勾选自动分离，训练前会先逐文件分离人声，耗时相应增加）"
-    : "上传样本并提交训练…";
+  $("rvcTrainStatus").textContent = ($("rvcTrainSep").checked
+    ? "提交训练…（已勾选自动分离，训练前会先逐文件分离人声，耗时相应增加）"
+    : "提交训练…") + ($("rvcTrainClean").value !== "off"
+    ? `（含「${{ light: "轻", medium: "中" }[$("rvcTrainClean").value]}」档净化）` : "")
+    + (reuse ? "（复用刚体检过的素材，不再重传）" : "");
   try {
     const r = await fetch("/api/rvc/train", { method: "POST", body: fd });
     const j = await r.json();
@@ -3074,6 +3450,8 @@ $("rvcTrainGo").onclick = async () => {
   } catch (e) {
     $("rvcTrainStatus").className = "status err";
     $("rvcTrainStatus").textContent = "提交失败：" + e.message;
+    // 服务端说这份素材目录没了（多半被清理），指纹跟着作废，下一次自动回到重传
+    if (/体检记录/.test(e.message)) rvcChecked = { id: "", sig: "" };
   } finally { $("rvcTrainGo").disabled = false; }
 };
 

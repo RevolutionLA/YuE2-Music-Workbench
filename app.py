@@ -395,6 +395,19 @@ def _gpu_free_mb() -> int | None:
         return None
 
 
+def _gpu_total_mb() -> int | None:
+    """整卡显存（MiB）；查不到返回 None。训练 batch_size 按它取，不是按空闲量。"""
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            text=True, timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return int(out.strip().splitlines()[0])
+    except Exception:
+        return None
+
+
 def _hide_engine_windows_once() -> None:
     """立即隐藏所有 audiocpp 引擎控制台窗口（配合拉起引擎后调用）。"""
     if os.name != "nt":
@@ -998,9 +1011,10 @@ def history_active():
             if m and m.get("status") in ("running", "pending"):
                 m["kind"] = m.get("kind") or "generate"
                 items.append(m)
-    # 换声任务
+    # 换声任务（含排队中：串行队列里后面的条目要在任务管理页看得见）
     with _RVC_LOCK:
-        items += [j for j in _RVC_JOBS.values() if j.get("status") == "running"]
+        items += [_rvc_live(j) for j in _RVC_JOBS.values()
+                  if j.get("status") in ("running", "pending")]
     # 音色制作任务
     if RVC_TRAIN_DIR.is_dir():
         for d in sorted(RVC_TRAIN_DIR.iterdir(), reverse=True):
@@ -1236,13 +1250,39 @@ def _output_lrc_path(rid: str) -> Path:
 _OUTPUT_EXTS = (".wav", ".json", ".txt", ".lrc", ".lrcjob", ".elrc")
 
 
+def _output_extra_assets(rid: str) -> list[str]:
+    """从该任务的 meta 里取"多产物"文件名（换声的 vocals_original / accompaniment /
+    full_song 这一族叫 `<id>_名字.wav`，后缀白名单命不中）。只认 meta 自己登记的
+    名字，且必须落在 `<rid>_*.wav` 这个形状里——rid 来自 URL，绝不 glob。"""
+    try:
+        meta = json.loads((OUTPUT_DIR / (rid + ".json")).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    out: list[str] = []
+    for name in (meta.get("assets") or {}).values():
+        name = str(name or "")
+        if name.startswith(rid + "_") and name.endswith(".wav") and name not in out:
+            out.append(name)
+    return out
+
+
 def _output_purge(rid: str) -> int:
     """删掉该任务在 output/ 下的所有产物，返回删除个数。只认白名单后缀，
-    绝不按 glob 匹配（rid 来自 URL，'*' 之类的值会把整目录清空）。"""
+    绝不按 glob 匹配（rid 来自 URL，'*' 之类的值会把整目录清空）。
+    多产物按 meta 登记的名字删，否则换声删一条就留三个几十 MB 的孤儿。"""
     rid = os.path.basename(str(rid or "").strip())
     if not rid or rid in (".", ".."):
         return 0
+    extra = _output_extra_assets(rid)
     n = 0
+    for name in extra:
+        p = OUTPUT_DIR / name
+        try:
+            if p.is_file():
+                p.unlink()
+                n += 1
+        except OSError:
+            pass  # 被占用（Windows 上播放器还开着）：清不掉就留着，不阻断删除流程
     for ext in _OUTPUT_EXTS:
         p = OUTPUT_DIR / (rid + ext)
         try:
@@ -1897,6 +1937,22 @@ def generate_delete(rid: str):
     job = _gen_get_job()
     if job and job.get("id") == rid and job.get("status") == "running":
         raise HTTPException(status_code=409, detail="任务进行中，不能删除")
+    # 评审 F3：排队中的换声任务只删工作目录、队列里那份参数元组还挂着——
+    # src 一没就出队开跑，子进程失败，任务"删了又复活"成 error。先摘队列再删。
+    # 正在转换的与生成任务同一口径：409，不许删。
+    with _RVC_LOCK:
+        rvc_job = _RVC_JOBS.get(rid)
+    if rvc_job is not None:
+        rvc_status = rvc_job.get("status")
+        if rvc_status == "running":
+            raise HTTPException(status_code=409,
+                                detail="换声正在转换中，不能删除（等它跑完，或排队中先取消）")
+        if rvc_status == "pending":
+            if not _rvc_cancel(rid):
+                raise HTTPException(status_code=409, detail="该任务刚好已开始转换，未能删除")
+            with _RVC_LOCK:
+                _RVC_JOBS[rid] = {**_RVC_JOBS.get(rid, rvc_job),
+                                  "status": "cancelled", "queue_pos": 0}
     removed = False
     if _output_purge(rid):        # 白名单后缀全清（含 .elrc，手写列表以前就漏了它）
         removed = True
@@ -2342,14 +2398,432 @@ _RVC_JOBS: dict[str, dict] = {}  # rid -> {id,status,error,sec,model,...}
 def _rvc_models() -> list[str]:
     if not RVC_MODELS_DIR.is_dir():
         return []
-    return sorted(p.name for p in RVC_MODELS_DIR.glob("*.pth"))
+    # 兜底：G_*/D_* 是训练检查点、"." 开头是临时/备份中途货，都不该被列成可选音色
+    # （以前试听导出会短暂往这里落一份 G_xxx.pth，下拉框里会冒出一个"杂音色"——评审 G3）
+    return sorted(p.name for p in RVC_MODELS_DIR.glob("*.pth")
+                  if not p.name.startswith((".", "G_", "D_")))
+
+
+# 索引有两个家：训练写到 assets/indices（train_index.py 的外链目录），下载的音色放 logs 根。
+# 推理侧自己也是先看 outside_index_root=assets/indices 再看 index_root=logs
+# （runtime/rvc/infer/vc/utils.py:7-57）。以前网关只 glob logs/ 下的 added_*_名字_v2.index，
+# 于是自己练出来的音色一律被体检报成"缺配套索引"，删音色时同名索引也留在 assets/indices 里没人认领。
+def _rvc_index_dirs() -> tuple[Path, ...]:
+    # 取用时再算：RVC_DIR / RVC_MODELS_DIR 可被环境变量或测试改写，写死在导入期就会指错地方
+    return (RVC_MODELS_DIR.parent / "indices", RVC_DIR / "logs")
+
+
+def _rvc_index_owned(stem: str, name: str) -> bool:
+    """这个索引文件是否"就是"该音色的（删除/改名用严格判定）。
+
+    查找侧（runtime 的 get_index_path_from_model）允许子串匹配，所以 王菲.pth 会
+    把 王菲V6 的索引也列出来——用于"有没有索引"是对的，用于"删掉它"就是删别人的东西。
+    这里只认以 `_音色名_v1/_v2` 收尾（允许多说话人的 `_spkidN` 尾巴）。"""
+    low = name.lower()
+    stem_l = stem.lower()
+    head = low[: -len(".index")]
+    head = re.sub(r"_spkid\d+$", "", head, flags=re.I)
+    return head.endswith(f"_{stem_l}_v1") or head.endswith(f"_{stem_l}_v2")
+
+
+def _rvc_index_files(stem: str, exact: bool = False) -> list[Path]:
+    """按推理侧的查找规则返回该音色所有配套索引（两处目录、名字规则与 runtime 一致）。
+
+    规则必须比"added_*_名字_v2.index"宽：训练产出的外链叫
+    `名字_added_IVF..._名字_v2.index`（train_index.py:52-76 拼的前缀是音色名），
+    只匹配 added_ 开头会把刚练完的音色判成缺索引。
+    exact=True 换成"只认这个音色自己的"（删除/改名），见 _rvc_index_owned。
+
+    排序不是小事：王菲 与 王菲V6 同时存在时，子串规则让 王菲 也匹配到
+    `..._王菲V6_v2.index`，按文件名排序它排在前面——于是 王菲 换声实际用的是
+    王菲V6 的检索库（音色串台）。这里把"严格属于本音色的"排在前面，
+    宽松匹配的只做兜底，绝不盖过亲生索引。"""
+    exp = re.sub(r"_e\d+_s\d+$", "", stem, flags=re.I).lower()
+    own: list[Path] = []
+    loose: list[Path] = []
+    for d in _rvc_index_dirs():
+        if not d.is_dir():
+            continue
+        found_own: list[Path] = []
+        found_loose: list[Path] = []
+        for root, _, files in os.walk(d, topdown=False):
+            for name in files:
+                low = name.lower()
+                if not low.endswith(".index") or "trained" in low:
+                    continue
+                index_stem = low[: -len(".index")]
+                spk = re.search(r"_spkid(\d+)$", index_stem, re.I)
+                if spk and spk.group(1) != "0":
+                    continue        # 多说话人索引，换声不指定说话人时 runtime 也不会选它
+                if _rvc_index_owned(stem, name):
+                    found_own.append(Path(root, name))
+                elif not exact and (index_stem.startswith(exp + "_added_")
+                                    or f"_{exp}_v1" in index_stem
+                                    or f"_{exp}_v2" in index_stem
+                                    or stem.lower() in index_stem):
+                    found_loose.append(Path(root, name))
+        own += sorted(found_own)
+        loose += sorted(found_loose)
+    return own + loose
+
+
+def _rvc_index_for(model: str) -> Path | None:
+    files = _rvc_index_files(Path(model).stem)
+    return files[0] if files else None
+
+
+def _rvc_require_index(model: str, index_rate: float) -> None:
+    """提交前就把"没有配套索引"这件事说清楚（官方 WebUI 在点转换时做同一件事：webui.py:249-254）。
+
+    不查的话失败点在十几分钟队列之后：runtime 里的 CLI 遇到 index_rate>0 而索引缺失是直接抛
+    FileNotFoundError（infer/cli.py:152），用户看到的是"排队半天然后报错"，
+    而且根本不知道该改参数还是该去补索引。"""
+    if index_rate <= 0 or _rvc_index_for(model):
+        return
+    stem = Path(model).stem
+    raise HTTPException(
+        status_code=400,
+        detail=f"音色「{stem}」没有配套的检索索引（在 assets/indices 与 logs 里按推理侧规则找过）。"
+               f"把「音色检索强度」调到 0 可以只用模型本身换声（音色相似度会降），"
+               f"或补上同名索引后再提交。",
+    )
+
+
+_RVC_F0_METHODS = ("rmvpe", "fcpe", "pm")   # 与推理 CLI choices 同步（infer/cli.py --f0-method）
+_RVC_CAPS: dict | None = None
+_RVC_FCPE_OK: bool | None = None
+
+
+def _rvc_cli_caps() -> dict:
+    """探测本机 vendored 推理 CLI 实际支持哪些旋钮（评审 H2）。
+
+    为什么必须探：runtime/ 整目录不入库（.gitignore:2），这几处 CLI 扩展只存在于本机磁盘。
+    哪天重装 runtime 或换机器，拿到的是上游原版——原版不认识 --filter-radius，
+    而网关原先**无条件**把它拼进命令：argparse 直接 unrecognized arguments 退出码 2，
+    等于每一单换声都失败。探测结果进程内缓存（一次 --help 约 0.1 秒）。"""
+    global _RVC_CAPS
+    if _RVC_CAPS is None:
+        txt = ""
+        try:
+            r = subprocess.run([str(RVC_PY), str(RVC_DIR / "infer" / "cli.py"), "--help"],
+                               capture_output=True, timeout=120,
+                               env={**os.environ, "PYTHONPATH": str(RVC_DIR)},
+                               creationflags=_pymss_creationflags())
+            txt = (r.stdout or b"").decode("utf-8", "ignore")
+        except Exception:
+            txt = ""
+        _RVC_CAPS = {"filter_radius": "--filter-radius" in txt, "fcpe": "fcpe" in txt}
+    return _RVC_CAPS
+
+
+def _rvc_fcpe_ok() -> bool:
+    """torchfcpe 是否可用（评审 H3）。没有依赖时选 fcpe 照样能提交，
+    排队之后才在 FCPEInfer 加载处炸——和索引缺失是同一族"晚爆的错误"。
+    import torchfcpe 实测 5.4 秒，所以只在真选了 fcpe 时才探，结果进程内缓存。"""
+    global _RVC_FCPE_OK
+    if _RVC_FCPE_OK is None:
+        _RVC_FCPE_OK = False
+        try:
+            r = subprocess.run([str(RVC_PY), "-c", "import torchfcpe"],
+                               capture_output=True, timeout=180,
+                               env={**os.environ, "PYTHONPATH": str(RVC_DIR)},
+                               creationflags=_pymss_creationflags())
+            _RVC_FCPE_OK = r.returncode == 0
+        except Exception:
+            _RVC_FCPE_OK = False
+    return _RVC_FCPE_OK
+
+
+# ===== 音域匹配（评审 C4）：让"换了但不好听"从玄学变成可诊断、可自动修正 =====
+
+_RVC_F0STATS_LOCK = threading.Lock()
+_RVC_F0STATS_MEM: dict[str, dict] = {}
+
+
+def _rvc_f0_stats(model: str, refresh: bool = False) -> dict | None:
+    """目标音色的舒适音域。**两个来源，优先级固定**（评审 J1）：
+    ① 训练实测：读 logs/<stem>/2a_f0/*.npy（训练时 rmvpe 实测的每切片 f0），
+      算全集中位数与 p5–p95，落 sidecar `f0_stats.json`，2a_f0 目录未变则复用；
+    ② 参考音频建档：下载音色（本机 孙燕姿/王菲/邓丽君 等）没有训练素材，
+      但用户可以上传该歌手的一段歌建档——sidecar 里 source="reference" 时照用。
+    有 2a_f0 时**永远以训练实测为准**：建档接口会拒绝覆盖，取值也不看参考 sidecar，
+    防止一个 12 秒片段把几百切片的实测数字降级。数字绝不跨音色冒充。"""
+    stem = os.path.basename(str(model)).removesuffix(".pth")
+    f0_dir = RVC_DIR / "logs" / stem / "2a_f0"
+    cache = RVC_DIR / "logs" / stem / "f0_stats.json"
+
+    def _reference_stats() -> dict | None:
+        try:
+            c = json.loads(cache.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if c.get("source") == "reference" and c.get("median_hz"):
+            return {k: v for k, v in c.items() if not k.startswith("_")}
+        return None
+
+    if not f0_dir.is_dir():
+        return _reference_stats()
+    try:
+        stamp = max(p.stat().st_mtime_ns for p in f0_dir.glob("*.npy"))
+    except ValueError:
+        return _reference_stats()
+    with _RVC_F0STATS_LOCK:
+        mem = _RVC_F0STATS_MEM.get(stem) if not refresh else None
+        if mem and mem.get("_stamp") == stamp:
+            return {k: v for k, v in mem.items() if not k.startswith("_")}
+    if cache.is_file() and not refresh:
+        try:
+            c = json.loads(cache.read_text(encoding="utf-8"))
+            if c.get("_stamp") == stamp:
+                c.setdefault("source", "training")  # 旧 sidecar 没标来源，补上
+                with _RVC_F0STATS_LOCK:
+                    _RVC_F0STATS_MEM[stem] = c
+                return {k: v for k, v in c.items() if not k.startswith("_")}
+        except Exception:
+            pass
+    import numpy as np
+    parts, files = [], 0
+    for f in sorted(f0_dir.glob("*.npy")):
+        try:
+            a = np.load(f)
+            v = a[a > 0]  # 0 帧 = 无声/清音，音域统计不该把它们算进去
+        except Exception:
+            continue
+        files += 1
+        if v.size:
+            parts.append(np.asarray(v, dtype=np.float64))
+    if not parts:
+        return None
+    allv = np.concatenate(parts)
+    stats = {"median_hz": round(float(np.median(allv)), 1),
+             "p5_hz": round(float(np.percentile(allv, 5)), 1),
+             "p95_hz": round(float(np.percentile(allv, 95)), 1),
+             "frames": int(allv.size), "files": files, "source": "training"}
+    with _RVC_F0STATS_LOCK:
+        _RVC_F0STATS_MEM[stem] = {**stats, "_stamp": stamp}
+    try:
+        cache.write_text(json.dumps({**stats, "_stamp": stamp}, ensure_ascii=False),
+                         encoding="utf-8")
+    except Exception:
+        pass
+    return stats
+
+
+# 源音域只分析前 5 分钟：dio 线性耗时，整首长跑只是让提交按钮多转几秒；
+# 5 分钟足够覆盖主歌+副歌的音域分布，结果里如实带 `analyzed_sec`。
+_RVC_PITCH_CAP_SEC = 300
+
+
+def _rvc_f0_of_audio(path: Path) -> dict:
+    """pyworld.dio 抽源音频 f0（纯 CPU，实测 3.7 秒素材 0.07 秒）。
+    带伴奏的整曲会被伴奏污染——调用方负责在结果里说清这一点；
+    换声 worker 里我们只对**分离后的人声**跑它，那个数字才是可信的。"""
+    import math
+    import numpy as np
+    import soundfile as sf
+    import pyworld as pw
+    x, sr = sf.read(str(path), dtype="float32")
+    if getattr(x, "ndim", 1) > 1:
+        x = x.mean(axis=1)
+    analyzed = min(len(x) / sr, _RVC_PITCH_CAP_SEC)
+    x = x[:int(analyzed * sr)]
+    if analyzed < 3:
+        raise HTTPException(status_code=422, detail="音频太短（<3 秒），判不了音域")
+    f0 = pw.dio(x.astype(np.float64), int(sr), frame_period=10.0)[0]
+    voiced = f0[f0 > 0]
+    if voiced.size < 100:
+        raise HTTPException(status_code=422,
+                            detail=f"可测出的有声帧太少（{int(voiced.size)}），"
+                                   "音域判不了——素材里可能几乎没有人声")
+    return {"median_hz": round(float(np.median(voiced)), 1),
+            "p5_hz": round(float(np.percentile(voiced, 5)), 1),
+            "p95_hz": round(float(np.percentile(voiced, 95)), 1),
+            "voiced_frames": int(voiced.size),
+            "analyzed_sec": round(analyzed, 1)}
+
+
+def _rvc_pitch_suggestion(src_median: float, tgt_median: float,
+                          pitch_used: int) -> dict:
+    """建议变调 = 两个中位数的半音距离（±24 钳位，与换声闸门同口径）。"""
+    import math
+    semis = 12.0 * math.log2(float(tgt_median) / float(src_median))
+    pitch = max(-24, min(24, int(round(semis))))
+    diff = pitch - int(pitch_used)
+    return {"suggested_pitch": pitch, "raw_semis": round(semis, 2),
+            "delta": diff,
+            "apply": diff != 0 and abs(semis) >= 1.0}
+
+
+@router.post("/rvc/pitch/advice")
+async def rvc_pitch_advice(file: UploadFile, model: str = Form(...)):
+    """换声前的音域体检：量源唱音域 → 对照目标音色舒适音域 → 给一句可执行的变调建议。
+    不占 GPU、不进换声队列，几秒出结果。三档诚实：
+    ① 双方都有数据 → 建议；② 目标音色是外部下载（无训练 f0）→ 只报源音域，说明没法建议；
+    ③ 源带伴奏 → 数字可能被伴奏带偏，提示改用干声或看换声后 meta 里的可信值。"""
+    models = _rvc_models()
+    if model not in models:
+        raise HTTPException(status_code=400, detail=f"未知音色模型：{model}（可用：{models}）")
+    ext = Path(file.filename or "in.wav").suffix.lower()
+    if ext not in _RVC_AUDIO_EXTS:
+        ext = ".wav"
+    rid = _new_id()
+    work = RVC_JOB_DIR / f"pitch_{rid}"
+    work.mkdir(parents=True, exist_ok=True)
+    probe = work / f"src{ext}"
+    try:
+        await _stream_upload_to(file, probe, 200 * 1024 * 1024, "音频")
+        src = _rvc_f0_of_audio(probe)
+        tgt = _rvc_f0_stats(model)
+        out = {"ok": True, "source": src, "target": tgt, "model": model}
+        if tgt:
+            out["suggestion"] = _rvc_pitch_suggestion(
+                src["median_hz"], tgt["median_hz"], 0)
+            n = out["suggestion"]["suggested_pitch"]
+            tgt_cn = ("参考音频实测" if tgt.get("source") == "reference"
+                      else "训练素材实测")
+            out["text"] = (f"源唱中位 {src['median_hz']:.0f}Hz，音色「{model}」舒适音域中位 "
+                           f"{tgt['median_hz']:.0f}Hz（{tgt_cn}）→ 建议变调 "
+                           f"{n:+d} 半音（音域差 {out['suggestion']['raw_semis']:+.1f}）")
+        else:
+            out["text"] = (f"源唱中位 {src['median_hz']:.0f}Hz；音色「{model}」没有音域数据"
+                           "（外部下载的音色没有训练素材），无法给变调建议——"
+                           "在音色卡片上给它传一段该歌手本人的歌（10~30 秒即可）建档后即可。")
+        out["caveat"] = ("整曲带伴奏时 f0 会被伴奏污染，此数字仅供参考；"
+                         "开「先人声分离」跑完后，成品 meta 里会带可信的源音域与最终建议。")
+        return out
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+@router.post("/rvc/models/{name}/f0-reference")
+async def rvc_model_f0_reference(name: str, file: UploadFile):
+    """给外部下载音色建"参考音域"档案（评审 J1）。本机 4 个现役音色全是下载的、
+    没有训练素材，2a_f0 永远为空 → C4 的变调建议对它们 0% 生效。唯一可信的补救是
+    **这个本人的一段干净人声**（不能拿换声产物反推——那是源音高的镜像，不含目标音色信息，
+    评审实测两个不同音色产物中位只差 0.09 半音）。传一段该音色本人的歌（建议干声，
+    10~30 秒足够）→ 复用 _rvc_f0_of_audio 算中位/p5–p95 → 落 sidecar f0_stats.json，
+    标记 source="reference"。此后 _rvc_f0_stats 的取值顺序：训练 2a_f0 实测 → 参考档案 → None。
+    诚实口径：参考数字绝不冒充训练实测，卡片与文案都标注来源；已有训练实测的音色不许被
+    参考档案覆盖（端点直接拒绝——一段 12 秒片段不许降级几百切片的实测）。"""
+    name = os.path.basename(name)
+    if name not in _rvc_models():
+        raise HTTPException(status_code=404,
+                            detail=f"音色模型不存在：{name}（可用：{_rvc_models()}）")
+    stem = name.removesuffix(".pth")
+    f0_dir = RVC_DIR / "logs" / stem / "2a_f0"
+    if any(f0_dir.glob("*.npy")):
+        raise HTTPException(status_code=409, detail=(
+            f"「{stem}」已有本机训练素材的音域实测，不用也不许用参考音频建档覆盖"))
+    ext = Path(file.filename or "in.wav").suffix.lower()
+    if ext not in _RVC_AUDIO_EXTS:
+        ext = ".wav"
+    rid = _new_id()
+    work = RVC_JOB_DIR / f"pitchref_{rid}"
+    work.mkdir(parents=True, exist_ok=True)
+    probe = work / f"ref{ext}"
+    try:
+        await _stream_upload_to(file, probe, 60 * 1024 * 1024, "参考音频")
+        stats = _rvc_f0_of_audio(probe)  # 有声帧太少会在里面直接 422，不编数
+        sidecar = RVC_DIR / "logs" / stem / "f0_stats.json"
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        # _stamp 用参考音频文件的 mtime（评审方案）：与训练 2a_f0 的 npy 戳共用一把尺，
+        # 换一段参考文件重建档会自然失效旧的 sidecar 缓存判定。
+        stamp = probe.stat().st_mtime_ns
+        record = {**stats, "source": "reference", "_stamp": stamp,
+                  "ref_name": Path(file.filename or "ref").name}
+        sidecar.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+        with _RVC_F0STATS_LOCK:
+            _RVC_F0STATS_MEM.pop(stem, None)  # 让下次读取走新档案
+        return {"ok": True, "model": name,
+                "stats": {k: v for k, v in record.items() if not k.startswith("_")}}
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _rvc_pitch(raw) -> int:
+    """变调半音：非整数直接拒，越界也拒（页面上的滑杆就是 ±24）。"""
+    try:
+        v = float(raw if raw not in (None, "") else 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"变调须是整数半音，收到：{raw!r}")
+    if not -24 <= v <= 24:
+        raise HTTPException(status_code=400, detail=f"变调须在 -24~24 半音之间，收到 {raw!r}")
+    if v != int(v):
+        raise HTTPException(status_code=400, detail=f"变调须是整数半音（不能 4.5），收到 {raw!r}")
+    return int(v)
+
+
+def _rvc_convert_params(model: str, f0_method, index_rate, protect, rms_mix_rate,
+                        filter_radius=None, resample_sr=None):
+    """换声参数的统一闸门，返回规整后的 (f0_method, index_rate, protect, rms_mix_rate,
+    filter_radius, resample_sr)。
+
+    为什么要在入队前拦：这些数会一路带到十几分钟之后开跑的子进程命令行里。变调算法写错是
+    argparse 直接退出（用户只看到一句"转换失败"）；索引缺失是 FileNotFoundError；
+    比例越界更糟——不报错，而是算出负权重的混合，用户听到的是"声音怪"却查不出为什么。
+    以前只有体检（GET）在找索引，两个提交入口（上传、历史页送去换声）各查各的、还漏查。"""
+    f0_method = str(f0_method or "rmvpe").strip().lower()
+    if f0_method not in _RVC_F0_METHODS:
+        raise HTTPException(status_code=400,
+                            detail=f"未知变调算法：{f0_method}（可用：{'、'.join(_RVC_F0_METHODS)}；"
+                                   f"rmvpe 通用首选，fcpe 新一代更快更准，pm 最快但容易飘）")
+    if f0_method == "fcpe":
+        # 不许悄悄降级成 rmvpe：那是"点 A 得 B"，音高算法换了听感就变了。
+        # 能力缺失只能在提交时说清楚（评审 H2/H3）。
+        if not _rvc_cli_caps().get("fcpe"):
+            raise HTTPException(status_code=400,
+                                detail="本机 RVC 推理 CLI 不支持 fcpe（runtime 可能被重装成未打补丁的"
+                                       "上游原版）：换 rmvpe，或按 patches/rvc-infer/ 的说明恢复补丁")
+        if not _rvc_fcpe_ok():
+            raise HTTPException(status_code=400,
+                                detail="fcpe 需要 torchfcpe 依赖，本机 import 失败："
+                                       "py312\\python.exe -m pip install torchfcpe，或改用 rmvpe")
+    out = []
+    for label, raw, lo, hi, dflt in (("音色检索强度", index_rate, 0.0, 1.0, 0.75),
+                                     ("protect", protect, 0.0, 0.5, 0.33),
+                                     ("音量对齐强度", rms_mix_rate, 0.0, 1.0, 1.0)):
+        try:
+            v = float(dflt if raw is None or raw == "" else raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{label}须是数字，收到：{raw!r}")
+        if not lo <= v <= hi:
+            raise HTTPException(status_code=400,
+                                detail=f"{label}须在 {lo}-{hi} 之间，收到 {v}")
+        out.append(v)
+    # 音高平滑半径（官方 WebUI 同名旋钮，评审 C2）：>2 起效，社区口径"默认 3，
+    # 哑音毛刺明显时 5~7，调大发闷"；0-2 一律视为关闭。
+    try:
+        fr = int(3 if filter_radius is None or filter_radius == "" else filter_radius)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400,
+                            detail=f"音高平滑半径须是整数，收到：{filter_radius!r}")
+    if not 0 <= fr <= 7:
+        raise HTTPException(status_code=400, detail=f"音高平滑半径须在 0-7 之间，收到 {fr}")
+    # 评审 H1：scipy.signal.medfilt 要求核为奇数，偶数核在 pipeline 里直接抛
+    # ValueError: Each element of kernel_size should be odd（实测 --filter-radius 4 整条换声崩）。
+    # 页面是 step=1 的 number 输入，4、6 随手能填且能过闸门，所以在这里钳到下一个奇数
+    # （4→5、6→7）；≤2 本就不触发滤波（0/1/2 一律视为关闭），不动它。
+    if fr > 2 and fr % 2 == 0:
+        fr += 1
+    # 输出采样率（评审 C3）：0=跟随模型原生。40k 模型的 Nyquist 就是 20kHz，
+    # 强行上采样到 48k 不增加任何信息，只多一次重采样失真——默认必须是 0。
+    try:
+        rsr = int(0 if resample_sr is None or resample_sr == "" else resample_sr)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400,
+                            detail=f"输出采样率须是整数，收到：{resample_sr!r}")
+    if rsr != 0 and not 16000 <= rsr <= 192000:
+        raise HTTPException(status_code=400,
+                            detail=f"输出采样率只接受 0（模型原生）或 16000-192000，收到 {rsr}")
+    _rvc_require_index(model, out[0])
+    return f0_method, out[0], out[1], out[2], fr, rsr
 
 
 def _rvc_model_in_use(model: str) -> bool:
-    """该音色是否正被某个运行中的换声任务使用。"""
+    """该音色是否正被某个换声任务使用（含排队中的：删了它，轮到它跑时会找不到模型）。"""
     with _RVC_LOCK:
         return any(
-            j.get("status") == "running" and j.get("model") == model
+            j.get("status") in ("running", "pending") and j.get("model") == model
             for j in _RVC_JOBS.values()
         )
 
@@ -2357,13 +2831,14 @@ def _rvc_model_in_use(model: str) -> bool:
 @router.get("/rvc/models")
 def rvc_models():
     items = []
-    if RVC_MODELS_DIR.is_dir():
-        for p in sorted(RVC_MODELS_DIR.glob("*.pth")):
-            items.append({
-                "name": p.name,
-                "size_mb": round(p.stat().st_size / 1e6, 1),
-                "mtime": datetime.fromtimestamp(p.stat().st_mtime).isoformat(timespec="seconds"),
-            })
+    for p in sorted(RVC_MODELS_DIR.glob("*.pth")) if RVC_MODELS_DIR.is_dir() else []:
+        items.append({
+            "name": p.name,
+            "size_mb": round(p.stat().st_size / 1e6, 1),
+            "mtime": datetime.fromtimestamp(p.stat().st_mtime).isoformat(timespec="seconds"),
+            # 音域卡片（评审 C4）：只有本机练过的音色有；None 时页面显示"无音域数据"
+            "f0_range": _rvc_f0_stats(p.name),
+        })
     return {"models": [i["name"] for i in items], "items": items}
 
 
@@ -2418,7 +2893,7 @@ def rvc_model_check(name: str, force: bool = False):
     info = {k: j.get(k, "?") for k in ("sr", "f0", "version", "epoch")}
     checks["结构完整"] = bool(j.get("struct"))
     checks["权重非空"] = int(j.get("n", 0)) > 50
-    idx = list((RVC_DIR / "logs").glob(f"added_*_{p.stem}_v2.index"))
+    idx = _rvc_index_files(p.stem)
     checks["配套索引"] = bool(idx)
     ok = all(checks.values())
     payload = {
@@ -2527,8 +3002,10 @@ def rvc_model_delete(name: str):
     if _rvc_model_in_use(name):
         raise HTTPException(status_code=409, detail="该音色正在被换声任务使用，不能删除")
     p.unlink()
-    # 顺带清理同名索引文件
-    for idx in (RVC_DIR / "logs").glob(f"added_*_{p.stem}_v2.index"):
+    # 顺带清理同名索引（两处目录都要清，否则 assets/indices 里留成孤儿文件）。
+    # exact=True：查找侧允许子串匹配（王菲 会把 王菲V6 的索引也列出来），
+    # 删东西时必须只认这个音色自己的，不然就是删邻居的文件。
+    for idx in _rvc_index_files(p.stem, exact=True):
         try:
             idx.unlink()
         except Exception:
@@ -2553,12 +3030,26 @@ def rvc_model_rename(name: str, payload: dict):
     if _rvc_model_in_use(name):
         raise HTTPException(status_code=409, detail="该音色正在被换声任务使用，不能重命名")
     p.rename(RVC_MODELS_DIR / new_name)
-    # 同步重命名索引文件（CLI 按 weights 里的模型 stem 找 added_*_<stem>_v2.index）
-    for idx in (RVC_DIR / "logs").glob(f"added_*_{p.stem}_v2.index"):
+    # 同步重命名索引文件（两处目录都跟着改；exact=True 只动这个音色自己的，
+    # 不然改名 王菲 会把 王菲V6 的索引一起改掉）
+    for idx in _rvc_index_files(p.stem, exact=True):
         try:
             idx.rename(idx.with_name(idx.name.replace(f"_{p.stem}_", f"_{Path(new_name).stem}_")))
         except Exception:
             pass
+    # 音域档案（评审 C4）跟着改名走：sidecar 在 logs/<名>/f0_stats.json，
+    # 不搬的话改完名换声页就会说"该音色没有音域数据"——数据明明练过。
+    old_side = RVC_DIR / "logs" / p.stem / "f0_stats.json"
+    if old_side.is_file():
+        try:
+            dst_dir = RVC_DIR / "logs" / Path(new_name).stem
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(old_side), str(dst_dir / "f0_stats.json"))
+        except Exception:
+            pass
+    with _RVC_F0STATS_LOCK:
+        _RVC_F0STATS_MEM.pop(p.stem, None)
+        _RVC_F0STATS_MEM.pop(Path(new_name).stem, None)
     return {"ok": True, "name": new_name}
 
 
@@ -2592,6 +3083,18 @@ def vocal_sep_available() -> bool:
     return (RVC_DIR / "tools" / "pymss" / "workflow.py").is_file()
 
 
+def _pymss_model_dir() -> Path:
+    """PyMSS 权重解析顺序（与 tools/pymss/model_registry.py:_default_model_dir 一致）：
+    环境变量 PYMSS_MODEL_DIR → 仓库内 tools/all_models → ~/.cache/pymss/models。"""
+    env = os.environ.get("PYMSS_MODEL_DIR")
+    if env:
+        return Path(env)
+    repo = RVC_DIR / "tools" / "all_models"
+    if repo.is_dir():
+        return repo
+    return Path.home() / ".cache" / "pymss" / "models"
+
+
 def _pymss_env() -> dict:
     env = {
         **os.environ,
@@ -2613,6 +3116,156 @@ def _pymss_creationflags() -> int:
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     flags |= getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0x4000)
     return flags
+
+
+# --------------------------------------------------------------------------- #
+# 静音门（gate）：RVC 对"没有人声的片段"并不会输出静音——实测纯静音输入会被模型
+# "哼"成一个恒定音（221s 歌的前 28 秒原人声为数字零，换声输出却持续 -26dB、主频
+# 279Hz 的蜂鸣）。所以必须以"真正送进 RVC 的那个人声"的包络为准，把换声结果的
+# 无人声段压下去；同时用 HP5 去和声（和声会让音高跟踪在高音处跳轨 → 电音）。
+# --------------------------------------------------------------------------- #
+def _frame_db(mono: "np.ndarray", n: int, starts: "np.ndarray", block: int = 4096) -> "np.ndarray":
+    """逐帧 RMS dB。分块计算：内存 O(块 × 窗长)，不随音频时长线性增长。
+
+    评审 F1：旧实现 np.stack 全展开成 float64，600s 音频在网关进程里顶出 1.06 GB
+    瞬时峰值，绕过了所有 headroom 闸门（本机有 OOM 前科）。float32 精度对 dB
+    判定足够（1e-12 下限本就是 ~240dB 的余量）。"""
+    import numpy as np
+
+    out = np.empty(len(starts), dtype=np.float32)
+    for i in range(0, len(starts), block):
+        blk = np.stack([mono[s:s + n] for s in starts[i:i + block]]).astype(np.float32)
+        out[i:i + block] = 20 * np.log10(np.clip(np.sqrt((blk ** 2).mean(axis=1)), 1e-12, None))
+    return out
+
+
+def _gate_envelope(ref: "np.ndarray", sr: int, *, win_s: float = 0.02,
+                   hop_s: float = 0.01, attack_ms: float = 6.0,
+                   release_ms: float = 140.0, hold_frames: int = 8,
+                   offset_s: float = 0.03) -> tuple["np.ndarray", float, "np.ndarray"]:
+    """按参考人声的能量包络算逐样本门控增益（0~1）。
+
+    阈值取「参考信号 90 分位帧能量 − 38dB」并夹在 [-75, -45]，开帧后保持 hold_frames
+    帧（避免咬字间的短促停顿被切），开→关走 release、关→开走 attack 的指数平滑。
+    offset_s 把整条控制线往前挪一点点：RVC 输出相对输入有少量延迟，不补偿会吃掉
+    每句的第一个音。返回 (逐样本增益, 阈值dB, 逐帧有人声布尔)。"""
+    import numpy as np
+
+    mono = ref.mean(axis=1) if ref.ndim > 1 else ref
+    n = max(1, int(sr * win_s))
+    hop = max(1, int(sr * hop_s))
+    starts = np.arange(0, max(1, len(mono) - n + 1), hop)
+    if starts.size == 0:
+        starts = np.array([0])
+    db = _frame_db(mono, n, starts)
+    thr = float(np.clip(np.percentile(db, 90) - 38.0, -75.0, -45.0))
+    close_thr = thr - 6.0
+    open_ = db >= thr
+    # 保持：开帧后 hold_frames 内仍视为开
+    target = np.zeros(len(db), dtype=np.float64)
+    hold = 0
+    for i, is_open in enumerate(open_):
+        if is_open:
+            hold = hold_frames
+        if hold > 0:
+            target[i] = 1.0
+            hold -= 1
+        elif db[i] < close_thr:
+            target[i] = 0.0
+        else:
+            target[i] = target[i - 1] if i else 0.0
+    # 指数平滑（attack 用于 0→1，release 用于 1→0）
+    a_atk = 1.0 - float(np.exp(-hop / max(1.0, sr * attack_ms / 1000.0)))
+    a_rel = 1.0 - float(np.exp(-hop / max(1.0, sr * release_ms / 1000.0)))
+    prev = target[0]
+    smooth = np.empty_like(target)
+    for i, t in enumerate(target):
+        a = a_atk if t > prev else a_rel
+        prev = prev + a * (t - prev)
+        smooth[i] = prev
+    centers = starts + n / 2.0 + sr * offset_s
+    # 逐样本增益同样分块落值：一次性 np.interp 会造出 int64 下标 + float64 输出
+    # 两份 8 字节临时数组（评审 F1 同源问题），分块后只剩 float32 结果本身。
+    gain = np.empty(len(mono), dtype=np.float32)
+    bs = 1 << 20
+    for i in range(0, len(gain), bs):
+        j = min(i + bs, len(gain))
+        gain[i:j] = np.interp(np.arange(i, j, dtype=np.float64), centers, smooth)
+    return gain, thr, open_
+
+
+def _apply_silence_gate(voc: "np.ndarray", ref: "np.ndarray", ref_sr: int, *,
+                        depth_db: float = -60.0) -> tuple["np.ndarray", dict]:
+    """用 ref（真正送进 RVC 的那个人声）的包络门控 voc（换声结果）。
+
+    返回 (门控后的音频, 统计+逐帧有人声掩码)。统计里的掩码供后续响度校准只按
+    有人声的片段算 RMS——否则被关掉的静音段会把整体响度算低，把人声越推越小。"""
+    import numpy as np
+
+    gain, thr, open_ = _gate_envelope(ref, ref_sr)
+    floor = float(10 ** (depth_db / 20.0))
+    gain = floor + (1.0 - floor) * gain
+    if len(gain) != len(voc):
+        # 换声输出的采样数/采样率与输入不完全一致：按时间轴归一重采样控制线
+        gain = np.interp(np.linspace(0.0, 1.0, len(voc)),
+                         np.linspace(0.0, 1.0, len(gain)), gain).astype(np.float32)
+    out = (voc * gain[:, None]) if voc.ndim > 1 else voc * gain
+    closed_ratio = float((gain <= floor + 1e-6).mean())
+    return out.astype(np.float32), {
+        "gate_thr_db": round(thr, 1),
+        "gate_depth_db": depth_db,
+        "gate_closed_ratio": round(closed_ratio, 3),
+        "gate_open_frames": open_,
+    }
+
+
+def _mask_to_signal(mask: "np.ndarray", n: int) -> "np.ndarray":
+    """把逐帧（10ms）有人声掩码按时间轴展开到 n 个采样点的布尔掩码。"""
+    import numpy as np
+
+    if mask is None or len(mask) == 0:
+        return np.ones(n, dtype=bool)
+    grid = np.linspace(0.0, 1.0, len(mask))
+    return np.interp(np.linspace(0.0, 1.0, n), grid, mask.astype(np.float64)) >= 0.5
+
+
+def _mix_vocal_accompaniment(voc: "np.ndarray", acc: "np.ndarray") -> "np.ndarray":
+    """人声与伴奏相加。声道数不一致时只允许「单声道升到立体声」，
+    绝不把立体声伴奏压成单声道（旧写法会把 2 声道伴奏截成 1 声道，成品丢立体声）。"""
+    import numpy as np
+
+    n = max(voc.shape[0], acc.shape[0])
+    if voc.shape[0] < n:
+        voc = np.pad(voc, ((0, n - voc.shape[0]), (0, 0)))
+    if acc.shape[0] < n:
+        acc = np.pad(acc, ((0, n - acc.shape[0]), (0, 0)))
+    if voc.shape[1] != acc.shape[1]:
+        if voc.shape[1] == 1:
+            voc = np.repeat(voc, acc.shape[1], axis=1)
+        elif acc.shape[1] == 1:
+            acc = np.repeat(acc, voc.shape[1], axis=1)
+        else:
+            voc = voc[:, :acc.shape[1]]
+    return voc + acc
+
+
+def _run_harmony_strip(vocal_path: Path, sep_dir: Path, job: dict) -> Path | None:
+    """HP5 去和声，只留主唱；不可用或失败返回 None（调用方继续用含和声的人声）。"""
+    if not (GSV_PY.is_file() and SEP_HP5.is_file()):
+        return None
+    job["sep_stage"] = "去除和声（HP5，只留主唱）"
+    try:
+        r = subprocess.run(
+            [str(GSV_PY), str(SEP_HP5), str(vocal_path), str(sep_dir)],
+            capture_output=True, timeout=3600,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    return next((v for v in sorted(sep_dir.glob("vocal_*.wav"),
+                                   key=lambda p: p.stat().st_mtime, reverse=True)), None)
 
 
 def _commit_headroom_mb() -> int:
@@ -2648,8 +3301,12 @@ def _require_headroom_for_preview(need_mb: int = 2600) -> None:
                    f"现在试听会把训练挤死。等训练完成后再试，或重启网关后试。")
 
 
-def _run_vocal_separation(src: Path, in_dir: Path, job: dict) -> tuple[Path, dict]:
+def _run_vocal_separation(src: Path, in_dir: Path, job: dict,
+                          strip_harmony: bool = False) -> tuple[Path, dict]:
     """人声分离：首选官方 PyMSS 一步分离（人声+伴奏）；PyMSS 不可用时降级旧两步链。
+
+    strip_harmony=True 时，PyMSS 分离出的人声再过一遍 HP5 只留主唱——和声（副歌叠唱、
+    双人声）会让 RVC 的音高跟踪跳轨，是换声后高音处出电音的主要可修诱因。
 
     返回 (送 RVC 的人声路径, 产物字典)；产物字典含原人声与伴奏，
     供换声完成后合成完整歌曲与多产物下载。"""
@@ -2677,7 +3334,12 @@ def _run_vocal_separation(src: Path, in_dir: Path, job: dict) -> tuple[Path, dic
             if vocals is not None and accompaniment is not None:
                 artifacts["vocals_raw"] = vocals.name
                 artifacts["accompaniment"] = accompaniment.name
-                # 人声即送 RVC（不再需要 HP5 二次去和声；PyMSS 一步已足够干净）
+                # PyMSS 的人声声部含和声；默认直接送 RVC（一步分离已足够干净），
+                # 需要只留主唱时（strip_harmony）再走 HP5，产物 vocals_raw 仍是含和声那份
+                if strip_harmony:
+                    main_vocal = _run_harmony_strip(vocals, sep_dir, job)
+                    if main_vocal is not None:
+                        return main_vocal, artifacts
                 return vocals, artifacts
             tail = (r.stderr or r.stdout or b"")[-300:].decode("utf-8", "replace")
             raise RuntimeError(f"人声分离（PyMSS）未产出完整产物：{tail}")
@@ -2720,37 +3382,54 @@ def _run_vocal_separation(src: Path, in_dir: Path, job: dict) -> tuple[Path, dic
     artifacts["vocals_raw"] = vocals.name      # 原人声（含和声，BS-RoFormer）
     artifacts["accompaniment"] = accompaniment.name  # 伴奏（BS-RoFormer other 声部）
 
-    # 步骤 2：HP5 去和声（只留主唱）
-    job["sep_stage"] = "去除和声（HP5）"
-    r2 = subprocess.run(
-        [str(GSV_PY), str(SEP_HP5), str(vocals), str(sep_dir)],
-        capture_output=True, timeout=3600,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    if r2.returncode != 0:
-        tail = (r2.stderr or r2.stdout or b"")[-300:].decode("utf-8", "replace")
-        raise RuntimeError(f"人声分离（去和声）失败：{tail}")
-    main_vocal = next((v for v in sorted(sep_dir.glob("vocal_*.wav"),
-                                         key=lambda p: p.stat().st_mtime, reverse=True)), None)
-    if not main_vocal:
-        # HP5 失败时降级：用含和声的人声继续（比带伴奏好）
-        return vocals, artifacts
-    return main_vocal, artifacts
+    # 步骤 2：HP5 去和声（只留主唱）；HP5 失败时降级用含和声的人声继续（比带伴奏好）
+    return _run_harmony_strip(vocals, sep_dir, job) or vocals, artifacts
+
+
+def _rvc_mark_running(rid: str, job: dict) -> None:
+    """GPU 真到手的一刻才标 running 并起表。
+
+    出队 ≠ 开算：`_GPU_SEM` 还被歌曲生成/批量/音色训练占着的时候（训练整条流程都持锁，
+    可以是几十分钟），提前写 running 就等于把等锁的时间画成转换进度——正是这次要修的
+    "明明在等却说在转换"。与批量 worker 同一口径：先拿锁，再登记在算（app.py:1997）。"""
+    with _RVC_LOCK:
+        cur = _RVC_JOBS.get(rid) or job
+        if cur.get("status") == "running":
+            return                      # 分离阶段已经起过表，推理不再重算
+        _RVC_JOBS[rid] = {**cur, "status": "running", "queue_pos": 0, "step": "",
+                          "started_ts": datetime.now().isoformat(timespec="seconds")}
 
 
 def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
                         model: str, pitch: int, f0_method: str,
                         index_rate: float, protect: float, rms_mix_rate: float,
-                        separate_vocal: bool = False) -> None:
-    """换声推理 worker（上传入口与历史转发入口共用）。"""
-    started = time.time()
-    with _RVC_LOCK:
-        _RVC_JOBS[rid] = {**_RVC_JOBS.get(rid, job), "status": "running"}
+                        separate_vocal: bool = False, gate: bool = True,
+                        strip_harmony: bool = False,
+                        filter_radius: int = 3, resample_sr: int = 0) -> None:
+    """换声推理 worker（上传入口与历史转发入口共用；由 _rvc_queue_loop 串行调度）。"""
+    started: float | None = None   # 拿到 GPU 才起表：等生成/训练放锁的时间不是转换耗时
+
+    def _start_watch() -> None:
+        nonlocal started
+        if started is None:
+            started = time.time()
+
+    def _elapsed() -> float:
+        return round(time.time() - (started or time.time()), 1)
+
     try:
+        # 轮到它了但还没拿到 GPU：保持 pending，只把原因写清楚，表留给 _rvc_mark_running
+        with _RVC_LOCK:
+            _RVC_JOBS[rid] = {**_RVC_JOBS.get(rid, job), "queue_pos": 0,
+                              "step": "等待本机空闲（生成/批量/训练正占用 GPU）"}
         artifacts: dict[str, str] = {}
-        orig_src = in_dir / next(p.name for p in in_dir.iterdir() if p.name.startswith("src"))
         if separate_vocal:
-            src, artifacts = _run_vocal_separation(src, in_dir, job)
+            # 分离同样吃显存（BS-Roformer 大模型），而它在下面的推理信号量之外，
+            # 所以单独占一次锁、跑完即放：换声排队期间不至于撞上正在生成的歌曲。
+            with _GPU_SEM:
+                _rvc_mark_running(rid, job)
+                _start_watch()
+                src, artifacts = _run_vocal_separation(src, in_dir, job, strip_harmony)
         out_name = "converted.wav"
         cmd = [
             str(RVC_PY), str(RVC_DIR / "infer" / "cli.py"),
@@ -2759,10 +3438,31 @@ def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
             "--pitch", str(int(pitch)), "--f0-method", f0_method,
             "--index-rate", str(index_rate), "--protect", str(protect),
             "--rms-mix-rate", str(rms_mix_rate),
-            # 输出重采样到 48k：源素材普遍 44.1/48k，40k 直出会损失高频
-            "--resample-sr", "48000",
+            # 输出采样率：0 = 跟随模型原生（评审 C3）。以前的注释写着"40k 直出会损失高频"，
+            # 前提是错的：40k 模型的 Nyquist 就是 20kHz，上采样到 48k 不增加任何信息；
+            # 混音环节本来就会按伴奏采样率对齐，不需要在这里提前统一。
+            "--resample-sr", str(int(resample_sr)),
             "--overwrite",
         ]
+        # 音高轨迹中值滤波半径（官方 WebUI 同名旋钮，评审 C2）：默认 3，
+        # 哑音/毛刺/断续明显时 5~7，调大发闷，<3 关闭。
+        # 只在探测到 CLI 认识这个参数时才传（评审 H2）：runtime 不入库，重装后是上游原版，
+        # 无条件传会 argparse 退出码 2、每一单换声都失败。不支持时明写在任务上，不许静默。
+        if _rvc_cli_caps().get("filter_radius"):
+            cmd += ["--filter-radius", str(int(filter_radius))]
+        else:
+            job["caps_warn"] = ("本机 RVC 运行时不支持音高平滑（--filter-radius），此步已跳过；"
+                                "要恢复请按 patches/rvc-infer/ 说明打补丁")
+            with _RVC_LOCK:
+                cur = _RVC_JOBS.get(rid)
+                if cur is not None:
+                    cur["caps_warn"] = job["caps_warn"]
+        # 索引必须点名给：不给时 runtime 自己按"子串"猜（infer/vc/utils.py:7-57），
+        # 本机 王菲 与 王菲V6 并存时，按文件名排序 王菲V6 的外链排在前面——
+        # 于是选 王菲 实际用了 王菲V6 的检索库，两个名字听起来是同一个人在唱。
+        idx = _rvc_index_for(model) if index_rate > 0 else None
+        if idx:
+            cmd += ["--index", str(idx)]
         env = {**os.environ,
                "PYTHONPATH": str(RVC_DIR),
                "weight_root": str(RVC_MODELS_DIR),
@@ -2775,6 +3475,8 @@ def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
                # 关闭图加速走 eager 推理，功能不变：295s 音频全程约 19s。
                "RVC_CUDA_GRAPH": "0"}
         with _GPU_SEM:  # 与生成/批量/训练互斥，防止并发打满显存
+            _rvc_mark_running(rid, job)
+            _start_watch()
             proc = subprocess.run(
                 cmd, cwd=str(RVC_DIR), env=env, capture_output=True, timeout=1800,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -2785,15 +3487,66 @@ def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
             raise RuntimeError(f"RVC 推理失败：{tail}")
         # 落盘到 output/（历史页可回放），meta 记录全部参数
         wav = _output_wav_path(rid)
-        wav.write_bytes(out_path.read_bytes())
+        gate_info: dict = {}
+        gate_mask = None
+        if gate:
+            # 静音门：以"真正送进 RVC 的人声"为参考，把换声结果里没人声的片段压到 -60dB。
+            # 不做这一步，前奏/间奏会顶着模型自己哼出来的恒定音（实测 -26dB / 279Hz）。
+            try:
+                import soundfile as sf
+                import numpy as np
+                voc_raw, sr_v = sf.read(str(out_path), dtype="float32", always_2d=True)
+                try:
+                    ref, sr_r = sf.read(str(src), dtype="float32", always_2d=True)
+                except Exception:
+                    import librosa
+                    ref, sr_r = librosa.load(str(src), sr=None, mono=False)
+                    ref = np.asarray(ref, dtype="float32")
+                    if ref.ndim == 1:
+                        ref = ref[:, None]
+                gated, gate_info = _apply_silence_gate(voc_raw, ref, sr_r)
+                gate_mask = gate_info.pop("gate_open_frames", None)
+                sf.write(str(wav), gated, sr_v)
+            except Exception:
+                gate_info = {}
+                gate_mask = None
+        if not gate_info:
+            wav.write_bytes(out_path.read_bytes())
         meta = {
-            **job, "status": "done", "sec": round(time.time() - started, 1),
+            **job, "status": "done", "sec": _elapsed(),
             "bytes": wav.stat().st_size, "file": wav.name, "kind": "rvc",
             "style": f"RVC 换声 · {model}", "lyrics": f"源音频：{job['src_name']}",
             "cot": "rvc", "params": {"pitch": pitch, "f0_method": f0_method,
                                       "index_rate": index_rate, "protect": protect,
-                                      "rms_mix_rate": rms_mix_rate},
+                                      "rms_mix_rate": rms_mix_rate,
+                                      "filter_radius": filter_radius,
+                                      "resample_sr": resample_sr,
+                                      "separate_vocal": bool(separate_vocal),
+                                      "strip_harmony": bool(strip_harmony),
+                                      "gate": bool(gate)},
         }
+        if gate_info:
+            meta["gate"] = gate_info
+        # 音域留档（评审 C4）：这里量的 src 是**分离后真正送进 RVC 的人声**（没开分离时
+        # 是用户自称的干声），比换声前拿整曲探针量的数字可信。测不出来绝不把成功的换声
+        # 改判失败，但失败必须留痕（meta.src_f0.error），不许静默。
+        try:
+            src_f0 = _rvc_f0_of_audio(src)
+            meta["src_f0"] = src_f0
+            tgt_f0 = _rvc_f0_stats(model)
+            if tgt_f0:
+                sug = _rvc_pitch_suggestion(src_f0["median_hz"], tgt_f0["median_hz"], pitch)
+                meta["pitch_advice"] = {**sug, "pitch_used": pitch}
+                if abs(pitch - sug["suggested_pitch"]) >= 4:
+                    meta["pitch_note"] = (
+                        f"源唱与「{model}」的音域差 {sug['raw_semis']:+.1f} 半音，"
+                        f"本单只变了 {pitch:+d}——结果若发紧/电音重，下次试 {sug['suggested_pitch']:+d}")
+        except Exception as e:
+            meta["src_f0"] = {"error": str(e)[:200]}
+        # 排队阶段的 step/queue_pos 不留进产物 meta：status=done 却挂着"排队中"，
+        # 事后翻 meta 排查会被带偏（评审 v1.2.0 G4）
+        meta.pop("step", None)
+        meta.pop("queue_pos", None)
         # 多产物：分离开启时，把原人声/伴奏拷进 output/，并把换声人声与伴奏混音成完整歌曲
         assets: dict[str, str] = {}
         if separate_vocal:
@@ -2820,41 +3573,33 @@ def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
                 if acc is not None and acc.is_file():
                     _copy(acc, "accompaniment")
                     # 混音：换声后的人声 + 伴奏 → 完整歌曲（按伴奏采样率对齐）
+                    import librosa
                     voc, sr_v = sf.read(str(wav), dtype="float32", always_2d=True)
                     accm, sr_a = sf.read(str(acc), dtype="float32", always_2d=True)
                     if sr_v != sr_a:
-                        import librosa
                         voc = librosa.resample(voc.T, orig_sr=sr_v, target_sr=sr_a).T
                         sr_v = sr_a
-                    n = max(voc.shape[0], accm.shape[0])
-                    if voc.shape[0] < n:
-                        voc = np.pad(voc, ((0, n - voc.shape[0]), (0, 0)))
-                    if accm.shape[0] < n:
-                        accm = np.pad(accm, ((0, n - accm.shape[0]), (0, 0)))
-                    if voc.shape[1] != accm.shape[1]:
-                        voc = voc[:, :1] if voc.shape[1] == 1 else np.repeat(voc[:, :1], accm.shape[1], axis=1)
-                        accm = accm[:, :1] if accm.shape[1] == 1 else np.repeat(accm[:, :1], voc.shape[1], axis=1)
-                    # 响度校准：把换声人声的 RMS 对齐到原曲人声，避免合成后忽大忽小
+                    # 响度校准：把换声人声的 RMS 对齐到"真正送进 RVC 的那个人声"，且只按
+                    # 有人声的片段统计——静音段一起算会把人声越推越小
                     try:
-                        raw_p = sep_dir / (artifacts.get("vocals_raw") or "")
-                        if raw_p.is_file():
-                            rawm, _ = sf.read(str(raw_p), dtype="float32", always_2d=True)
-                            if sr_v != sr_a:
-                                import librosa
-                                rawm = librosa.resample(rawm.T, orig_sr=sr_a, target_sr=sr_a).T
-                            ref_rms = float(np.sqrt((rawm ** 2).mean()))
-                            voc_rms = float(np.sqrt((voc ** 2).mean()))
-                            if voc_rms > 1e-6 and ref_rms > 1e-6:
-                                gain = min(3.0, max(0.33, ref_rms / voc_rms))
-                                voc *= gain
+                        rawm, _sr_raw = sf.read(str(src), dtype="float32", always_2d=True)
+                        if gate_mask is not None:
+                            voc_sel = voc[_mask_to_signal(gate_mask, voc.shape[0])]
+                            raw_sel = rawm[_mask_to_signal(gate_mask, rawm.shape[0])]
+                        else:
+                            voc_sel, raw_sel = voc, rawm
+                        ref_rms = float(np.sqrt((raw_sel.astype(np.float64) ** 2).mean()))
+                        voc_rms = float(np.sqrt((voc_sel.astype(np.float64) ** 2).mean()))
+                        if voc_rms > 1e-6 and ref_rms > 1e-6:
+                            voc = voc * min(3.0, max(0.33, ref_rms / voc_rms))
                     except Exception:
                         pass
-                    mixed = voc + accm
+                    mixed = _mix_vocal_accompaniment(voc, accm)
                     peak = float(np.abs(mixed).max()) / 0.99
                     if peak > 1:
                         mixed /= peak
                     full = OUTPUT_DIR / f"{rid}_full_song.wav"
-                    sf.write(str(full), mixed, sr_a)
+                    sf.write(str(full), mixed, sr_a, subtype="PCM_24")
                     assets["full_song"] = full.name
             except Exception:
                 # 多产物失败不影响主结果（换声人声已在），meta 里如实省略 assets
@@ -2863,15 +3608,129 @@ def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
             meta["assets"] = assets
         _output_write_meta(meta)
         with _RVC_LOCK:
+            # assets/gate 一起回填到内存任务：换声页的任务卡要靠它们决定
+            # "播放成品 / 播放干人声" 该给哪个按钮，以及门控是否真的生效了
             _RVC_JOBS[rid] = {**_RVC_JOBS[rid], "status": "done",
-                              "sec": meta["sec"], "bytes": meta["bytes"]}
+                              "sec": meta["sec"], "bytes": meta["bytes"],
+                              "assets": assets, "gate": gate_info or None}
         _win_toast("🎵 换声完成：" + model, f"耗时 {meta['sec']} 秒，已保存到 output/")
     except Exception as e:
         with _RVC_LOCK:
             _RVC_JOBS[rid] = {**_RVC_JOBS.get(rid, job),
                               "status": "error", "error": str(e)[:500],
-                              "sec": round(time.time() - started, 1)}
+                              "sec": _elapsed()}
         _win_toast("✕ 换声失败：" + model, str(e)[:120])
+
+
+# --------------------------------------------------------------------------- #
+# 换声串行队列：一次只跑一个任务，后提交的排队等前一个算完
+#
+# 以前的写法是每来一个请求就 threading.Thread 起一个 worker，而唯一的互斥
+# _GPU_SEM 只包住"推理子进程"那十几分钟里的一小段——连点两次换声，两份
+# BS-Roformer 分离模型会同时进显存（这才是资源撑不住的根因），并且第二条
+# 明明在排队却显示"转换中"、画着进度条。
+#
+# 两把锁作用域不同，别混用：_RVC_QUEUE_LOCK 只护「入队 + 判活 + 起线程」这一小段，
+# _RVC_LOCK 护任务状态字典；任务体一律在队列锁外执行。
+_RVC_QUEUE_LOCK = threading.Lock()
+_RVC_QUEUE: list[tuple] = []          # 待跑任务的 _rvc_convert_worker 参数元组，先进先出
+_RVC_WORKER: threading.Thread | None = None
+_RVC_CURRENT: list[str | None] = [None]   # 队列线程此刻正在转换的那条 id（None = 没在算）
+
+
+def _rvc_positions_locked() -> dict[str, int]:
+    """rid -> 第几位。调用方须持有 _RVC_QUEUE_LOCK。
+
+    正在转换的那条算第 1 位：否则它后面那条会拿到"第 1 位"，而 GPU 其实还不在它手上。
+    排队中的条目要么还在队列里、要么已被线程取走当成 current，两种算法结果一致，
+    所以位次不随「出队」这一步的时间抖动。"""
+    base = 1 if _RVC_CURRENT[0] else 0
+    pos = {args[0]: base + i + 1 for i, args in enumerate(_RVC_QUEUE)}
+    if _RVC_CURRENT[0]:
+        pos[_RVC_CURRENT[0]] = 1
+    return pos
+
+
+def _rvc_queue_loop() -> None:
+    global _RVC_WORKER
+    while True:
+        with _RVC_QUEUE_LOCK:
+            if not _RVC_QUEUE:
+                # 清空指针必须在锁内、退出之前：否则新任务刚好看到"线程还活着"
+                # 而不起线程，这边一死就没人接手（丢唤醒）。
+                _RVC_WORKER = None
+                return
+            args = _RVC_QUEUE.pop(0)
+            _RVC_CURRENT[0] = args[0]
+        try:
+            _rvc_convert_worker(*args)
+        except Exception as e:
+            # worker 内部自带 try/except 落 error 状态；真跑到这里说明是队列层出的问题
+            # （参数元组不对、任务字典被删…）。静默吞掉等于抹掉队列的死因。
+            print(f"[rvc-queue] 任务 {args[0]} 异常退出，队列继续：{e}", flush=True)
+        finally:
+            with _RVC_QUEUE_LOCK:
+                _RVC_CURRENT[0] = None
+
+
+def _rvc_submit(args: tuple) -> int:
+    """排入队列，返回位次（第 1 位 = 正在转换或马上就是它）。"""
+    global _RVC_WORKER
+    with _RVC_QUEUE_LOCK:
+        _RVC_QUEUE.append(args)
+        pos = _rvc_positions_locked()[args[0]]
+        if _RVC_WORKER is None or not _RVC_WORKER.is_alive():
+            _RVC_WORKER = threading.Thread(target=_rvc_queue_loop, daemon=True)
+            _RVC_WORKER.start()
+    return pos
+
+
+def _rvc_cancel(rid: str) -> bool:
+    """把还没开跑的任务从队列摘掉；已在执行的返回 False——推理进程不可半途终止。"""
+    with _RVC_QUEUE_LOCK:
+        for i, args in enumerate(_RVC_QUEUE):
+            if args[0] == rid:
+                _RVC_QUEUE.pop(i)
+                return True
+    return False
+
+
+def _rvc_live(job: dict) -> dict:
+    """按当前队列实时回填位次：入队那一刻写下的位次，前面跑完一条就过期了。"""
+    if job.get("status") != "pending":
+        return job
+    with _RVC_QUEUE_LOCK:
+        pos = _rvc_positions_locked().get(job.get("id"), 0)
+    return {**job, "queue_pos": pos or 1}
+
+
+@router.post("/rvc/cancel/{rid}")
+def rvc_cancel(rid: str):
+    """取消一条排队中的换声任务（已开始转换的不能取消）。"""
+    rid = os.path.basename(rid)
+    with _RVC_LOCK:
+        job = _RVC_JOBS.get(rid)
+        status = job.get("status") if job else None
+    if job is None:
+        raise HTTPException(status_code=404, detail="任务不存在或已完成")
+    if status != "pending":
+        # 对已经算完的条目说"正在转换中不能取消"是另一句谎话——它早就结束了
+        if status in ("done", "error", "cancelled"):
+            raise HTTPException(status_code=409,
+                                detail=f"该任务已经结束（{status}），无需取消")
+        raise HTTPException(status_code=409,
+                            detail="该任务已在转换中，不能取消（取消只对排队中的任务有效）")
+    if not _rvc_cancel(rid):
+        raise HTTPException(status_code=409, detail="任务刚好已开始，未能取消")
+    with _RVC_LOCK:
+        _RVC_JOBS[rid] = {**_RVC_JOBS.get(rid, job), "status": "cancelled", "queue_pos": 0}
+        job = _RVC_JOBS[rid]
+    # 取消掉的任务永远轮不到执行，它那份上传（可达几十 MB）就成了没人认领的孤儿：
+    # 换声产物只在算完时才落盘，所以这里删掉工作目录不会碰到任何历史记录的文件。
+    # 评审 F2：不再手写 rmtree——_rvc_job_purge 的 basename/`.`/`..`/resolve 守卫
+    # 与 generate_delete 共用同一套已审校验（手写版对 ".." 是放行的，靠上游 404 侥幸兜住）。
+    _rvc_job_purge(rid)
+    return {"ok": True, "job": job}
 
 
 @router.post("/rvc/convert")
@@ -2885,15 +3744,26 @@ async def rvc_convert(
     protect: float = Form(0.33),
     rms_mix_rate: float = Form(1.0),
     separate_vocal: str = Form("auto"),
+    gate: str = Form("on"),
+    strip_harmony: str = Form("off"),
+    filter_radius: int = Form(3),
+    resample_sr: int = Form(0),
 ):
     """上传音频 + 选音色模型 → 后台转换 → 结果落盘 output/（与生成结果同处可回放）。
 
-    separate_vocal: auto=默认先人声分离（带伴奏歌曲必需）；off=直接换声（输入已是干声）。"""
+    separate_vocal: auto=默认先人声分离（带伴奏歌曲必需）；off=直接换声（输入已是干声）。
+    gate: on=换声后按原人声包络做静音门，消除前奏/间奏的底噪（模型会在没人声时自己哼音）。
+    strip_harmony: on=分离出的人声再过 HP5 只留主唱（副歌有叠唱时能减少高音电音，多约 1 分钟）。"""
     if not RVC_PY.is_file():
         raise HTTPException(status_code=500, detail="rvc python 环境缺失（py312/python.exe）")
     models = _rvc_models()
     if model not in models:
         raise HTTPException(status_code=400, detail=f"未知音色模型：{model}（可用：{models}）")
+    # 先验参数再收文件：几百 MB 传到一半才发现索引缺失，等于让人白等一次上传
+    pitch = _rvc_pitch(pitch)
+    f0_method, index_rate, protect, rms_mix_rate, filter_radius, resample_sr = \
+        _rvc_convert_params(model, f0_method, index_rate, protect, rms_mix_rate,
+                            filter_radius, resample_sr)
     ext = Path(file.filename or "in.wav").suffix.lower()
     if ext not in (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".wma"):
         ext = ".wav"
@@ -2910,23 +3780,31 @@ async def rvc_convert(
         src_duration = round(src.stat().st_size / 160_000, 1)
 
     job = {
-        "id": rid, "status": "running", "ts": datetime.now().isoformat(timespec="seconds"),
+        "id": rid, "status": "pending", "step": "排队中", "queue_pos": 0,
+        "ts": datetime.now().isoformat(timespec="seconds"),
         "task_name": str(task_name or "").strip()[:100],
         "model": model, "pitch": pitch, "f0_method": f0_method,
         "index_rate": index_rate, "protect": protect, "rms_mix_rate": rms_mix_rate,
+        "filter_radius": filter_radius, "resample_sr": resample_sr,
         "src_name": (file.filename or "")[:120],
         "src_size": src.stat().st_size, "src_duration": src_duration,
+        # 前端要靠这个字段区分两套耗时口径：含分离的整条比只换声慢一个量级
+        "separate_vocal": separate_vocal != "off",
+        "gate": gate != "off", "strip_harmony": strip_harmony == "on",
     }
     with _RVC_LOCK:
         _RVC_JOBS[rid] = job
-
-    threading.Thread(
-        target=_rvc_convert_worker,
-        args=(rid, job, src, in_dir, model, pitch, f0_method, index_rate, protect,
-              rms_mix_rate, separate_vocal != "off"),
-        daemon=True,
-    ).start()
-    return {"ok": True, "id": rid, "job": job}
+    pos = _rvc_submit((rid, job, src, in_dir, model, pitch, f0_method, index_rate,
+                       protect, rms_mix_rate, separate_vocal != "off", gate != "off",
+                       strip_harmony == "on", filter_radius, resample_sr))
+    # 位次在入队之后才知道；只补排队中的条目——万一已经轮到它开跑，
+    # 这里整字典覆盖会把 running 状态打回 pending（队列就假死了）。
+    with _RVC_LOCK:
+        cur = _RVC_JOBS.get(rid)
+        if cur is not None and cur.get("status") == "pending":
+            cur["queue_pos"] = pos
+            job = cur
+    return {"ok": True, "id": rid, "job": job, "position": pos}
 
 
 @router.get("/rvc/status/{rid}")
@@ -2936,15 +3814,19 @@ def rvc_status(rid: str):
         job = _RVC_JOBS.get(rid)
     if job is None:
         raise HTTPException(status_code=404, detail="任务不存在或服务已重启")
-    return job
+    return _rvc_live(job)
 
 
 @router.get("/rvc/active")
 def rvc_active():
-    """进行中的换声任务（页面刷新后恢复进度条用；服务重启则列表为空）。"""
+    """进行中的换声任务（含排队中的；页面刷新后恢复队列用，服务重启则列表为空）。
+
+    排在前面的先跑：正在转换的一条置顶，其余按提交时间升序，前端列表顺序即执行顺序。"""
     with _RVC_LOCK:
-        jobs = [j for j in _RVC_JOBS.values() if j.get("status") == "running"]
-    return {"items": sorted(jobs, key=lambda x: x.get("ts", ""), reverse=True)}
+        jobs = [_rvc_live(j) for j in _RVC_JOBS.values()
+                if j.get("status") in ("running", "pending")]
+    jobs.sort(key=lambda x: (x.get("status") != "running", x.get("ts", "")))
+    return {"items": jobs}
 
 
 @router.get("/rvc/audio/{rid}")
@@ -2977,15 +3859,196 @@ def rvc_audio(rid: str, part: str = ""):
 
 
 # --------------------------------------------------------------------------- #
-# 训练中试听：用 logs/<name>/ 最新的 G_* 检查点在 CPU 上做 20 秒迷你推理。
+# 训练中/训练后试听：用 logs/<name>/ 的 G_* 检查点在 CPU 上做迷你推理。
 # 设计约束：绝不碰 _GPU_SEM、绝不打断训练进程——训练继续占 GPU，试听走 CPU 慢一点
 # （约 20-40 秒）但零冲突；产物存 trains/<rid>/preview.wav，前端任务卡片直接播放。
 # --------------------------------------------------------------------------- #
 _RVC_PREVIEW_LOCK = threading.Lock()  # 同一时刻只跑一个试听（CPU 推理也吃核）
+# 成品导出后保留的检查点个数（一对 G/D 约 1.2GB）：
+# 全删 = 断掉"换个点再听一次"的路，全留 = 200 轮训练吃掉几十 GB。
+_RVC_KEEP_CKPTS = 2
+
+
+def _rvc_checkpoints(name: str) -> list[Path]:
+    """该训练现存可用的 G_* 检查点，按时间从新到旧。"""
+    logs = RVC_DIR / "logs" / name
+    if not logs.is_dir():
+        return []
+    return sorted(logs.glob("G_*.pth"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def _rvc_prune_checkpoints(name: str, keep: int = _RVC_KEEP_CKPTS) -> int:
+    """留下最近 keep 个检查点（及其配套 D_*，续跑要用），其余删掉，返回删除文件数。"""
+    keep_steps = {p.stem.split("_")[-1] for p in _rvc_checkpoints(name)[:keep]}
+    logs = RVC_DIR / "logs" / name
+    removed = 0
+    if logs.is_dir():
+        for p in logs.glob("[GD]_*.pth"):
+            if p.stem.split("_")[-1] in keep_steps:
+                continue
+            try:
+                p.unlink()
+                removed += 1
+            except OSError:
+                pass  # 训练进程可能还在写：删不掉就算了，下次再说
+    return removed
+
+
+def _rvc_loss_summary(name: str, window: int = 60) -> dict:
+    """从 logs/<name>/train.log 取损失曲线的首尾均值："训练完成"不等于"收敛了"。"""
+    p = RVC_DIR / "logs" / name / "train.log"
+    if not p.is_file():
+        return {}
+    try:
+        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return {}
+    rows: list[dict] = []
+    for ln in lines:
+        if "loss_disc=" not in ln:
+            continue
+        vals = {}
+        for k in ("loss_disc", "loss_gen", "loss_fm", "loss_mel", "loss_kl"):
+            m = re.search(rf"{k}=(\-?[\d.]+)", ln)
+            if m:
+                vals[k] = float(m.group(1))
+        if vals:
+            rows.append(vals)
+    if not rows:
+        return {}
+
+    def avg(part: list[dict]) -> dict:
+        keys = [k for k in ("loss_disc", "loss_gen", "loss_fm", "loss_mel", "loss_kl")
+                if any(k in r for r in part)]
+        return {k: round(sum(r.get(k, 0.0) for r in part if k in r)
+                         / max(1, sum(1 for r in part if k in r)), 3) for k in keys}
+
+    return {"points": len(rows),
+            "head": avg(rows[:window]),
+            "tail": avg(rows[-window:]),
+            "epochs_logged": sum(1 for ln in lines if "轮次：" in ln)}
+
+
+def _rvc_extract_small(ckpt: Path, stem: str, info: str,
+                       timeout: int = 600,
+                       fail_msg: str = "检查点转换失败：") -> tuple[Path, Path]:
+    """跑一次官方 extract_small_model，产物只落在专用临时工作目录里。
+
+    它写死相对 CWD 的 "assets/weights/<stem>.pth"（train/process_ckpt.py:216），
+    根本不认 weight_root 环境变量——以前每回试听中间检查点，G_xxx.pth 都会短暂
+    落进音色权重目录，被 _rvc_models() 列成一个可选音色（评审 v1.2.0 G3）。
+    想不让它落进去，唯一可靠的办法就是换一个 CWD 让它写。
+    返回 (产物文件, 临时工作目录)，调用方负责搬走产物并 rmtree 临时目录。"""
+    work = (RVC_DIR / "export_tmp" /
+            f"{stem}_{os.getpid()}_{int(time.time() * 1000)}")
+    (work / "assets" / "weights").mkdir(parents=True, exist_ok=True)
+    # 先留在 RVC_DIR 里 import（i18n 在导入期按 CWD 读 ./i18n/locale/*.json），
+    # 再把 CWD 切到临时目录调函数——torch.save 的 "assets/weights/%s.pth" 就落在这里
+    script = (
+        "import sys, os\n"
+        "sys.path.insert(0, sys.argv[3])\n"
+        "from train.process_ckpt import extract_small_model\n"
+        "os.chdir(sys.argv[5])\n"
+        "print(extract_small_model(sys.argv[1], sys.argv[2], '40k', 1,\n"
+        "                          sys.argv[4], 'v2'))\n"
+    )
+    proc = subprocess.run(
+        [str(RVC_PY), "-c", script, str(ckpt), stem,
+         str(RVC_DIR), info, str(work)],
+        capture_output=True, timeout=timeout, cwd=str(RVC_DIR),
+        env={**os.environ, "PYTHONPATH": str(RVC_DIR),
+             "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1",
+             "CUDA_VISIBLE_DEVICES": ""},
+        creationflags=_pymss_creationflags())
+    produced = work / "assets" / "weights" / f"{stem}.pth"
+    if proc.returncode != 0 or not produced.is_file():
+        # extract_small_model 吞异常时把 traceback 当返回值 print 出去（返回码仍是 0），
+        # 真实死因在 stdout，stderr 一起带上才找得到根因
+        tail = ((proc.stderr or b"") + b"\n" + (proc.stdout or b""))[-300:]
+        shutil.rmtree(work, ignore_errors=True)
+        raise HTTPException(status_code=500,
+                            detail=f"{fail_msg}{tail.decode('utf-8', 'replace')}")
+    return produced, work
+
+
+def _rvc_small_model(ckpt: Path, cache: Path) -> Path:
+    """训练检查点转成推理可用结构（缓存按检查点各自存一份）。
+
+    G_*.pth 里是 {"model", "optim_g", ...}，缺 weight/config 键，直接喂
+    infer/cli.py 必抛 ValueError——先过官方 extract_small_model。
+    缓存文件名带检查点标识：以前共用 preview_model.pth，按 mtime 判新旧，
+    先听新点再回头听旧点时会把旧点的结果悄悄换成新点的音频（标签骗人）。"""
+    if cache.is_file() and cache.stat().st_mtime >= ckpt.stat().st_mtime:
+        return cache
+    produced, work = _rvc_extract_small(ckpt, cache.stem, "preview extract")
+    try:
+        shutil.move(str(produced), str(cache))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    return cache
+
+
+def _rvc_preview_infer(model_path: Path, src: Path, out: Path,
+                       index: Path | None = None) -> None:
+    """CPU 迷你推理一段素材切片；失败抛 HTTPException，成功落盘 out。"""
+    cmd = [
+        str(RVC_PY), str(RVC_DIR / "infer" / "cli.py"),
+        "--model", str(model_path),
+        "--input", str(src), "--output", str(out),
+        "--pitch", "0", "--f0-method", "rmvpe",
+        "--index-rate", "0.75" if index else "0",
+        "--protect", "0.33", "--rms-mix-rate", "1.0", "--overwrite",
+    ]
+    if index:
+        cmd += ["--index", str(index)]
+    env = {**os.environ,
+           "PYTHONPATH": str(RVC_DIR),
+           "weight_root": str(RVC_MODELS_DIR),
+           "index_root": str(RVC_DIR / "logs"),
+           "rmvpe_root": str(RVC_DIR / "assets" / "rmvpe"),
+           "outside_index_root": str(RVC_DIR / "assets" / "indices"),
+           "OPENBLAS_NUM_THREADS": "1",
+           # 关键：试听强制走 CPU——训练正占着 GPU，绝不能与其抢显存
+           "CUDA_VISIBLE_DEVICES": "",
+           "RVC_CUDA_GRAPH": "0"}
+    try:
+        proc = subprocess.run(cmd, cwd=str(RVC_DIR), env=env, capture_output=True,
+                              timeout=600, creationflags=_pymss_creationflags())
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="试听生成超时（CPU 推理较慢），请稍后重试")
+    if proc.returncode != 0 or not out.is_file():
+        tail = (proc.stderr or proc.stdout or b"")[-300:].decode("utf-8", "replace")
+        raise HTTPException(status_code=500, detail="试听生成失败：" + tail)
+
+
+def _rvc_preview_source(rid: str, name: str = "") -> Path:
+    """挑一段试听用的素材。顺序有代价差别：
+
+    1) logs/<name>/0_gt_wavs —— 预处理切好的 3.7 秒切片，CPU 推理十几秒出结果；
+    2) dataset_clean —— 分离出来的人声，但是整首的长度；
+    3) dataset —— 用户上传的原始文件。本机一个任务的这里放的是整首 150 秒的歌，
+       实测一次试听跑了 143 秒；换个源同样一件事只要十几秒。"""
+    cands = ([RVC_DIR / "logs" / name / "0_gt_wavs"] if name else []) + [
+        RVC_TRAIN_DIR / rid / "dataset_clean", RVC_TRAIN_DIR / rid / "dataset"]
+    for d in cands:
+        if d.is_dir():
+            wavs = sorted(p for p in d.iterdir()
+                          if p.is_file() and p.suffix.lower() in _RVC_AUDIO_EXTS)
+            if wavs:
+                return wavs[0]
+    raise HTTPException(status_code=404, detail="找不到源素材切片，无法试听")
+
+
+def _rvc_ck_label(ckpt: Path) -> str:
+    return f"{ckpt.name}（step {ckpt.stem.split('_')[-1]}，非轮次）"
 
 
 @router.post("/rvc/train/preview/{rid}")
-def rvc_train_preview(rid: str):
+def rvc_train_preview(rid: str, payload: dict = Body(default={})):
+    """试听某个检查点：不传 ck 就听最新的那个（训练中的实时进度同样可用）。
+
+    返回 ckpts 列表，前端据此给出"换点再听"和"以这个点定稿"的按钮。"""
+    ck = str(payload.get("ck") or "")
     rid = os.path.basename(rid)
     job = _rvc_train_read(rid)
     if not job:
@@ -2995,86 +4058,44 @@ def rvc_train_preview(rid: str):
     # 训练运行中试听 = 最危险的内存撞车窗口（df77 OOM 教训），前置闸门自证余量
     _require_headroom_for_preview()
     name = job.get("name", "")
-    logs = RVC_DIR / "logs" / name
-    ckpts = sorted(logs.glob("G_*.pth"), key=lambda p: p.stat().st_mtime)
-    # 训练已出成品的，优先用成品（weights 下的 pth 才有完整推理结构）
+    ckpts = _rvc_checkpoints(name)          # 从新到旧
     final = _rvc_latest_export(name)
-    if final is not None and final.stat().st_mtime >= (ckpts[-1].stat().st_mtime if ckpts else 0):
+    # weights/<name>.pth 已经导出，结构直接可用不必再转换；但它只有在本轮训练
+    # 收尾后才该盖过检查点（同名音色的旧成品不能冒充这次训练的结果）
+    use_final = final is not None and (not ckpts
+                                       or final.stat().st_mtime >= ckpts[0].stat().st_mtime)
+    if ck:
+        # 点名要哪个点就必须是那个点——不能"你要 A，我给你最新的 B"还不说明
+        want = os.path.basename(ck)
+        pick = next((p for p in ckpts if p.name == want), None)
+        if pick is None:
+            raise HTTPException(status_code=404,
+                                detail=f"检查点 {want} 不存在（只保留最近 {_RVC_KEEP_CKPTS} 个，更早的已清理）")
+        model_path = _rvc_small_model(
+            pick, RVC_TRAIN_DIR / rid / f"preview_model_{pick.stem.split('_')[-1]}.pth")
+        tag = _rvc_ck_label(pick)
+    elif use_final:
         model_path, tag = final, "成品"
     elif ckpts:
-        model_path = ckpts[-1]
-        step = model_path.stem.split("_")[-1]
-        tag = f"检查点 #{step}（step，非轮次）"
-        # 关键：G_*.pth 是训练检查点（{"model",...}），缺 weight/config 键，直接喂
-        # infer/cli.py 必抛 ValueError——先过官方 extract_small_model 转成推理可用结构。
-        # 产物缓存到任务目录，同一检查点只转换一次；转换走 CPU，不碰训练的 GPU。
-        conv_out = RVC_TRAIN_DIR / rid / "preview_model.pth"
-        if not conv_out.is_file() or conv_out.stat().st_mtime < model_path.stat().st_mtime:
-            conv_script = (
-                "import sys\n"
-                "sys.path.insert(0, '.')\n"
-                "from train.process_ckpt import extract_small_model\n"
-                "extract_small_model(sys.argv[1], sys.argv[2], '40k', True,\n"
-                "                    'preview extract', 'v2')\n"
-            )
-            wroot = RVC_MODELS_DIR
-            conv = subprocess.run(
-                [str(RVC_PY), "-c", conv_script, str(model_path), conv_out.stem],
-                capture_output=True, timeout=600, cwd=str(RVC_DIR),
-                env={**os.environ, "weight_root": str(wroot),
-                     "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1",
-                     "CUDA_VISIBLE_DEVICES": ""},
-                creationflags=_pymss_creationflags())
-            produced = wroot / (conv_out.stem + ".pth")
-            if conv.returncode != 0 or not produced.is_file():
-                tail = (conv.stderr or b"")[-200:].decode("utf-8", "replace")
-                raise HTTPException(status_code=500, detail="检查点转换失败：" + tail)
-            shutil.move(str(produced), str(conv_out))
-        model_path, tag = conv_out, f"第 {step} step 检查点（已转换）"
+        pick = ckpts[0]
+        model_path = _rvc_small_model(
+            pick, RVC_TRAIN_DIR / rid / f"preview_model_{pick.stem.split('_')[-1]}.pth")
+        tag = _rvc_ck_label(pick)
     else:
-        raise HTTPException(status_code=404, detail="还没有可试听的检查点（训练尚未产出 G_* 文件），请稍后再试")
-    # 找一段素材切片做源音频（dataset_clean 优先，回退 dataset）
-    src_dir = RVC_TRAIN_DIR / rid / "dataset_clean"
-    if not src_dir.is_dir() or not any(src_dir.iterdir()):
-        src_dir = RVC_TRAIN_DIR / rid / "dataset"
-    wavs = sorted(p for p in src_dir.iterdir() if p.is_file()) if src_dir.is_dir() else []
-    if not wavs:
-        raise HTTPException(status_code=404, detail="找不到源素材切片，无法试听")
-    src = wavs[0]
+        raise HTTPException(status_code=404,
+                            detail="还没有可试听的检查点（训练尚未产出 G_* 文件），请稍后再试")
+    src = _rvc_preview_source(rid, name)
     out = RVC_TRAIN_DIR / rid / "preview.wav"
     if not _RVC_PREVIEW_LOCK.acquire(blocking=False):  # 原子抢锁，杜绝 TOCTOU
         raise HTTPException(status_code=409, detail="上一次试听还在生成中，请稍候")
     try:
-        cmd = [
-            str(RVC_PY), str(RVC_DIR / "infer" / "cli.py"),
-            "--model", str(model_path),
-            "--input", str(src), "--output", str(out),
-            "--pitch", "0", "--f0-method", "rmvpe",
-            "--index-rate", "0.75", "--protect", "0.33",
-            "--rms-mix-rate", "1.0", "--overwrite",
-        ]
-        env = {**os.environ,
-               "PYTHONPATH": str(RVC_DIR),
-               "weight_root": str(RVC_MODELS_DIR),
-               "index_root": str(RVC_DIR / "logs"),
-               "rmvpe_root": str(RVC_DIR / "assets" / "rmvpe"),
-               "outside_index_root": str(RVC_DIR / "assets" / "indices"),
-               "OPENBLAS_NUM_THREADS": "1",
-               # 关键：试听强制走 CPU——训练正占着 GPU，绝不能与其抢显存
-               "CUDA_VISIBLE_DEVICES": "",
-               "RVC_CUDA_GRAPH": "0"}
-        try:
-            proc = subprocess.run(cmd, cwd=str(RVC_DIR), env=env, capture_output=True,
-                                  timeout=600, creationflags=_pymss_creationflags())
-        except subprocess.TimeoutExpired:
-            raise HTTPException(status_code=504, detail="试听生成超时（CPU 推理较慢），请稍后重试")
-        if proc.returncode != 0 or not out.is_file():
-            tail = (proc.stderr or proc.stdout or b"")[-300:].decode("utf-8", "replace")
-            raise HTTPException(status_code=500, detail="试听生成失败：" + tail)
+        _rvc_preview_infer(model_path, src, out, _rvc_index_for(name + ".pth"))
     finally:
         _RVC_PREVIEW_LOCK.release()
     return {"ok": True, "url": f"/api/rvc/train/preview/{rid}/audio", "source": tag,
-            "model": model_path.name}
+            "model": model_path.name,
+            "ckpts": [p.name for p in ckpts],
+            "audio": src.name}
 
 
 @router.get("/rvc/train/preview/{rid}/audio")
@@ -3083,6 +4104,55 @@ def rvc_train_preview_audio(rid: str):
     if not p.is_file():
         raise HTTPException(status_code=404, detail="试听文件不存在，请先生成")
     return FileResponse(str(p), media_type="audio/wav", filename="preview.wav")
+
+
+@router.post("/rvc/train/promote/{rid}")
+def rvc_train_promote(rid: str, payload: dict = Body(default={})):
+    """"就定这个点"：把选中的检查点重新导出为成品，覆盖 weights/<name>.pth。
+
+    音色名不变 ⇒ 配套索引原样可用（索引由特征库生成，与用哪个检查点无关），
+    换点定稿后不需要重训、也不需要改任何检索文件。"""
+    ck = str(payload.get("ck") or "")
+    if not ck:
+        raise HTTPException(status_code=400,
+                            detail="必须指定要定稿的检查点 ck（例如 G_2333333.pth）")
+    rid = os.path.basename(rid)
+    job = _rvc_train_read(rid)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    name = job.get("name", "")
+    want = os.path.basename(ck or "")
+    pick = next((p for p in _rvc_checkpoints(name) if p.name == want), None)
+    if pick is None:
+        raise HTTPException(status_code=404,
+                            detail=f"检查点 {want or '(空)'} 不存在（只保留最近 {_RVC_KEEP_CKPTS} 个）")
+    step = want.split("_")[-1].split(".")[0]
+    target = RVC_MODELS_DIR / f"{name}.pth"
+    # 导出先进专用临时目录，真成品一个字节都不动（评审 v1.2.0 G2）：
+    # 以前直接往 weights/<name>.pth 写，半途被杀/磁盘满时只要 mtime 新过
+    # 检查点就"被判成功"，音色当场报废且没有回滚路径。
+    produced, work = _rvc_extract_small(pick, name, f"{step} (promoted)", 900,
+                                        fail_msg="定稿失败（成品未更新）：")
+    try:
+        old_sz = target.stat().st_size if target.is_file() else 0
+        new_sz = produced.stat().st_size
+        # 体积判据：成品正常约 50MB 量级，半截货（超时被杀/中途崩）远小于此；
+        # 小于 1MB 或不到原成品一半 → 拒收，原文件保持不动
+        if new_sz < 1_000_000 or new_sz * 2 < old_sz:
+            raise HTTPException(
+                status_code=500,
+                detail=f"定稿失败（导出的成品体积不可信：{new_sz} B，"
+                       f"原成品 {old_sz} B），原音色文件未改动")
+        if target.is_file():
+            os.replace(str(target), str(target) + ".bak")  # 上一版留一份可回滚
+        os.replace(str(produced), str(target))             # 同卷原子替换
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    job["promoted_ckpt"] = want
+    job["model"] = target.name
+    _rvc_train_write(rid, job)
+    return {"ok": True, "model": target.name, "ckpt": want,
+            "message": f"已用 {want} 定稿，音色 {name} 现在就是这一个点"}
 
 
 # --------------------------------------------------------------------------- #
@@ -3189,9 +4259,17 @@ def _rvc_run_step(cmd: list[str], job: dict, step: str) -> None:
            "OPENBLAS_NUM_THREADS": "1",
            # 同上：CUDA Graph 与常驻 audiocpp 引擎冲突会死锁，训练进程一并关闭
            "RVC_CUDA_GRAPH": "0"}
-    # 超时按训练规模动态计算：每轮约 2.5-4 分钟（素材量相关），留 1 小时启动/落盘余量。
-    # 固定 6 小时曾把大素材长训练（1358 切片 × 200 轮 ≈ 8 小时）在健康跑到一半时误杀。
-    est_sec = int(job.get("epochs") or 200) * 240 + 3600
+    # 超时要按训练规模算：固定 6 小时曾把大素材长训练（1358 切片 × 200 轮 ≈ 8 小时）
+    # 在健康跑到一半时误杀。每轮多长这件事只用本机实测过的数字说话——
+    # _rvc_train_pace() 从已成功任务里取"每切片每轮秒数"，没有实测记录才回落 240 秒/轮
+    # （同一份素材，CPU 与 GPU 差一个量级，所以首次训练偏保守是故意的：宁多等不误杀）。
+    epochs = int(job.get("epochs") or 200)
+    if step == "训练中":
+        rate, job["epoch_est_note"] = _rvc_epoch_rate(job)
+        job["epoch_est_sec"] = round(rate, 1)
+        est_sec = int(epochs * rate) + 3600  # +1 小时：加载底模、断点续训、落盘余量
+    else:
+        est_sec = epochs * 240 + 3600
     with RVC_TRAIN_LOCK:
         _RVC_TRAIN_PROC = subprocess.Popen(
             [cmd[0], "-P", *cmd[1:]], cwd=str(RVC_DIR), env=env,
@@ -3209,6 +4287,7 @@ def _rvc_run_step(cmd: list[str], job: dict, step: str) -> None:
             except Exception:
                 pass
     try:
+        _t0 = time.perf_counter()
         proc_out, proc_err = _proc.communicate(timeout=est_sec)
     except subprocess.TimeoutExpired:
         _proc.kill()
@@ -3217,8 +4296,14 @@ def _rvc_run_step(cmd: list[str], job: dict, step: str) -> None:
     finally:
         with RVC_TRAIN_LOCK:
             _RVC_TRAIN_PROC = None
+    step_sec = round(time.perf_counter() - _t0, 1)
     tail = ((proc_err or b"") + (proc_out or b""))[-600:].decode("utf-8", "replace")
     job["log_tail"] = tail[-400:]
+    # 每一步的实测耗时都记进任务：训练要跑多久这件事必须有出处（本机跑过的数字），
+    # 而不是拍一个"每轮约 4 分钟"的公式——同一份素材，CPU 与 GPU 差一个量级。
+    job["step_secs"] = {**(job.get("step_secs") or {}), step: step_sec}
+    if step == "训练中":
+        job["train_sec"] = step_sec
     _rvc_train_write(job["id"], job)
     if _RVC_TRAIN_PAUSE_REQ or _pause_pending:
         # 用户主动暂停：子进程被 terminate 退出，属预期，抛专用信号让 worker 走 paused 收尾
@@ -3236,8 +4321,176 @@ def _rvc_latest_export(name: str) -> Path | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# A1 素材净化（评审 P0）：分离伴奏之后、切片之前，补上社区标准三步里的
+# 后两步——去混响 → 轻降噪。用的是 RVC23 自带的 PyMSS 框架原生支持的
+# 净化模型（tools/pymss/resources/model_catalog.json 里 supported:true），
+# 不引任何新 Python 库，只需要把权重下到与分离模型同一个缓存目录。
+# 档位口径来自评审 A1："降噪务必保守，过度降噪比轻微底噪更糟"——
+# 轻档全是小体积 VR 架构模型（59MB+18MB），中档才上 roformer（204MB+127MB）。
+_RVC_CLEAN_TIERS = {
+    "light": ("UVR-DeReverb-aufr33-jarredou_4band_v4_ms_fullband", "UVR-DeNoise-Lite"),
+    "medium": ("dereverb_bs_roformer_anvuew_sdr_22.5050", "UVR-DeNoise"),
+}
+_RVC_CLEAN_CN = {"light": "轻", "medium": "中"}
+# 每家的"干净人声"输出声部叫法不一，全部实名取自权重配套 yaml（本机实测核对）：
+#   UVR-DeReverb 4band VR → instruments ['Dry','Reverb']
+#   dereverb_bs_roformer  → ['noreverb','reverb']
+#   UVR-DeNoise(-Lite)    → ['Noise','No Noise']
+# 注意不能用子串匹配区分——"No Noise" 包含 "Noise"、"noreverb" 包含 "reverb"，
+# 必须拿归一化后的**完整声部名**比对精确名单。
+_RVC_CLEAN_KEEP_NAMES = {"dry", "noreverb", "nonoise", "vocals", "vocal", "clean"}
+_RVC_CLEAN_DROP_NAMES = {"reverb", "noise", "wet", "other", "echo", "novocals",
+                         "instrumental", "instrument", "accompaniment", "backing"}
+
+
+def _rvc_clean_norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def _rvc_clean_select(stage_out: Path, stem: str) -> Path | None:
+    """在一阶段产物里挑出该输入对应的"干净人声"文件；挑不出返回 None（回退用原文件）。"""
+    raw = [p.name[len(stem) + 1:] for p in stage_out.glob(f"{stem}_*")
+           if p.suffix.lower() == ".wav"]
+    # 声部名里没有下划线（Dry / No Noise / noreverb）——"0_Dry.wav" 这种带下划线的
+    # 是别的输入（stem="0"）名下的文件被前缀撞名，不能认作本 stem 的声部
+    raw = [r for r in raw if "_" not in r]
+    cands = [p for p in stage_out.glob(f"{stem}_*")
+             if p.suffix.lower() == ".wav" and p.name[len(stem) + 1:] in raw]
+    if not cands:
+        return None
+    if len(cands) == 1:
+        return cands[0]                      # 单声部模型：唯一输出就是它
+    exact = [p for p in cands
+             if _rvc_clean_norm(p.name[len(stem) + 1:].rsplit(".", 1)[0])
+             in _RVC_CLEAN_KEEP_NAMES]
+    if exact:
+        return exact[0]
+    rest = [p for p in cands
+            if _rvc_clean_norm(p.name[len(stem) + 1:].rsplit(".", 1)[0])
+            not in _RVC_CLEAN_DROP_NAMES]
+    return rest[0] if len(rest) == 1 else None
+
+
+def _rvc_pymss_stage(model: str, in_dir: Path, out_dir: Path, dev: str) -> str:
+    """对一个目录跑一次 PyMSS 推理（权重只加载一次）。返回 ""=成功，否则为错误摘要。
+
+    `infer -i` 原生支持传目录；整批失败不直接判死——调用方还可以逐文件重试，
+    一个坏文件不该拖垮整批素材。--download：换机器/清过缓存时自动补权重
+    （和分离模型同一个解析链：PYMSS_MODEL_DIR → tools/all_models → ~/.cache/pymss/models）。"""
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def _one(src: Path) -> str:
+        try:
+            r = subprocess.run(
+                # 注意包名：必须是 `-m pymss.cli` 而不是分离链在用的 `-m tools.pymss.cli`。
+                # VR 架构模型（降噪/去混响）走 tools/pymss/modules 的别名层，那里写死了
+                # 只接受 "pymss.modules." 前缀（_core_shims.py:8-10）——用 tools.pymss 调用
+                # 会报 invalid local module alias 直接崩（真机实测）。bs_roformer 分离链
+                # 不经过这层，所以老调用一直没暴露这个坑。
+                [str(RVC_PY), "-m", "pymss.cli", "infer", model,
+                 "-i", str(src), "-o", str(out_dir), "--device", dev, "--download"],
+                capture_output=True, timeout=7200,
+                creationflags=_pymss_creationflags(),
+                cwd=str(RVC_DIR), env=_pymss_env())
+        except Exception as e:
+            return str(e)[:160]
+        if r.returncode != 0:
+            return ((r.stderr or b"") + b"\n" + (r.stdout or b""))[-300:] \
+                .decode("utf-8", "replace")
+        return ""
+
+    err = _one(in_dir)
+    # 评审 J3（真机撞过）：给 -i 传不存在的目录，PyMSS 退 0、零产出。调用方按产物
+    # 文件判成败兜得住，但"退 0 即成功"这个窗口一旦哪天换机器/升级后行为变了，
+    # 就是"净化静默跳过、拿未净化素材继续练"。这里先把它暴露成显式错误。
+    if not err and not any(out_dir.iterdir()):
+        return "PyMSS 退出码 0 但没有任何产物（输入未命中或模型未生效）"
+    return err
+
+
+def _rvc_clean_dataset(train_dir: Path, out_dir: Path, tier: str,
+                       job: dict, resume: bool = False) -> dict:
+    """素材净化：去混响 → 轻降噪（评审 A1，顺序与档位口径同社区共识）。
+
+    留档原则：输入目录（原始上传或分离产物）一律不动，净化结果只写 out_dir——
+    前后两份自然并存，用户随时能 A/B；净化一旦过头不丢原始素材。
+    单文件没有产物 → 带着该文件的净化前版本进入下一步（计入 carried），
+    两阶段都全批拿不到任何产物 → 抛错，绝不默默把未净化的素材当"已净化"继续练。"""
+    rid = job["id"]
+    de_model, dn_model = _RVC_CLEAN_TIERS[tier]
+    files = sorted(p for p in train_dir.iterdir()
+                   if p.is_file() and p.suffix.lower() in _RVC_AUDIO_EXTS)
+    if not files:
+        raise RuntimeError(f"净化输入目录没有可识别的音频：{train_dir}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if resume and all((out_dir / f"{p.stem}.wav").is_file() for p in files):
+        return {"tier": tier, "label": _RVC_CLEAN_CN[tier],
+                "dereverb": de_model, "denoise": dn_model,
+                "files": len(files), "fully_cleaned": len(files),
+                "carried": 0, "sec": 0.0, "skipped": True,
+                "before": str(train_dir), "after": str(out_dir)}
+    dev = backend_mode()
+    cn = _RVC_CLEAN_CN[tier]
+    tmp = out_dir.parent / "_clean_tmp"
+    shutil.rmtree(tmp, ignore_errors=True)
+    t0 = time.perf_counter()
+    cur = {p.stem: p for p in files}          # 每个样本进入下一阶段时用的是哪个文件
+    carry = 0
+    err_note = ""
+    for model, label, cn_label in ((de_model, "dereverb", "去混响"),
+                                   (dn_model, "denoise", "降噪")):
+        in_dir = train_dir if label == "dereverb" else (tmp / f"{label}_in")
+        if label != "dereverb":
+            in_dir.mkdir(parents=True, exist_ok=True)
+            for src in cur.values():
+                shutil.copy2(str(src), str(in_dir / src.name))
+        stage_out = tmp / f"{label}_out"
+        job["step"] = f"素材净化（{cn} · {cn_label}，{len(cur)} 个文件）"
+        _rvc_train_write(rid, job)
+        err = _rvc_pymss_stage(model, in_dir, stage_out, dev)
+        if err:
+            err_note = (err_note + f"；{cn_label}整批失败后逐文件重试：")[:200]
+            for src in list(cur.values()):
+                if any(stage_out.glob(f"{src.stem}_*")):
+                    continue
+                err_note += f"{cn_label}:{src.name[:40]} " + \
+                    (_rvc_pymss_stage(model, src, stage_out, dev) or "ok")[:60]
+        nxt = tmp / f"{label}_v"
+        nxt.mkdir(parents=True, exist_ok=True)
+        new_cur = {}
+        for stem, src in cur.items():
+            pick = _rvc_clean_select(stage_out, stem)
+            if pick is None:
+                new_cur[stem] = src           # 回退：带着净化前的版本进下一步
+                carry += 1
+            else:
+                dst = nxt / f"{stem}.wav"
+                shutil.move(str(pick), str(dst))
+                new_cur[stem] = dst
+        cur = new_cur
+    real = sum(1 for src in cur.values() if src.parent.name.endswith("_v"))
+    if real == 0:
+        # 一桶没净化成：什么都不往 out_dir 落。若把回退副本先搬过去，续跑的
+        # "产物已齐就跳过"会把这堆未净化副本当成已净化放行——留档目录必须只装真净化过的。
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise RuntimeError("素材净化全部失败（PyMSS 净化模型缺失或推理报错，"
+                           f"权重需落在 {_pymss_model_dir()}）{('：' + err_note[:160]) if err_note else ''}；"
+                           "素材本来就是干净干声的话，取消净化后重新提交")
+    for stem, src in cur.items():
+        cleaned = src.parent.name.endswith("_v")
+        dst = out_dir / (f"{stem}.wav" if cleaned else src.name)
+        shutil.move(str(src), str(dst))
+    shutil.rmtree(tmp, ignore_errors=True)
+    return {"tier": tier, "label": cn, "dereverb": de_model, "denoise": dn_model,
+            "files": len(files), "fully_cleaned": real, "carried": carry,
+            "sec": round(time.perf_counter() - t0, 1),
+            "before": str(train_dir), "after": str(out_dir)}
+
+
 def _rvc_train_worker(rid: str, name: str, epochs: int,
-                      separate_vocal: bool = False, resume: bool = False) -> None:
+                      separate_vocal: bool = False, resume: bool = False,
+                      clean_tier: str = "off") -> None:
     job = _rvc_train_read(rid)
     started = time.time()
     exp_logs = RVC_DIR / "logs" / name
@@ -3286,15 +4539,36 @@ def _rvc_train_worker(rid: str, name: str, epochs: int,
             train_dir = clean
             job["samples_separated"] = ok_cnt
             _rvc_train_write(rid, job)
+        # 0.5) 可选：素材净化（评审 A1，社区标准三步的后两步：去混响→轻降噪）。
+        #      原始目录/分离产物原样留档，净化结果落 dataset_purified——前后两份并存，
+        #      净化过头随时能 A/B 听回来，这一步不再是单行道。
+        if clean_tier in _RVC_CLEAN_TIERS:
+            cleaned = RVC_TRAIN_DIR / rid / "dataset_purified"
+            info = _rvc_clean_dataset(train_dir, cleaned, clean_tier, job, resume)
+            train_dir = cleaned
+            job["clean"] = info
+            job["step"] = "素材净化完成"
+            _rvc_train_write(rid, job)
         # 1) 预处理切片（40k、3.7s/片）
-        _rvc_run_step([str(RVC_PY), str(RVC_TRAIN_DIR.parent / "train" / "preprocess.py"),
+        #    脚本位置跟着 RVC_DIR 走，不从 RVC_TRAIN_DIR 反推父目录：后者是任务落盘目录，
+        #    一旦被改写（测试沙箱、以后挪盘），这里就会静默指向一个不存在的 train/
+        _rvc_run_step([str(RVC_PY), str(RVC_DIR / "train" / "preprocess.py"),
                        str(train_dir), "40000", str(n_p), str(exp_logs), "False", "3.7"], job, "预处理切片")
         # 2) F0 提取（rmvpe）3) Hubert 特征（v2 → 768 维）
         # 设备跟随引擎当前模式：以前硬写 "cuda"，无独显机器上这两步会直接抛
         # torch 设备错误（README 声称"无独显也能跑"，CPU 只是慢不是不能跑）
         sep_dev = backend_mode()
+        # extract_f0.py 读参数是按 mode 分支的（train/dataset/extract_f0.py:20-44）：
+        # cuda 收 n_part i_part i_gpu exp_dir is_half，cpu 收 exp_dir n_p f0method。
+        # 以前不管什么设备都按 cuda 那一串传，切到 CPU 的机器上 exp_dir 被读成 "1"，
+        # F0 对着一个不存在的目录"跑成功"，最后 filelist 空 → 报"没有可用样本"，
+        # 用户完全看不出是传参错了。
+        if sep_dev == "cuda":
+            f0_argv = [sep_dev, "1", "0", "0", str(exp_logs), "False"]
+        else:
+            f0_argv = [sep_dev, str(exp_logs), str(n_p), "rmvpe"]
         _rvc_run_step([str(RVC_PY), str(RVC_DIR / "train" / "dataset" / "extract_f0.py"),
-                       sep_dev, "1", "0", "0", str(exp_logs), "False"], job, "F0 提取")
+                       *f0_argv], job, "F0 提取")
         _rvc_run_step([str(RVC_PY), str(RVC_DIR / "train" / "dataset" / "extract_hubert_feature.py"),
                        sep_dev, "1", "0", str(exp_logs), "v2", "False"], job, "音色特征提取")
         # 3.5) 生成 filelist.txt + config.json（webui 在启动训练前做同样的事）
@@ -3340,8 +4614,14 @@ def _rvc_train_worker(rid: str, name: str, epochs: int,
         _rvc_train_write(rid, job)
         # 4) 训练（40k v2 f0，从 pretrained_v2 底模热启；-sw 0 不中途导出，
         #    训练完只导出最终成品一个 pth 进音色库，避免中间权重污染音色列表）
+        #    batch_size 按显存自适应：写死 4 时 6GB 卡常年顶满（别人占一点就 OOM），
+        #    16GB 机器只用四分之一、白等几倍时间
+        bs, bs_note = _rvc_train_batch_size()
+        job["batch_size"] = bs
+        job["batch_note"] = bs_note
+        _rvc_train_write(rid, job)
         _rvc_run_step([str(RVC_PY), str(RVC_DIR / "train" / "train.py"),
-                       "-e", name, "-sr", "40k", "-f0", "1", "-bs", "4",
+                       "-e", name, "-sr", "40k", "-f0", "1", "-bs", str(bs),
                        "-te", str(epochs), "-se", str(max(5, epochs // 4)),
                        "-pg", "assets/pretrained_v2/f0G40k.pth", "-pd", "assets/pretrained_v2/f0D40k.pth",
                        "-l", "1", "-c", "0", "-sw", "0", "-v", "v2"], job, "训练中")
@@ -3367,26 +4647,50 @@ def _rvc_train_worker(rid: str, name: str, epochs: int,
         exported = RVC_MODELS_DIR / f"{name}.pth"
         if not exported.is_file():
             raise RuntimeError("成品导出失败（weights 下未生成 %s.pth）" % name)
-        # 6) 清理训练检查点（G_*/D_* 每个 400-800MB，成品已导出即无用），保留索引与日志
-        for ck in exp_logs.glob("G_*.pth"):
-            ck.unlink(missing_ok=True)
-        for ck in exp_logs.glob("D_*.pth"):
-            ck.unlink(missing_ok=True)
+        # 6) 检查点收尾：保留最近 _RVC_KEEP_CKPTS 对（试听/换点定稿/续跑都要用），
+        #    其余删掉；索引与日志一律保留
+        removed = _rvc_prune_checkpoints(name)
         idx_files = list((RVC_DIR / "logs" / name).glob("added_*.index"))
+        # 自检这一步仍在干活，所以状态还是 running（提前报 done 就是撒谎）
+        # 音域档案（评审 C4）：训练素材的 f0 全集此时已齐，顺手算出这个音色的
+        # 舒适音域并落 sidecar——换声页的变调建议靠它，没这一步就得让用户当场扫 npy。
+        try:
+            job["f0_range"] = _rvc_f0_stats(name, refresh=True)
+        except Exception:
+            job["f0_range"] = None
         job.update(
-            status="done", step="完成",
+            status="running", step="自动自检",
             model=exported.name,
             index=idx_files[0].name if idx_files else "",
+            kept_ckpts=[p.name for p in _rvc_checkpoints(name)],
+            ckpts_pruned=removed,
+            loss=_rvc_loss_summary(name),
             sec=round(time.time() - started, 1),
         )
         _rvc_train_write(rid, job)
+        # 7) 自动自检：训练成功后立刻用自己的一段素材做一次 CPU 迷你推理，
+        #    产出 preview.wav——"练完了"不等于"能用了"，先听到再决定去不去换声。
+        #    失败绝不把已完成的任务改判失败（成品已经在库里），只在任务上留痕。
+        try:
+            src = _rvc_preview_source(rid, name)
+            out = RVC_TRAIN_DIR / rid / "preview.wav"
+            _rvc_preview_infer(exported, src, out, idx_files[0] if idx_files else None)
+            job["preview_url"] = f"/api/rvc/train/preview/{rid}/audio"
+            job["self_check"] = {"ok": True, "source": src.name,
+                                 "indexed": bool(idx_files)}
+        except Exception as pe:
+            job["self_check"] = {"ok": False, "error": str(pe)[:200]}
+        job.update(status="done", step="完成", sec=round(time.time() - started, 1))
+        _rvc_train_write(rid, job)
         # 落盘到 output/：历史页可查看（kind=train，无音频，点击可"去使用"）
+        _cl = job.get("clean") or {}
         _output_write_meta({
             "id": rid, "ts": job.get("ts"), "status": "done", "kind": "train",
             "voice_name": name, "model": exported.name, "index": job.get("index", ""),
             "epochs": epochs, "samples_used": job.get("samples_used"),
             "sec": job.get("sec"), "bytes": 0,
-            "style": f"音色制作 · {name}", "lyrics": f"训练 {epochs} 轮 · {job.get('samples_used', '?')} 个样本",
+            "style": f"音色制作 · {name}" + (f" · 已净化（{_cl.get('label')}档）" if _cl else ""),
+            "lyrics": f"训练 {epochs} 轮 · {job.get('samples_used', '?')} 个样本",
             "cot": "train", "abc": "", "params": {},
         })
         _win_toast("🎵 音色制作完成：" + name, f"模型 {exported.name} 已可使用，耗时 {round((time.time()-started)/60)} 分钟")
@@ -3416,22 +4720,266 @@ def _rvc_train_worker(rid: str, name: str, epochs: int,
             RVC_TRAIN_JOBS[rid] = job
 
 
+_RVC_AUDIO_EXTS = (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".wma")
+_RVC_SCAN_MAX_SEC = 600     # 单文件只分析前 10 分钟：更长的按抽样说话，别把网关内存吃爆
+_RVC_SILENCE_DB = -45.0     # 帧 RMS 低于此视为静音（干声口径）
+
+
+def _rvc_suggest_epochs(total_sec: float) -> tuple[int, str]:
+    """三档轮数（官方口径：至少 10 分钟低噪干声；素材差才靠加轮数硬救）。
+
+    档位是给页面用的，不是给模型用的：1200 轮在 6GB 卡上是一整天，
+    用户真正需要知道的是"这批素材值不值得练到 200"。"""
+    if total_sec < 60:
+        return 30, "素材不足 1 分钟：只够试听档（30 轮）看看像不像，别指望音色稳"
+    if total_sec < 480:
+        return 100, f"{total_sec / 60:.1f} 分钟素材：100 轮起步，听完不满意再加到 200"
+    if total_sec < 1800:
+        return 200, f"{total_sec / 60:.1f} 分钟素材：200 轮（官方推荐的常规档）"
+    return 100, f"{total_sec / 60:.1f} 分钟素材很足：100 轮通常就到顶了，多练只是耗时"
+
+
+def _rvc_train_pace() -> dict | None:
+    """本机实测的训练速度：只采信真正跑完整条训练的任务记录。
+
+    为什么不给公式：同一份素材在 CPU 与 GPU 上差一个量级，写死的"每轮约 N 分钟"
+    在这个仓库里已经错过一次（6 小时超时把健康跑到一半的 200 轮训练误杀）。
+    没有实测记录就如实说没有，等第一次成功训练落盘后这里自动有数。"""
+    best: dict | None = None
+    for jp in sorted(RVC_TRAIN_DIR.glob("*/job.json"),
+                     key=lambda p: p.stat().st_mtime):
+        try:
+            j = json.loads(jp.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        sec, ep, used = j.get("train_sec"), j.get("epochs"), j.get("samples_used")
+        if j.get("status") != "done" or not sec or not ep or not used:
+            continue
+        best = {"source": j.get("id"), "epochs": ep, "samples_used": used,
+                "epoch_sec": round(float(sec) / int(ep), 1),
+                "sec_per_slice_epoch": round(float(sec) / int(ep) / int(used), 4),
+                "backend_at_measure": j.get("backend")}
+    return best
+
+
+def _rvc_epoch_rate(job: dict) -> tuple[float, str]:
+    """这一批素材跑一轮要多少秒：只有本机实测数字，没有实测时如实说保守值。"""
+    pace = _rvc_train_pace()
+    used = int(job.get("samples_used") or 0)
+    if pace and used > 0:
+        return max(5.0, float(pace["sec_per_slice_epoch"]) * used), "实测（样本任务 %s）" % pace["source"]
+    return 240.0, "本机还没有跑完整过的训练，按 240 秒/轮保守估计"
+
+
+def _rvc_train_batch_size() -> tuple[int, str]:
+    """训练 batch_size 按整卡显存取（官方 WebUI 同一口径：webui.py:180 batch_size = VRAM_GB // 2）。
+
+    以前写死 4：6GB 卡上勉强跑得动但显存常年顶满（一旦别占一点就 OOM），
+    16GB 的机器却只用到四分之一、白等三倍时间。查不到显存才回落到 4。"""
+    if backend_mode() != "cuda":
+        return 4, "CPU（按内存安全值）"
+    total = _gpu_total_mb()
+    if not total:
+        return 4, "显存未知，回落 4"
+    gb = max(1, int(round(total / 1024)))
+    bs = max(1, min(8, gb // 2))
+    return bs, f"{gb}GB 显存 → batch {bs}"
+
+
+def _rvc_dataset_scan(ds: Path) -> dict:
+    """训练数据集体检：时长/条数/采样率/声道/响度/爆音/静音占比 + 建议轮数与耗时预估。
+
+    官方语料口径（README、faq、docs/training_tips）是"至少 10 分钟低噪干声、
+    按 >5 秒静音切开"，以前这两条只写在页面提示里，没人替用户量——
+    于是 40 分钟带伴奏的现场录音也一样开跑，两小时后拿到一个发虚的音色。"""
+    import numpy as np
+    import soundfile as sf
+    files = sorted(p for p in ds.iterdir()
+                   if p.is_file() and p.suffix.lower() in _RVC_AUDIO_EXTS) \
+        if ds.is_dir() else []
+    rep = {"files": len(files), "unreadable": [], "total_sec": 0.0,
+           "sample_rates": [], "channels": [], "peak_dbfs": None,
+           "voiced_dbfs": None, "silence_ratio": None, "clipped_ratio": 0.0,
+           "noise_floor_dbfs": None,
+           "longest_silence_sec": 0.0, "silence_runs_over_5s": 0,
+           "sampled": False, "warnings": [], "est_slices": None}
+    if not files:
+        rep["warnings"].append("目录里没有可识别的音频文件（支持 wav/flac/mp3/m4a/ogg/opus/aac/wma）")
+        rep["suggest_epochs"] = 30
+        rep["advice"] = "素材读不出来，先修格式再练"
+        return rep
+    srs: set[int] = set()
+    chs: set[int] = set()
+    peaks: list[float] = []
+    voiced: list[float] = []
+    sil_frames = tot_frames = 0
+    clip_samples = tot_samples = 0
+    quiet_pool: list[float] = []       # 每个文件最安静 10% 帧的中位 dBFS ≈ 底噪水平。
+    # 不拿 -45 静音门当唯一入口：噪声大到没有帧低于 -45 时，恰恰是最该提示净化的素材
+    # 反而"测不出底噪"——分位数口径下这一类会如实报出高底噪。
+    unreadable: list[str] = []
+    total_sec = 0.0
+    for p in files:
+        try:
+            info = sf.info(str(p))
+            sr = int(info.samplerate)
+            frames = int(info.frames)
+            take = min(frames, max(1, int(sr * _RVC_SCAN_MAX_SEC)))
+            x, sr = sf.read(str(p), frames=take, always_2d=True, dtype="float32")
+        except Exception:
+            unreadable.append(p.name[:60])
+            continue
+        if take < frames:
+            rep["sampled"] = True
+        total_sec += frames / max(sr, 1)
+        srs.add(sr)
+        chs.add(int(x.shape[1]))
+        peaks.append(float(np.max(np.abs(x))) if x.size else 0.0)
+        clip_samples += int((np.abs(x) >= 0.999).sum())
+        tot_samples += int(x.size)
+        m = x.mean(axis=1)
+        blk = max(1, sr // 2)                 # 半秒一帧，与 RVC 换声侧的 rms 口径一致
+        nb = len(m) // blk
+        if not nb:
+            continue
+        rms = np.sqrt((m[:nb * blk].reshape(nb, blk) ** 2).mean(axis=1) + 1e-12)
+        db = 20 * np.log10(rms)
+        sil = db < _RVC_SILENCE_DB
+        sil_frames += int(sil.sum())
+        tot_frames += nb
+        if (~sil).sum():
+            voiced.append(float(np.median(db[~sil])))
+        if nb:
+            quiet_pool.append(float(np.percentile(db, 10)))
+        pad = np.concatenate(([False], sil, [False]))
+        edge = np.diff(pad.astype(np.int8))
+        lens = (np.flatnonzero(edge == -1) - np.flatnonzero(edge == 1)) * blk / sr
+        if len(lens):
+            rep["longest_silence_sec"] = max(rep["longest_silence_sec"], float(lens.max()))
+            rep["silence_runs_over_5s"] += int((lens > 5).sum())
+    rep["unreadable"] = unreadable[:20]
+    rep["total_sec"] = round(total_sec, 1)
+    rep["sample_rates"] = sorted(srs)
+    rep["channels"] = sorted(chs)
+    rep["peak_dbfs"] = round(20 * np.log10(max(max(peaks), 1e-9)), 1) if peaks else None
+    rep["voiced_dbfs"] = round(float(np.median(voiced)), 1) if voiced else None
+    rep["noise_floor_dbfs"] = round(float(np.median(quiet_pool)), 1) if quiet_pool else None
+    rep["silence_ratio"] = round(sil_frames / tot_frames, 3) if tot_frames else None
+    rep["clipped_ratio"] = round(clip_samples / tot_samples, 5) if tot_samples else 0.0
+    rep["est_slices"] = max(1, round(total_sec / 3.7))   # 预处理切片 per=3.7s
+    w = rep["warnings"]
+    if unreadable:
+        w.append(f"{len(unreadable)} 个文件读不出来（{('、'.join(unreadable[:3]))}），训练不会用到它们")
+    if total_sec < 180:
+        w.append(f"总时长只有 {total_sec / 60:.1f} 分钟：官方口径 10 分钟起，素材太少音色必然发虚")
+    if rep["silence_ratio"] is not None and rep["silence_ratio"] > 0.35:
+        w.append(f"静音占 {rep['silence_ratio'] * 100:.0f}%：留白太多会把模型喂成'爱哼空拍'，"
+                 "按 >5 秒的静音切开、去掉纯前奏尾奏")
+    if rep["silence_runs_over_5s"]:
+        w.append(f"有 {rep['silence_runs_over_5s']} 处长于 5 秒的静音段（官方训练提示要求切开）")
+    if rep["clipped_ratio"] > 0.0005:
+        w.append(f"爆音采样占 {rep['clipped_ratio'] * 100:.2f}%：录音削波了，重新导出、把音量留出余量")
+    if rep["peak_dbfs"] is not None and rep["peak_dbfs"] > -0.3:
+        w.append("峰值顶到 0 dBFS：没余量了，容易和爆音一起进去")
+    if rep["voiced_dbfs"] is not None and rep["voiced_dbfs"] < -30:
+        w.append(f"人声响度只有约 {rep['voiced_dbfs']} dBFS：太轻，规范化到 -16~-12 再练")
+    if any(sr < 32000 for sr in srs):
+        w.append(f"有低于 32k 的采样率（{sorted(srs)}）：素材本身糊，练出来也糊")
+    if len(srs) > 1:
+        w.append(f"采样率不统一（{sorted(srs)}）：预处理会统一到 40k，但低的那批不会因此变清晰")
+    if chs and chs != {1}:
+        w.append("立体声素材会被折成单声道参与训练（不影响流程，只是提醒）")
+    # 净化建议（评审 A1 第 1 条）：底噪＝最安静 10% 帧的中位电平（留白段的能量），
+    # 这是机器能可靠量出来的那半边；混响量不准就直说量不准，让人按素材类型选档——
+    # 不拿一个假指标冒充分档依据。
+    nf = rep["noise_floor_dbfs"]
+    if nf is None:
+        rep["clean_advice"] = {"tier": "off", "measured": False,
+                               "reasons": ["整批素材没有一帧能解码出波形，底噪无从判断——"
+                                           "素材是现场/带混响的，请手动选「轻」净化"]}
+    elif nf > -42:
+        rep["clean_advice"] = {"tier": "medium", "measured": True,
+                               "reasons": [f"最安静的一档仍在 {nf} dBFS 上下（留白时噪声清晰可闻）："
+                                           "建议「中」档净化"]}
+        w.append(f"底噪约 {nf} dBFS 偏高：这批素材值得净化后再练（见净化档位选择）")
+    elif nf > -55:
+        rep["clean_advice"] = {"tier": "light", "measured": True,
+                               "reasons": [f"留白能量约 {nf} dBFS：有一定噪声，"
+                                           "建议「轻」净化（去混响 + 轻降噪）"]}
+    else:
+        rep["clean_advice"] = {"tier": "off", "measured": True,
+                               "reasons": [f"留白能量约 {nf} dBFS（够低）：降噪这步可省；"
+                                           "混响机器判不准——上传的是整首现场时请手动选「轻」"]}
+    sug, why = _rvc_suggest_epochs(total_sec)
+    rep["suggest_epochs"] = sug
+    rep["advice"] = why
+    pace = _rvc_train_pace()
+    rep["pace"] = pace
+    if pace:
+        est_sec = pace["sec_per_slice_epoch"] * rep["est_slices"] * sug
+        rep["epoch_sec_est"] = round(pace["sec_per_slice_epoch"] * rep["est_slices"], 1)
+        rep["est_min"] = round(est_sec / 60, 1)
+        rep["pace_note"] = (f"按本机实测（任务 {pace['source']}：{pace['samples_used']} 个切片 "
+                            f"{pace['epoch_sec']} 秒/轮）折算，估算只含训练那一步")
+    else:
+        rep["est_min"] = None
+        rep["pace_note"] = ("本机还没有一次跑完整训练的记录，所以给不出耗时预估；"
+                            "第一次成功训练后这里会自动有数")
+    return rep
+
+
+@router.post("/rvc/train/check")
+async def rvc_train_check(files: list[UploadFile]):
+    """上传素材先体检（不启动训练）：报告落盘，确认后用返回的 id 直接开练，不必重传。"""
+    if not files:
+        raise HTTPException(status_code=400, detail="需要至少一个音频文件")
+    if not RVC_PY.is_file():
+        raise HTTPException(status_code=500, detail="rvc python 环境缺失（py312/python.exe）")
+    rid = _new_id()
+    ds = RVC_TRAIN_DIR / rid / "dataset"
+    ds.mkdir(parents=True, exist_ok=True)
+    budget = {"used": 0}
+    for i, f in enumerate(files):
+        ext = Path(f.filename or "s.wav").suffix.lower() or ".wav"
+        if ext not in _RVC_AUDIO_EXTS:
+            ext = ".wav"
+        await _stream_upload_to(f, ds / f"sample_{i:03d}{ext}", 200 * 1024 * 1024,
+                                f"第 {i + 1} 个样本", budget=budget)
+    report = _rvc_dataset_scan(ds)
+    job = {"id": rid, "name": "", "status": "checked", "step": "体检完成（未开始训练）",
+           "ts": datetime.now().isoformat(timespec="seconds"),
+           "samples": report["files"], "bytes": budget["used"], "check": report}
+    _rvc_train_write(rid, job)
+    with RVC_TRAIN_LOCK:
+        RVC_TRAIN_JOBS[rid] = job
+    return {"ok": True, "id": rid, "report": report}
+
+
 @router.post("/rvc/train")
 async def rvc_train(
-    files: list[UploadFile],
+    files: list[UploadFile] | None = File(None),
     name: str = Form(...),
     epochs: int = Form(200),
     separate_vocal: str = Form("off"),
+    clean_tier: str = Form("off"),
+    dataset_id: str = Form(""),
 ):
     """上传干声样本（或勾选自动分离后直接传完整歌曲）→ 创建音色制作任务（独占运行，与换声/生成共用 GPU）。
 
     separate_vocal: auto=训练前先用官方 PyMSS 逐文件分离出干净人声（上传完整歌曲时勾选）；
-    off=直接训练（上传的已是干声）。"""
+    off=直接训练（上传的已是干声）。
+    clean_tier: light=去混响+轻降噪 / medium=中档净化（评审 A1，都在分离之后、切片之前做，
+    原始素材留档可 A/B）；off=不净化。
+    dataset_id: 带 POST /rvc/train/check 返回的 id 就直接用那份已体检过的素材，几十分钟的歌不必传两遍。"""
     global _RVC_TRAIN_WORKER, _RVC_TRAIN_PAUSE_REQ
     name = re.sub(r'[\\/:*?"<>|\s]+', "_", name.strip())[:40] or "voice"
-    if not 150 <= epochs <= 400:
+    if not 1 <= epochs <= 1200:
         raise HTTPException(status_code=400,
-                            detail="训练轮数须在 150-400 之间（低于 150 音色明显发虚；推荐 200，样本少可用 300）")
+                            detail="训练轮数须在 1-1200 之间（30 试听 / 100 常用 / 200 精训；"
+                                   "6GB 显存的卡上 1200 轮约一整天）")
+    if clean_tier not in ("off", "light", "medium"):
+        raise HTTPException(status_code=400,
+                            detail="净化档位须是 off/light/medium（轻=去混响+轻降噪；中=更重的净化模型）")
     if RVC_MODELS_DIR.joinpath(f"{name}.pth").is_file() or any(RVC_MODELS_DIR.glob(f"{name}*.pth")):
         raise HTTPException(status_code=409, detail=f"音色名已存在：{name}")
     # 在训互斥：已有制作任务排队/运行中时拒绝，防双进程 CUDA OOM 与 logs/<name> 互写
@@ -3441,27 +4989,48 @@ async def rvc_train(
                        for j in RVC_TRAIN_JOBS.values())
         if busy:
             raise HTTPException(status_code=409, detail="已有音色制作任务在进行中，请等待完成后再提交")
-    rid = _new_id()
-    ds = RVC_TRAIN_DIR / rid / "dataset"
-    ds.mkdir(parents=True, exist_ok=True)
-    # 本次请求已落地的累计字节。训练是"一次传一沓文件"的入口，逐文件 200MB 闸门
-    # 在这里等于没闸：文件数不限就能把 runtime/ 撑到爆，而炸点在后面的 F0/特征提取
-    # 阶段，报出来是一串流水线错误，看不出根因是磁盘没了。
-    budget = {"used": 0}
-    for i, f in enumerate(files):
-        ext = Path(f.filename or "s.wav").suffix.lower() or ".wav"
-        if ext not in (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".wma"):
-            ext = ".wav"
-        p = ds / f"sample_{i:03d}{ext}"
-        await _stream_upload_to(f, p, 200 * 1024 * 1024, f"第 {i+1} 个样本",
-                                budget=budget)
-    total = budget["used"]
+    if dataset_id:
+        rid = os.path.basename(dataset_id)
+        ds = RVC_TRAIN_DIR / rid / "dataset"
+        if not ds.is_dir():
+            raise HTTPException(status_code=404,
+                                detail=f"体检记录不存在：{rid}（素材目录已被清理，请重新上传并体检）")
+        n_samples = sum(1 for p in ds.iterdir() if p.is_file())
+        if not n_samples:
+            raise HTTPException(status_code=400, detail="体检记录里没有素材文件，请重新上传")
+        total = sum(p.stat().st_size for p in ds.iterdir() if p.is_file())
+    else:
+        if not files:
+            raise HTTPException(status_code=400,
+                                detail="需要上传素材文件，或带 dataset_id 复用刚体检过的那份")
+        rid = _new_id()
+        ds = RVC_TRAIN_DIR / rid / "dataset"
+        ds.mkdir(parents=True, exist_ok=True)
+        # 本次请求已落地的累计字节。训练是"一次传一沓文件"的入口，逐文件 200MB 闸门
+        # 在这里等于没闸：文件数不限就能把 runtime/ 撑到爆，而炸点在后面的 F0/特征提取
+        # 阶段，报出来是一串流水线错误，看不出根因是磁盘没了。
+        budget = {"used": 0}
+        for i, f in enumerate(files):
+            ext = Path(f.filename or "s.wav").suffix.lower() or ".wav"
+            if ext not in _RVC_AUDIO_EXTS:
+                ext = ".wav"
+            p = ds / f"sample_{i:03d}{ext}"
+            await _stream_upload_to(f, p, 200 * 1024 * 1024, f"第 {i+1} 个样本",
+                                    budget=budget)
+        n_samples = len(files)
+        total = budget["used"]
     if total < 300_000:
         raise HTTPException(status_code=400, detail="样本太少（建议 3-10 分钟干净干声）")
+    prev = _rvc_train_read(rid) if dataset_id else {}
     job = {
         "id": rid, "name": name, "status": "pending", "step": "排队中",
         "epochs": epochs, "ts": datetime.now().isoformat(timespec="seconds"),
-        "samples": len(files),
+        "samples": n_samples,
+        "clean_tier": clean_tier,
+        # 训练速度按设备差一个量级，把当时的模式记下来，后面的预估才有出处
+        "backend": backend_mode(),
+        # 体检报告跟着任务走：历史页要能回看"当初这批素材长什么样"
+        "check": prev.get("check") or None,
     }
     _rvc_train_write(rid, job)
     with RVC_TRAIN_LOCK:
@@ -3469,7 +5038,8 @@ async def rvc_train(
         _RVC_TRAIN_PAUSE_REQ = False
         RVC_TRAIN_JOBS[rid] = job
     _RVC_TRAIN_WORKER = threading.Thread(target=_rvc_train_worker,
-                                         args=(rid, name, epochs, separate_vocal == "auto"),
+                                         args=(rid, name, epochs, separate_vocal == "auto",
+                                               False, clean_tier),
                                          daemon=True)
     _RVC_TRAIN_WORKER.start()
     return {"ok": True, "id": rid, "name": name, "job": job}
@@ -3566,9 +5136,12 @@ def rvc_train_resume(rid: str, confirm: str = Form("no")):
         RVC_TRAIN_JOBS[rid] = job
     # 续跑时保留原 separate_vocal 意图：只要存在 dataset_clean 目录即视为需要分离
     sep_flag = (RVC_TRAIN_DIR / rid / "dataset_clean").is_dir()
+    # 净化档位同样继承：续跑不该悄悄丢掉用户当初选的净化（dataset_purified 存在即已净化过，
+    # _rvc_clean_dataset 的 resume 分支会直接复用，不会重跑）
+    clean_flag = str(job.get("clean_tier") or "off")
     _RVC_TRAIN_WORKER = threading.Thread(
         target=_rvc_train_worker, args=(rid, job["name"], int(job.get("epochs") or 200),
-                                        sep_flag, True),
+                                        sep_flag, True, clean_flag),
         daemon=True)
     _RVC_TRAIN_WORKER.start()
     return {"ok": True, "id": rid, "job": job}
@@ -3647,6 +5220,17 @@ async def rvc_convert_by_rid(rid: str, payload: dict):
     models = _rvc_models()
     if model not in models:
         raise HTTPException(status_code=400, detail=f"未知音色模型：{model}（可用：{models}）")
+    # 参数一律在拷文件、建目录之前规整完：这里失败的调用不该在本机留下半成品目录。
+    # 也顺手改掉老写法的一个坑——`float(payload.get("index_rate") or 0.75)` 把用户
+    # 主动设的 0（只用模型、不检索）当成"没填"，又悄悄放回 0.75。
+    g_pitch = _rvc_pitch(payload.get("pitch"))
+    g_f0, g_index, g_protect, g_rms, g_fr, g_rsr = _rvc_convert_params(
+        model, payload.get("f0_method"), payload.get("index_rate"),
+        payload.get("protect"), payload.get("rms_mix_rate"),
+        payload.get("filter_radius"), payload.get("resample_sr"))
+    g_sep = payload.get("separate_vocal", "auto") != "off"
+    g_gate = payload.get("gate", "on") != "off"
+    g_harmony = payload.get("strip_harmony") == "on"
     rid2 = _new_id()
     in_dir = RVC_JOB_DIR / rid2
     in_dir.mkdir(parents=True, exist_ok=True)
@@ -3658,28 +5242,32 @@ async def rvc_convert_by_rid(rid: str, payload: dict):
     except Exception:
         src_duration = round(src.stat().st_size / 160_000, 1)
     job = {
-        "id": rid2, "status": "running", "ts": datetime.now().isoformat(timespec="seconds"),
+        "id": rid2, "status": "pending", "step": "排队中", "queue_pos": 0,
+        "ts": datetime.now().isoformat(timespec="seconds"),
         "task_name": str(payload.get("task_name") or "").strip()[:100],
-        "model": model, "pitch": int(payload.get("pitch") or 0),
-        "f0_method": str(payload.get("f0_method") or "rmvpe"),
-        "index_rate": float(payload.get("index_rate") or 0.75),
-        "protect": float(payload.get("protect") or 0.33),
-        "rms_mix_rate": float(payload.get("rms_mix_rate") or 1.0),
+        "model": model, "pitch": g_pitch,
+        "f0_method": g_f0,
+        "index_rate": g_index,
+        "protect": g_protect,
+        "rms_mix_rate": g_rms,
+        "filter_radius": g_fr,
+        "resample_sr": g_rsr,
         "src_name": f"历史歌曲 {rid}", "src_size": src.stat().st_size,
         "src_duration": src_duration, "src_rid": rid,
+        "separate_vocal": bool(g_sep),
+        "gate": g_gate,
+        "strip_harmony": g_harmony,
     }
     with _RVC_LOCK:
         _RVC_JOBS[rid2] = job
-    threading.Thread(target=_rvc_convert_worker,
-                     args=(rid2, job, src, in_dir, model,
-                           int(payload.get("pitch") or 0),
-                           str(payload.get("f0_method") or "rmvpe"),
-                           float(payload.get("index_rate") or 0.75),
-                           float(payload.get("protect") or 0.33),
-                           float(payload.get("rms_mix_rate") or 1.0),
-                           payload.get("separate_vocal", "auto") != "off"),
-                     daemon=True).start()
-    return {"ok": True, "id": rid2, "job": job}
+    pos = _rvc_submit((rid2, job, src, in_dir, model, g_pitch, g_f0, g_index,
+                       g_protect, g_rms, g_sep, g_gate, g_harmony, g_fr, g_rsr))
+    with _RVC_LOCK:
+        cur = _RVC_JOBS.get(rid2)
+        if cur is not None and cur.get("status") == "pending":
+            cur["queue_pos"] = pos
+            job = cur
+    return {"ok": True, "id": rid2, "job": job, "position": pos}
 
 
 # --------------------------------------------------------------------------- #

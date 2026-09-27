@@ -98,7 +98,13 @@ def tool_rvc_convert(source: str, voice: str, pitch: int = 0) -> dict:
             return {"error": f"找不到歌曲「{source}」。用 tool_list_history 查看可用的任务 id"}
         rid = found
     r = asyncio.run(gw.rvc_convert_by_rid(rid, {"model": voice.replace(".pth", "") + ".pth", "pitch": int(pitch)}))
-    return {"ok": True, "job_id": r["id"], "hint": "换声已提交，约 1 分钟内完成，结果会出现在历史页"}
+    # 换声是串行队列：位次不报，用户就会以为"提交了却没动"，或连点提交堆成一堆并行任务
+    ahead = max(0, int(r.get("position") or 1) - 1)
+    return {"ok": True, "job_id": r["id"], "status": r["job"]["status"],
+            "position": r.get("position"),
+            "hint": (f"换声已排队，第 {r.get('position')} 位（前面还有 {ahead} 个在转换，一次只跑一个）；"
+                     if ahead else "换声已开始转换；")
+                     + "耗时取决于歌曲长度与是否做人声分离，完成后会出现在历史页（tool_list_history 可查）"}
 
 
 def tool_list_history(limit: int = 10, kind: str = "") -> dict:
@@ -209,7 +215,7 @@ TOOL_SCHEMAS = [
         "count": {"type": "integer", "description": "连发数量 1-5"}},
         "required": ["style", "lyrics"]}}},
     {"type": "function", "function": {"name": "tool_get_progress", "description": "查询当前生成任务进度", "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {"name": "tool_rvc_convert", "description": "对已生成的歌曲做 RVC 换声", "parameters": {"type": "object", "properties": {
+    {"type": "function", "function": {"name": "tool_rvc_convert", "description": "对已生成的歌曲做 RVC 换声（串行队列，一次只跑一个，连点会排队）", "parameters": {"type": "object", "properties": {
         "source": {"type": "string", "description": "历史任务 id（tool_list_history 获取）"},
         "voice": {"type": "string", "description": "音色名（tool_list_models 获取）"},
         "pitch": {"type": "integer", "description": "变调半音：男转女+12 女转男-12 不变0"}}, "required": ["source", "voice"]}}},
