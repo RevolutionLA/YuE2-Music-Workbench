@@ -80,6 +80,11 @@ class Sandbox(unittest.TestCase):
         self._saved["_rvc_fcpe_ok"] = app._rvc_fcpe_ok
         app._rvc_cli_caps = lambda: {"filter_radius": True, "fcpe": True}
         app._rvc_fcpe_ok = lambda: True
+        # ffmpeg 探测结果进程内缓存：不重置会让"找不到 ffmpeg"那条用例把缓存漏给
+        # 后面的用例（顺序相关的红）。默认给"有 ffmpeg 且带 rubberband"的替身，
+        # 要真跑 ffmpeg 的用例自己点名清空再探。
+        self._saved["_RVC_FFMPEG"] = app._RVC_FFMPEG
+        app._RVC_FFMPEG = {"path": Path("ffmpeg.exe"), "rubberband": True}
         app._rvc_index_dirs = lambda: (self.rvc_indices, self.rvc_logs)
         app._ID_SEEN.clear()
 
@@ -791,6 +796,240 @@ class TestRvcGateAndMix(Sandbox):
         del gain, ref
         self.assertLess(p1 - p0, 300.0,
                         f"_gate_envelope 峰值内存增量 {p1 - p0:.0f}MB，旧全展开是 ~1061MB（评审 F1）")
+
+
+class TestAccompanimentTranspose(Sandbox):
+    """伴奏跟随转调（用户实测报告：换声页变调只动人声，伴奏留在原调，
+    成品里两个调打架、很违和）。
+
+    锁三件事：① 规则本身——伴奏只吃非八度分量并折到 ±6（±12/±24→0、±16→±4、
+    ±20→∓4、+8→−4）；② 用真正的相位声码器（ffmpeg rubberband）而不是 asetrate，
+    且时长不变、产物不得是静音；③ 转不动必须退回原伴奏并留痕，绝不静默。"""
+
+    RID = "20260101_000009_accacc09"
+    SR = 8000
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._saved_acc = (app.subprocess, app._win_toast, app.RVC_DIR,
+                           app._run_vocal_separation)
+        app._win_toast = lambda *a, **k: None
+        self.cmds: list[list[str]] = []
+
+    def tearDown(self) -> None:
+        (app.subprocess, app._win_toast, app.RVC_DIR,
+         app._run_vocal_separation) = self._saved_acc
+        with app._RVC_LOCK:
+            app._RVC_JOBS.pop(self.RID, None)
+        super().tearDown()
+
+    # ---- 规则 ---- #
+
+    def test_rule_keeps_only_the_non_octave_component(self):
+        # 用户给的两条（±4→伴奏±4、整八度→伴奏不动）+ 举一反三的 ±16/±20/±22
+        table = {0: 0, 4: 4, -4: -4, 6: 6, -6: -6, 8: -4, -8: 4,
+                 12: 0, -12: 0, 16: 4, -16: -4, 18: 6, -18: -6,
+                 20: -4, -20: 4, 22: -2, -22: 2, 24: 0, -24: 0}
+        for p, want in table.items():
+            self.assertEqual(app._rvc_acc_shift_semitones(p), want, f"变调 {p} 半音")
+
+    def test_rule_holds_over_the_whole_slider(self):
+        for p in range(-24, 25):
+            n = app._rvc_acc_shift_semitones(p)
+            self.assertEqual((n - p) % 12, 0, f"{p} 的伴奏分量必须与 {p} 落在同一个调")
+            self.assertLessEqual(abs(n), 6, f"{p} → {n}：折得太远，共振峰要听出来")
+            self.assertEqual(n == 0, p % 12 == 0, "只有整八度才允许伴奏不动")
+
+    def test_octave_shift_never_touches_ffmpeg(self):
+        # 整八度不改变"是什么调"，伴奏必须原样留着（用户举的例子）
+        for p in (12, -12, 24, 0):
+            self.cmds.clear()
+            acc = self.tmp / f"acc{p}.wav"
+            acc.write_bytes(b"RIFF")
+            used, info = app._rvc_transpose_accompaniment(acc, self.tmp, p)
+            self.assertIs(used, acc, f"{p} 半音不该产生转调副本")
+            self.assertEqual(info["applied"], 0)
+            self.assertEqual(info["state"], "kept")
+            self.assertEqual(self.cmds, [], "整八度不许起 ffmpeg")
+
+    def test_missing_ffmpeg_is_reported_not_silent(self):
+        acc = self.tmp / "acc.wav"
+        acc.write_bytes(b"RIFF")
+        for ff, kw in (({"path": None, "rubberband": False}, "ffmpeg"),
+                       ({"path": Path("ffmpeg.exe"), "rubberband": False}, "rubberband")):
+            app._RVC_FFMPEG = ff
+            used, info = app._rvc_transpose_accompaniment(acc, self.tmp, -4)
+            self.assertIs(used, acc, "转不动时伴奏必须原样回去，成品照样出")
+            self.assertEqual(info["applied"], 0)
+            self.assertEqual(info["state"], "failed",
+                             "转不动（failed）和本来就该保持原调（kept）不能混成同一个状态")
+            self.assertIn(kw, info["note"])
+            self.assertIn("原调", info["note"], "要说清成品里伴奏是原调，用户才查得到违和的原因")
+
+    # ---- 真跑 ffmpeg ---- #
+
+    def _sine_wav(self, path: Path, hz: float, secs: float = 2.0, sr: int = 44100):
+        import soundfile as sf
+        t = np.arange(int(sr * secs)) / sr
+        mono = (0.4 * np.sin(2 * np.pi * hz * t)).astype(np.float32)
+        sf.write(str(path), np.stack([mono, mono], axis=1), sr, subtype="PCM_16")
+        return sr
+
+    def _dominant_hz(self, path: Path) -> float:
+        import soundfile as sf
+        y, sr = sf.read(str(path), dtype="float32")
+        if y.ndim > 1:
+            y = y.mean(axis=1)
+        y = y[int(sr * 0.3):]                      # 掐头：变调器起步有短暂过渡
+        spec = np.abs(np.fft.rfft(y * np.hanning(len(y))))
+        freqs = np.fft.rfftfreq(len(y), 1.0 / sr)
+        return float(freqs[int(np.argmax(spec))])
+
+    def test_real_ffmpeg_transposes_accompaniment_by_measured_hz(self):
+        """真机锁测：rubberband 走的是保时长、保共振峰的路子。
+        asetrate 那类"改采样率"的变调会同时改时长——这里两条一起判。"""
+        app._RVC_FFMPEG = None                     # 本条要真探测，不吃 Sandbox 的替身
+        ff = app._rvc_ffmpeg_info()
+        if ff["path"] is None or not ff["rubberband"]:
+            self.skipTest(f"本机 ffmpeg 不带 rubberband：{ff}")
+            return
+        src = self.tmp / "acc_in.wav"
+        sr = self._sine_wav(src, 440.0)
+        dst = self.tmp / "acc_out.wav"
+        ok, engine, note = app._rvc_transpose_wav(src, dst, 4)
+        self.assertTrue(ok, note)
+        self.assertEqual(engine, "rubberband")
+        self.assertTrue(dst.is_file() and dst.stat().st_size > 44, "产物必须是真的 WAV")
+        import soundfile as sf
+        info = sf.info(str(dst))
+        self.assertAlmostEqual(info.frames / sr, 2.0, delta=0.05,
+                              msg="rubberband 保时长；变调后长度跟着缩就是 asetrate")
+        self.assertEqual(info.channels, 2, "立体声伴奏不能被压成单声道")
+        self.assertEqual(info.subtype, "PCM_24",
+                         "分离产物是 32 位浮点，转调后不许白掉到 16 位（默认值就是 16）")
+        got = self._dominant_hz(dst)
+        want = 440.0 * 2 ** (4 / 12)               # ≈ 554.4 Hz
+        self.assertAlmostEqual(got, want, delta=6.0,
+                               msg=f"实测主频 {got:.1f}Hz，期望 {want:.1f}Hz")
+
+    def test_real_ffmpeg_output_is_never_accepted_when_silent(self):
+        """v1.3.1 的教训沿用到这里：退出码 0 + 全静音不是成功。
+        输入本身是静音时，产物也必然静音——必须报失败，让调用方退回原伴奏。"""
+        app._RVC_FFMPEG = None
+        ff = app._rvc_ffmpeg_info()
+        if ff["path"] is None or not ff["rubberband"]:
+            self.skipTest("本机 ffmpeg 不带 rubberband")
+            return
+        import soundfile as sf
+        src = self.tmp / "zero.wav"
+        sf.write(str(src), np.zeros((sr := 44100) * 2, dtype=np.float32), sr)
+        ok, _, note = app._rvc_transpose_wav(src, self.tmp / "zero_out.wav", 4)
+        self.assertFalse(ok, "近乎静音的转调产物必须判失败")
+        self.assertIn("静音", note)
+
+    # ---- 接进 worker：混音用的、下载的、meta 记的三者必须一致 ---- #
+
+    def _fake_subprocess(self, shifted_amp=0.05):
+        """一次 subprocess.run 只认两类命令：RVC 推理 CLI（写 converted.wav）
+        与 ffmpeg 转调（把 -af rubberband=pitch=系数 记下来，写一份幅度不同的伴奏）。"""
+        import soundfile as sf
+        sr = self.SR
+
+        def fake_run(cmd, **kw):
+            cmd = [str(c) for c in cmd]
+            self.cmds.append(cmd)
+            if Path(cmd[0]).name.lower() == "ffmpeg.exe":
+                factor = float(cmd[cmd.index("-af") + 1].split("pitch=")[1])
+                t = np.arange(sr * 2) / sr
+                tone = (shifted_amp * np.sin(2 * np.pi * 110 * t)).astype(np.float32)
+                sf.write(cmd[-1], np.stack([tone, tone], axis=1), sr)
+                return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+            out = Path(cmd[cmd.index("--output") + 1])
+            t = np.arange(sr * 2) / sr
+            voc = (0.3 * np.sin(2 * np.pi * 300 * t)).astype(np.float32)
+            sf.write(str(out), np.stack([voc, voc], axis=1), sr)
+            return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        app.subprocess = types.SimpleNamespace(run=fake_run)
+
+    def _run_worker(self, pitch: int) -> dict:
+        import soundfile as sf
+        self._fake_subprocess()
+        app.RVC_DIR = self.tmp / "rvc"           # 别去碰本机 logs/（音域档案会写进去）
+        in_dir = app.RVC_JOB_DIR / self.RID
+        sep = in_dir / "sep"
+        sep.mkdir(parents=True, exist_ok=True)
+        t = np.arange(self.SR * 2) / self.SR
+        voc = (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+        acc = (0.3 * np.sin(2 * np.pi * 110 * t)).astype(np.float32)
+        v_path, a_path = sep / "src_vocal.wav", sep / "src_other.wav"
+        sf.write(str(v_path), voc[:, None], self.SR)
+        sf.write(str(a_path), np.stack([acc, acc], axis=1), self.SR)
+        app._run_vocal_separation = lambda s, d, j, sh: (v_path, {
+            "vocals_raw": v_path.name, "accompaniment": a_path.name})
+        src = in_dir / "src.wav"
+        sf.write(str(src), voc[:, None], self.SR)
+        job = {"id": self.RID, "status": "pending", "step": "排队中", "queue_pos": 1,
+               "model": "x.pth", "src_name": "src.wav", "src_duration": 2,
+               "ts": "2026-01-01T00:00:00"}
+        with app._RVC_LOCK:
+            app._RVC_JOBS[self.RID] = job
+        app._rvc_convert_worker(self.RID, job, src, in_dir, "x.pth",
+                                pitch, "rmvpe", 0.0, 0.33, 1.0, True, False)
+        return json.loads((app.OUTPUT_DIR / f"{self.RID}.json").read_text(encoding="utf-8"))
+
+    def _peak(self, path: Path) -> float:
+        import soundfile as sf
+        y, _ = sf.read(str(path), dtype="float32")
+        return float(np.abs(y).max())
+
+    def test_worker_mixes_the_shifted_accompaniment_and_keeps_the_original(self):
+        meta = self._run_worker(-4)
+        ff = [c for c in self.cmds if Path(c[0]).name.lower() == "ffmpeg.exe"]
+        self.assertEqual(len(ff), 1, "伴奏只转一次")
+        self.assertAlmostEqual(float(ff[0][ff[0].index("-af") + 1].split("pitch=")[1]),
+                               2 ** (-4 / 12), places=6,
+                               msg="降 4 半音的系数是 2^(-4/12)，写错就整单跑偏")
+        self.assertEqual(meta["acc_pitch"]["applied"], -4)
+        self.assertEqual(meta["acc_pitch"]["state"], "followed")
+        a = meta["assets"]
+        self.assertAlmostEqual(self._peak(app.OUTPUT_DIR / a["accompaniment"]),
+                               0.05, delta=0.01, msg="下载的伴奏要和成品用的是同一份")
+        self.assertAlmostEqual(self._peak(app.OUTPUT_DIR / a["accompaniment_untuned"]),
+                               0.3, delta=0.02, msg="原调那份也得留档，供 A/B 与自配")
+        mixed = self._peak(app.OUTPUT_DIR / a["full_song"])
+        self.assertGreater(mixed, 0.2, "成品必须还在")
+
+    def test_worker_leaves_single_accompaniment_asset_when_no_shift(self):
+        for pitch in (0, 12):
+            self.cmds.clear()
+            meta = self._run_worker(pitch)
+            self.assertEqual([c for c in self.cmds
+                              if Path(c[0]).name.lower() == "ffmpeg.exe"], [],
+                             f"变 {pitch} 半音不该起 ffmpeg")
+            self.assertNotIn("accompaniment_untuned", meta["assets"],
+                             "没转调就不要多塞一个同名产物（历史页会多一个没用的按钮）")
+            self.assertEqual(meta["acc_pitch"]["applied"], 0)
+
+    def test_worker_still_delivers_when_transposition_fails(self):
+        app._RVC_FFMPEG = {"path": None, "rubberband": False}
+        meta = self._run_worker(4)
+        self.assertEqual(meta["status"], "done", "伴奏转不动是人声成品之外的损失，不能判整单失败")
+        self.assertEqual(meta["acc_pitch"]["state"], "failed")
+        self.assertIn("没转成", meta["acc_pitch"]["note"])
+        self.assertAlmostEqual(self._peak(app.OUTPUT_DIR / meta["assets"]["accompaniment"]),
+                               0.3, delta=0.02, msg="退回的必须是原调那份，而不是空文件")
+
+    def test_untuned_accompaniment_is_downloadable_with_a_short_name(self):
+        # 下载文件名要落在 RFC 6266 的 119 字节以内；带 "（原调）" 括号曾被算爆过，
+        # 所以这里既测路由认得新 part，也测最终名字确实短
+        fname = f"{self.RID}_accompaniment_untuned.wav"
+        (app.OUTPUT_DIR / fname).write_bytes(b"x")
+        (app.OUTPUT_DIR / f"{self.RID}.json").write_text(json.dumps(
+            {"assets": {"accompaniment_untuned": fname}}), encoding="utf-8")
+        resp = app.rvc_audio(self.RID, "accompaniment_untuned")
+        self.assertEqual(Path(resp.path).name, fname)
+        self.assertLessEqual(len(resp.filename.encode("utf-8")), 119, resp.filename)
 
 
 class TestStorageCaps(Sandbox):

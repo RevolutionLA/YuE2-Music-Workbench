@@ -3248,6 +3248,130 @@ def _mask_to_signal(mask: "np.ndarray", n: int) -> "np.ndarray":
     return np.interp(np.linspace(0.0, 1.0, n), grid, mask.astype(np.float64)) >= 0.5
 
 
+# --------------------------------------------------------------------------- #
+# 伴奏跟随转调
+#
+# 事故口径（用户实测报告）：换声页的"变调"只送进了 RVC 的人声（app.py 里 --pitch
+# 只挂在推理命令行上），伴奏是原样加回去的——变 4 半音的成品里人声与伴奏差了 4
+# 个半音，两调打架，合成很违和。
+#
+# 规则：人声吃满 pitch（它是"换到哪个音区"的旋钮，八度分量必须由人声承担），
+# 伴奏只吃**非八度分量**，并且折到 ±6 半音以内：
+#   变 ±4  → 伴奏 ±4     调性真的变了，必须同步
+#   变 ±12 → 伴奏 0      整八度不改变"是什么调"（用户举的例子）
+#   变 ±24 → 伴奏 0      同上，两个八度
+#   变 ±16 → 伴奏 ±4     16 = 12 + 4，调性只挪小三度，剩下那个八度归人声音区
+#   变 ±20 → 伴奏 ∓4     20 = 24 - 4，同理（升 20 的伴奏该降 4）
+#   变 +8  → 伴奏 -4     +8 与 -4 是同一个调，取听感更小的那头
+# 为什么折到 ±6：往上挪 8 个半音，底鼓基频就从 50Hz 抬到 ~80Hz（±16 那种要到
+# 130Hz，鼓变"纸箱"），弦乐共振峰整体上移（变细变尖）——而同一个调性，折到近的
+# 一头（±6 以内）就能到，没必要付出这个代价。
+# 三全音 ±6 两头完全等价，这时跟人声同向，免得任务卡写"伴奏降 6"而人声在升。
+# --------------------------------------------------------------------------- #
+
+def _rvc_acc_shift_semitones(pitch: int) -> int:
+    """人声变 pitch 个半音时，伴奏应该跟着变几个（返回 0 = 伴奏保持原调）。"""
+    p = int(pitch)
+    n = p % 12                        # 只留"换了哪个调"的分量（八度分量归人声）
+    if n > 6:
+        n -= 12                       # +8 ≡ -4：取听感上更小的那一头
+    if n == 6 and p < 0:
+        n = -6                        # 三全音 ±6 同调，跟人声同向，免得卡片写反
+    return n
+
+
+_RVC_FFMPEG: dict | None = None             # {"path": Path|None, "rubberband": bool}
+
+
+def _rvc_ffmpeg_info() -> dict:
+    """本机 ffmpeg 可执行文件与它是否带 rubberband 滤镜（进程内缓存，探测约 0.2 秒）。
+
+    查找顺序：环境变量 FFMPEG_PATH（可指目录或 exe）→ 随包的 py312/ffmpeg/bin → PATH。
+    为什么要探到"滤镜"这一层而不是只看文件在不在：gyan 的 essentials 构建不带
+    rubberband，只有 full_build 带——找不到就得明确报告原因，不能静默不转调。"""
+    global _RVC_FFMPEG
+    if _RVC_FFMPEG is None:
+        cand: list[Path] = []
+        env = str(os.environ.get("FFMPEG_PATH") or "").strip().strip('"')
+        if env:
+            p = Path(env)
+            cand.append(p if p.suffix.lower() == ".exe" else p / "ffmpeg.exe")
+        cand.append(ROOT / "py312" / "ffmpeg" / "bin" / "ffmpeg.exe")
+        w = shutil.which("ffmpeg")
+        if w:
+            cand.append(Path(w))
+        path = next((c for c in cand if c.is_file()), None)
+        rb = False
+        if path is not None:
+            try:
+                r = subprocess.run([str(path), "-hide_banner", "-filters"],
+                                   capture_output=True, timeout=120,
+                                   creationflags=_pymss_creationflags())
+                rb = b"rubberband" in (r.stdout or b"")
+            except Exception:
+                rb = False
+        _RVC_FFMPEG = {"path": path, "rubberband": rb}
+    return _RVC_FFMPEG
+
+
+def _rvc_transpose_wav(src: Path, dst: Path, semi: int) -> tuple[bool, str, str]:
+    """整段平移 semi 个半音。返回 (是否成功, 引擎名, 说明或失败原因)。
+
+    必须用 rubberband（相位声码器）而不是 asetrate：asetrate 靠改采样率变调，
+    时长跟着缩、共振峰整体漂移——伴奏鼓组会变成花栗鼠，人声听起来像卡通片。
+    rubberband 保时长也保共振峰，且原生吃立体声（实测 30 秒输入输出同为 30.00 秒，
+    立体声不塌成单声道）。"""
+    ff = _rvc_ffmpeg_info()
+    if ff["path"] is None:
+        return False, "", "本机找不到 ffmpeg（查过 FFMPEG_PATH、py312/ffmpeg/bin 与 PATH）"
+    if not ff["rubberband"]:
+        return False, "", f"{ff['path'].name} 不带 rubberband 滤镜（gyan essentials 版没有）"
+    factor = 2.0 ** (semi / 12.0)
+    # pcm_s24le：分离出的伴奏是 32 位浮点，成品混音也按 PCM_24 落盘，这里若让
+    # ffmpeg 走默认 16 位，下载的伴奏就白掉一位动态范围（实测同一段 24 秒素材
+    # 16bit 产物正好是 24bit 的一半大小）
+    cmd = [str(ff["path"]), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+           "-i", str(src), "-af", f"rubberband=pitch={factor:.9f}",
+           "-c:a", "pcm_s24le", str(dst)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=3600,
+                           creationflags=_pymss_creationflags())
+    except Exception as e:
+        return False, "", f"ffmpeg 调用失败：{str(e)[:160]}"
+    if r.returncode != 0 or not dst.is_file() or dst.stat().st_size <= 44:
+        tail = (r.stderr or b"").decode("utf-8", "ignore").strip().splitlines()
+        return False, "", f"ffmpeg 转调失败：{(tail[-1] if tail else f'退出码 {r.returncode}')[:160]}"
+    # v1.3.1 的教训在这条链上同样成立："退出码 0 + 产物全静音"也是一种失败
+    peak = _rvc_clean_wav_peak(dst)
+    if peak is None:
+        return False, "", "转调产物读不出峰值（不是有效 WAV），按失败处理"
+    if peak < _RVC_CLEAN_SILENT_PEAK:
+        return False, "", f"转调产物峰值仅 {peak:.1e}，近乎静音，按失败处理"
+    return True, "rubberband", f"伴奏平移 {semi:+d} 半音（系数 {factor:.6f}，峰值 {peak:.3f}）"
+
+
+def _rvc_transpose_accompaniment(acc: Path, work_dir: Path, pitch: int) -> tuple[Path, dict]:
+    """决定伴奏实际用哪一份。返回 (该用的伴奏文件, 记进 meta/任务卡的信息)。
+
+    转不动就退回原伴奏，但**绝不静默**：原因写进 info["note"]，任务卡上看得见——
+    成品里伴奏是原调这件事必须让用户知道，否则他只会听到"违和"却查不到为什么。"""
+    semi = _rvc_acc_shift_semitones(pitch)
+    info = {"pitch": int(pitch), "applied": 0, "engine": "", "state": "kept", "note": ""}
+    if semi == 0:
+        if int(pitch):
+            info["note"] = f"人声变 {int(pitch):+d} 是整八度，调性没变，伴奏保持原调"
+        return acc, info
+    dst = work_dir / f"{acc.stem}_acc{semi:+d}.wav"
+    ok, engine, note = _rvc_transpose_wav(acc, dst, semi)
+    if not ok:
+        info["state"] = "failed"
+        info["note"] = (f"伴奏应随人声变 {semi:+d} 半音，但没转成：{note}"
+                        f"（成品里伴奏仍是原调，人声与伴奏差 {semi:+d} 半音）")
+        return acc, info
+    info.update(applied=semi, engine=engine, state="followed", note=note)
+    return dst, info
+
+
 def _mix_vocal_accompaniment(voc: "np.ndarray", acc: "np.ndarray") -> "np.ndarray":
     """人声与伴奏相加。声道数不一致时只允许「单声道升到立体声」，
     绝不把立体声伴奏压成单声道（旧写法会把 2 声道伴奏截成 1 声道，成品丢立体声）。"""
@@ -3568,6 +3692,7 @@ def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
         meta.pop("queue_pos", None)
         # 多产物：分离开启时，把原人声/伴奏拷进 output/，并把换声人声与伴奏混音成完整歌曲
         assets: dict[str, str] = {}
+        acc_info: dict = {}
         if separate_vocal:
             try:
                 import soundfile as sf
@@ -3590,11 +3715,17 @@ def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
                 if acc is not None and not acc.is_file():
                     acc = None
                 if acc is not None and acc.is_file():
-                    _copy(acc, "accompaniment")
+                    # 伴奏跟随转调：人声变了调，伴奏必须落到同一个调上（整八度除外）
+                    acc_used, acc_info = _rvc_transpose_accompaniment(acc, sep_dir, pitch)
+                    _copy(acc_used, "accompaniment")
+                    if acc_used is not acc:
+                        # 下载的伴奏要和成品用的是同一份，否则用户拿它配自己录的人声
+                        # 又对不上调；原调那份另存，供 A/B 与"只想配原伴奏"的用法
+                        _copy(acc, "accompaniment_untuned")
                     # 混音：换声后的人声 + 伴奏 → 完整歌曲（按伴奏采样率对齐）
                     import librosa
                     voc, sr_v = sf.read(str(wav), dtype="float32", always_2d=True)
-                    accm, sr_a = sf.read(str(acc), dtype="float32", always_2d=True)
+                    accm, sr_a = sf.read(str(acc_used), dtype="float32", always_2d=True)
                     if sr_v != sr_a:
                         voc = librosa.resample(voc.T, orig_sr=sr_v, target_sr=sr_a).T
                         sr_v = sr_a
@@ -3623,6 +3754,8 @@ def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
             except Exception:
                 # 多产物失败不影响主结果（换声人声已在），meta 里如实省略 assets
                 assets = {}
+        if acc_info:
+            meta["acc_pitch"] = acc_info
         if assets:
             meta["assets"] = assets
         _output_write_meta(meta)
@@ -3631,7 +3764,8 @@ def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
             # "播放成品 / 播放干人声" 该给哪个按钮，以及门控是否真的生效了
             _RVC_JOBS[rid] = {**_RVC_JOBS[rid], "status": "done",
                               "sec": meta["sec"], "bytes": meta["bytes"],
-                              "assets": assets, "gate": gate_info or None}
+                              "assets": assets, "gate": gate_info or None,
+                              "acc_pitch": acc_info or None}
         _win_toast("🎵 换声完成：" + model, f"耗时 {meta['sec']} 秒，已保存到 output/")
     except Exception as e:
         with _RVC_LOCK:
@@ -3868,7 +4002,8 @@ def rvc_audio(rid: str, part: str = ""):
         wav = OUTPUT_DIR / fname
         if not wav.is_file():
             raise HTTPException(status_code=404, detail="产物文件已丢失")
-        labels = {"vocals_original": "原人声", "accompaniment": "伴奏", "full_song": "完整歌曲"}
+        labels = {"vocals_original": "原人声", "accompaniment": "伴奏",
+                  "accompaniment_untuned": "伴奏-原调", "full_song": "完整歌曲"}
         return FileResponse(str(wav), media_type="audio/wav",
                             filename=f"{rid}_{labels.get(part, part)}.wav")
     wav = _output_wav_path(rid)

@@ -753,7 +753,7 @@ We will sing beyond the night</textarea>
             <button class="ghost" type="button" id="rvcApplyAdvice" style="display:none;"></button>
             <span id="rvcAdvice" style="color:var(--muted); font-size:12px;">量源唱的音高中枢、对照所选音色的舒适音域，给出该变几个半音（CPU 几秒，不进换声队列）。💡 只放源歌的 10~30 秒人声片段来分析即可，不必丢整首（只读前 5 分钟，带伴奏数字会被污染）。</span>
           </div>
-          <div class="hint-xs" style="grid-column: 1 / -1;">💡 变调怎么填：先判断「歌曲里原唱的性别」和「目标音色的性别」——不同性别必须 ±12（女转男 -12 / 男转女 +12），否则会闷哑或尖细；同性别可先用 0，听感偏高/偏低再 ±3~5 微调。判断不准就先试 0，跑完听「换声人声」再调。</div>
+          <div class="hint-xs" style="grid-column: 1 / -1;">💡 变调怎么填：先判断「歌曲里原唱的性别」和「目标音色的性别」——不同性别必须 ±12（女转男 -12 / 男转女 +12），否则会闷哑或尖细；同性别可先用 0，听感偏高/偏低再 ±3~5 微调。判断不准就先试 0，跑完听「换声人声」再调。<br>🎹 伴奏自动跟调：填 ±4 这类非整八度，伴奏同等转过去（否则成品里人声伴奏两个调）；填 ±12/±24 整八度只换音区、不换调，伴奏保持原调；填 ±16 这种"八度+零头"，伴奏只转零头那 ±4。原调伴奏另存一份（任务卡里"伴奏（原调）"），想自己配原调用它。</div>
           <div><label for="rvcF0">变调算法</label>
             <select id="rvcF0">
               <option value="rmvpe" selected>rmvpe · 通用首选（精准）</option>
@@ -2188,7 +2188,8 @@ async function renderHistory() {
             <button class="ghost" data-part-dl="full_song">🎵 成品（带伴奏）</button>
             <button class="ghost" data-part-dl="">🎙 换声人声（干声）</button>
             ${h.assets.vocals_original ? '<button class="ghost" data-part-dl="vocals_original">🎤 原人声</button>' : ''}
-            ${h.assets.accompaniment ? '<button class="ghost" data-part-dl="accompaniment">🎹 伴奏</button>' : ''}
+            ${h.assets.accompaniment ? `<button class="ghost" data-part-dl="accompaniment">🎹 伴奏${h.acc_pitch && h.acc_pitch.applied ? `（${h.acc_pitch.applied > 0 ? "+" : ""}${h.acc_pitch.applied}音）` : ""}</button>` : ''}
+            ${h.assets.accompaniment_untuned ? '<button class="ghost" data-part-dl="accompaniment_untuned" title="分离出来的原调伴奏，没跟着变调；想自己配原调时用它">🎹 伴奏（原调）</button>' : ''}
           </div>` : ''}
         </div>`;
       // 回填：style/歌词/参数 + 从 style 反解歌手性别（与刷新恢复共用一套逻辑）
@@ -2319,7 +2320,7 @@ async function renderHistory() {
             const blob = await rr.blob();
             const a = document.createElement("a");
             a.href = URL.createObjectURL(blob);
-            const partLabel = { "vocals_original": "原人声", "accompaniment": "伴奏", "full_song": "成品（带伴奏）" }[part] || "换声人声（干声）";
+            const partLabel = { "vocals_original": "原人声", "accompaniment": "伴奏", "accompaniment_untuned": "伴奏（原调）", "full_song": "成品（带伴奏）" }[part] || "换声人声（干声）";
             a.download = dlName((h.task_name || (h.style || "").split(",")[0]) + " " + partLabel);
             document.body.appendChild(a); a.click(); a.remove();
             setTimeout(() => URL.revokeObjectURL(a.href), 5000);
@@ -2644,6 +2645,7 @@ function renderRvcList() {
         <div class="h-sub">${idTag(j.id)}</div>
         ${j.status === "done" && j.src_f0 && !j.src_f0.error ? `<div class="h-sub" title="分离后真实人声实测（比换声前整曲探针可信）${j.pitch_advice? ' · 建议变调 '+(j.pitch_advice.suggested_pitch>0?'+':'')+j.pitch_advice.suggested_pitch+' 半音':''}">🎼 源音域 ≈ 中位 ${j.src_f0.median_hz}Hz</div>` : ""}
         ${j.status === "done" && j.pitch_note ? `<div class="h-sub" title="${escapeHtml(j.pitch_note)}">🎼 ${escapeHtml(j.pitch_note)}</div>` : ""}
+        ${j.status === "done" && j.acc_pitch && j.acc_pitch.note ? `<div class="h-sub" title="人声变的是音区（含整八度），伴奏只跟非八度那部分——整八度不换调，挪伴奏只会把底鼓贝斯推坏">${escapeHtml(j.acc_pitch.applied ? "🎹 " : "⚠️ ")}${escapeHtml(j.acc_pitch.note)}</div>` : ""}
         ${j.status === "error" ? `<div class="h-sub truncate" title="${escapeHtml(j.error || "")}">${escapeHtml((j.error || "").slice(0, 80))}</div>` : ""}
         ${j.status === "pending" ? `<div class="h-sub">${j.step && j.step !== "排队中" ? escapeHtml(j.step) + "，等到空闲就自动开跑" : "换声一次只跑一个（分离和推理都吃满显存），排队是正常状态"}</div>` : ""}
       </div>
