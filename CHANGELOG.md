@@ -7,6 +7,100 @@
 版本的唯一真源是 git 的**附注标签**（`git tag -l -n`），本文件是给人看的说明；
 宣传文案里要写的版本号从本文件顶部条目取，不在别处另记一份数字。
 
+## [v1.4.0] - 2026-09-28
+
+来源：需求"同一局域网里其它电脑的浏览器也能打开 3081 工作台"。做法不是把 dsh 改成监听
+`0.0.0.0`（它设计上拒绝，因为那等于把可执行工具的入口交给全网段），而是三段拼起来：
+TCP 层 `netsh portproxy`（192.168.1.6:3081 → 127.0.0.1:3081）＋ dsh 的 `--trusted-host`
+（把它自己的同源栅栏认这个地址）＋ 网关的 LAN 白名单。网关仍绑 `0.0.0.0` 但 7863
+**不对局域网放行**，局域网只能通过 3081 的面板反代摸到网关。
+
+### 新增
+- **两个双击就能用的开关**：`scripts\开放局域网.bat` 与 `scripts\关闭局域网.bat`。
+  开放：需要管理员时自动弹一次 UAC（在 bat 里用 `net session` 判，不在管理员窗口里就
+  `Start-Process -Verb RunAs` 重开自己），然后在 cmd 窗口里**直接打印给其它电脑的完整
+  地址（含 token）**并复制到剪贴板，窗口 `pause` 留住结果；同时把 `secrets\local_env.bat`
+  的名单三行放开（改前备份 `local_env.bat.bak`）。关闭：删转发、删防火墙规则、把三行
+  `rem` 掉。两个可选参数：`-Restart` 顺带重启工作台让名单立刻生效（只杀本机绑定地址的
+  监听进程，portproxy 的 svchost 不动），`-Preview` 只打印地址、什么都不改（不弹 UAC）。
+  实测：`开放局域网.bat` 打印 `token 实测有效（HTTP 303）`，`curl http://192.168.1.6:3081/?token=…`
+  回 303 并下发 `dsh-auth-…` cookie（authority 就是 `192.168.1.6:3081`）；再跑一次是幂等的
+  （"名单本来就是开启状态，未改动 / 已清理同端口旧转发 / 防火墙规则已更新"）。
+- `settings.app_host` 改为可用 `YUE2_HOST` 覆盖（默认仍回环）：把"开放局域网"这件事
+  和一个开关放在一起，避免"代码说开放、进程说没开放"的两套行为。
+- dsh 面板路由（`/lab*`、`/lab-api*`、`/lab-status`）**新增鉴权闸门**：拿调用方的
+  Host+Cookie 回环问 dsh 自己是否已鉴权，结果按 (host, cookie) 缓存 30 s。
+  开放前这条是裸奔的——实测不带任何 cookie：`GET /lab/api/health` 200、
+  `POST /lab/api/generate/start` 打到网关参数校验（400）、更糟的是
+  `GET /lab/api/ai/web` 直接把**带进程 token 的 dsh 地址**返回给调用方，
+  等于把"AI 对话"的门票发给任何能连上局域网的机器。现在一律 401，已鉴权才放行。
+- `ai_router` 的 `/api/ai/web` 会把 token 地址改写成调用方正在用的 host
+  （原来恒返回 `127.0.0.1:3081`，局域网电脑点"AI 助手"会被指到自己那台机器）；
+  它自动拉起 dsh 的那条路径补上 `--trusted-host`（缺了它的症状是页面能打开、按钮全没反应）。
+
+### 修复
+- **面板反代 GET 全线永久挂起**。`ui-panel.mjs` 原先只用 `target.setTimeout()`，那是
+  **绑在 socket 上**的超时：连接池（`maxSockets:24`）被长任务占满时请求还在 agent 队列里
+  排队、压根没拿到 socket，于是永不触发 —— 实测现场是 dsh→7863 挂着 24 条 ESTABLISHED、
+  `/lab/api/*` 与 `/lab-status` 全 pending，而同一条 URL 在刚起的进程上 8 ms 就 200。
+  现补一个与 socket 无关的墙上时钟定时器，超时返回可读 504 并往 `_dsh_err.log` 写一行
+  带池状态（在用/空闲/排队）的诊断。故障注入实测（黑洞监听 7863、30 条并发）：
+  30/30 全部 8.0 s 拿到 504，包括超出池上限的那 6 条排队请求。
+- **网关事件循环被重活冻死**（同一个"全线转圈"现象的真凶之一）。12 个 `async def` 路由里有
+  5 个在循环上直接跑音频重活：`/voices`(建档推理)、`/voices/transcribe`(ASR)、
+  `/voices/denoise`(UVR)、`/rvc/pitch/advice` 与 `/rvc/models/{name}/f0-reference`(f0 提取)。
+  一次净化 22 s，这 22 s 内**整个网关**不响应任何请求，看起来像反代坏了。现全部
+  `run_in_threadpool` 卸载。真机验证：局域网跑 22 s 净化期间 `/lab-status` 连续 6 次
+  仍 7–40 ms 返回。
+- **keep-alive 配对**：uvicorn 默认 5 s 单方面关空闲连接，而面板客户端留 15 s
+  （`keepAliveMsecs`）—— 复用到"服务器已关、客户端以为还活着"的连接就会石沉大海。
+  `timeout_keep_alive=75`，服务器必须比客户端更晚关。
+- **两处"按端口杀进程"误杀系统服务**（本轮踩了两次实祸）：`停止音乐工作台.bat` 与
+  `watchdog.py: find_listener_pid()` 都按端口第一条命中就 `taskkill`，而 portproxy 的监听
+  行（`192.168.1.6:3081`，宿主是 svchost/iphlpsvc）也匹配 `:3081` —— 杀掉的后果是局域网转发
+  与 IP Helper 一起没了，日志里就是"已击杀假死进程 PID 21848"。现在只认回环/通配绑定
+  （`_OWN_BIND_PREFIXES` / `LocalAddress -in 127.0.0.1,0.0.0.0,::,::0`）。实测：跑击杀语句后
+  svchost（18968）存活，看门狗 35 s 内自愈起网关与 dsh。
+- **开了 LAN 之后本机自己不能生成**：LAN 模式下 Origin 判据被换成"只查 LAN 白名单"，
+  而本机工作台的 Origin 恒是 `http://127.0.0.1:3081` → 本机的每个写请求被自家守卫 403。
+  现在回环与白名单二者都放行（新增回归用例锁定），`evil.example` 照旧拒。
+- `scripts\开放局域网.bat` 必须存成 **CRLF**：只有 LF 时 cmd 会把中文 `rem` 注释的后半截
+  当命令执行（实测报"…到执行' is not recognized"），首次双击直接失败。
+- **"收回"其实什么都没收回**：`netsh interface portproxy show all` 的输出是
+  `地址 端口 地址 端口` 四列、**中间没有冒号**，而原解析按 `":3081"` 匹配整行，一条也匹配不上，
+  于是日志写成"本机没有该端口的端口转发"、报着成功，`192.168.1.6:3081` 的转发还原封不动挂着
+  （实测抓到：删完防火墙后 netsh 仍能列出该条）。现按列解析（`Get-PortProxyRules`），
+  并且删完**复核一遍**，没删干净就明说还剩哪几条；顺带处理 netsh 偶发的
+  "系统找不到指定的文件"（等 1 s 重试一次）。实测：收回后 `show all` 为空。
+- **有效 token 被读成"工作台没在跑"**：PowerShell 5.1 的 `Invoke-WebRequest` 处理 dsh 那条
+  带 `Set-Cookie` 的 303 响应时抛 `NullReferenceException`（`-MaximumRedirection 0` 或跟随
+  重定向都抛，异常里也没有 `Response`），所以"实测 token 有效性"那步恒判失败、把能用的地址
+  标成警告。换成 .NET `HttpWebRequest` 关掉自动重定向直接取状态码；用真实文件里的那段函数
+  跑五个用例验证：回环带 token 303、乱 token 401、局域网 authority 带 token 303、
+  不带 token 401、关闭端口 0。
+- **提权重跑后 `%~dp0` 变空**：bat 里用 `shift` 吃掉 `__admin` 标记会**把 `%0` 一起挪走**，
+  之后 `%~dp0` 展开为空，`-File "开放局域网.ps1"` 被当相对路径解析到仓库根（实测报
+  "argument ... does not exist"）。现改成进门先 `set "HERE=%~dp0"`、根本不用 shift，
+  要不要提权直接由 `net session` 判（管理员实例自然走前台路径）。
+- 名单口径核对原先只看进程环境变量：`.bat` 是先 `call local_env.bat` 再跑脚本，所以三行刚被
+  脚本放开的那一次，环境变量里还没有，会误报"YUE2_LAN_HOSTS 为空"。现回退到直接读
+  `local_env.bat`，并在日志里说破读自哪里。
+- `.gitignore` 补 `secrets/*.bak`：脚本改动名单三行前的备份文件里同样有 `DEEPSEEK_API_KEY`，
+  原来只忽略了 `secrets/local_env.bat` 一个名字，`git status` 会把 .bak 亮出来。
+
+### 已知问题（本轮未修，记录在册）
+- dsh 侧栏 `sidebar.footer.action` 槽位崩 React error #300（`dsh-plugin/lib/client.js` 的
+  StatusCard 里 Hook 顺序违规：`if (rail) return null` 之后还有 `useState/useEffect`）。
+  蓝军 G3 评审早已记录，本机与局域网都出现，与本次改动无关。
+- `scripts\register_protocol.bat` 同样是 LF-only，属同一类隐患，尚未验证是否真会炸。
+
+### 测试
+`py312\python.exe -m unittest discover -s tests` → 148 tests OK；`node --check` 过
+`ui-panel.mjs`。注意：`dsh-plugin\src\ui-panel.mjs` 与 dsh 实际加载的
+`_dsh_home\profiles\web\node_modules\yue2-lab-plugin\src\ui-panel.mjs` 是**硬链接**，
+用编辑器保存一旦改成"临时文件+rename"就会断链（实测断过一次，改完 dsh 仍在跑旧代码），
+改完务必 `stat -c "%i %h"` 比对，断了就 `New-Item -ItemType HardLink` 重建。
+
 ## [v1.3.1] - 2026-09-27
 
 来源：首次真机跑「中」档素材净化时的事故复盘。legacy VR 架构的净化/去混响模型

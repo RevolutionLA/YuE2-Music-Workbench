@@ -10,6 +10,8 @@ __pycache__/
 
 # ===== 密钥/本地配置（绝不入库） =====
 secrets/local_env.bat
+# 开放/收回局域网的脚本改这三行前会备份成 local_env.bat.bak，里面同样有密钥
+secrets/*.bak
 *.env
 
 # ===== 看门狗/引擎运行时产物 =====

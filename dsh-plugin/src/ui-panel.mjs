@@ -158,39 +158,122 @@ function proxy(req, res, url) {
         up.resume();
         res.end();
         settled = true;
+        if (timer) clearTimeout(timer);
         return;
       }
       up.pipe(res);
-      up.on('end', () => { settled = true; });
+      up.on('end', () => { settled = true; if (timer) clearTimeout(timer); });
       up.on('error', () => { if (!settled) { settled = true; res.destroy(); } });
     },
   );
 
   const ms = timeoutFor(url);
-  if (ms > 0) {
-    target.setTimeout(ms, () => {
-      if (settled) return;
-      settled = true;
-      target.destroy();
-      // 响应头已发出：只能收尾，不能再塞 504（浏览器会当成截断的坏响应）
-      if (res.headersSent) { res.end(); return; }
-      json(res, 504, { ok: false, error: `网关响应超时（${ms / 1000}s），请稍后重试` });
-    });
-  }
-
-  target.on('error', () => {
+  // 兜底计时器必须是"墙上时钟"，不能用 target.setTimeout()：那个超时是**绑在 socket 上**的，
+  // 连接池（maxSockets:24）被长任务占满时，请求还排在 agent 队列里、压根没拿到 socket，
+  // setTimeout 永不触发 → 面板所有 GET 无限转圈（实测：dsh→7863 挂着 24 条 ESTABLISHED，
+  // /lab/api/* 与 /lab-status 全 pending；同一条 URL 在刚起的进程上 8 ms 就 200）。
+  // 这里给每个限时请求一个与 socket 无关的定时器，宁可返回可读的 504 也不让界面静默卡死。
+  let timer = null;
+  const poolStats = () => {
+    const queued = Object.values(agent.requests || {})
+      .reduce((n, q) => n + (Array.isArray(q) ? q.length : 0), 0);
+    return `${Object.keys(agent.sockets).length} 在用/${Object.keys(agent.freeSockets).length} 空闲`
+      + ` socket，${queued} 条排队`;
+  };
+  const fail = (msg, code) => {
     if (settled) return;
     settled = true;
+    if (timer) clearTimeout(timer);
+    target.destroy();
+    // 响应头已发出：只能收尾，不能再塞 504（浏览器会当成截断的坏响应）
     if (res.headersSent) { res.end(); return; }
+    console.error(`[yue2-lab] ${req.method} ${url} → ${code}（${msg}；网关 :${LAB_PORT}，${poolStats()}）`);
+    json(res, 504, { ok: false, error: msg });
+  };
+  if (ms > 0) {
+    const msg = `网关响应超时（${ms / 1000}s），请稍后重试`;
+    timer = setTimeout(() => fail(msg, '排队/响应超时'), ms);
+    target.setTimeout(ms, () => fail(msg, 'socket 超时'));
+  }
+
+  target.on('error', (err) => {
+    if (settled) return;
+    settled = true;
+    if (timer) clearTimeout(timer);
+    if (res.headersSent) { res.end(); return; }
+    console.error(`[yue2-lab] ${req.method} ${url} → 502 上游错误：${err && err.code ? err.code : err}`);
     json(res, 502, {
       ok: false,
       error: `音乐工作台网关（:${LAB_PORT}）未运行，请先启动主程序。`,
     });
   });
 
-  res.on('close', () => { if (!settled) { settled = true; target.destroy(); } });
-  req.on('error', () => { if (!settled) { settled = true; target.destroy(); } });
+  res.on('close', () => { if (timer) clearTimeout(timer); if (!settled) { settled = true; target.destroy(); } });
+  req.on('error', () => { if (timer) clearTimeout(timer); if (!settled) { settled = true; target.destroy(); } });
   req.pipe(target);
+}
+
+// --------------------------------------------------------------------------- //
+// 面板路由自己的鉴权闸门
+//
+// 为什么要这一层：ws.register() 把路由挂在 dsh 裸 webServer 上，绕开了 dsh 的
+// 浏览器信任栅栏与 token/cookie 校验（栅栏只管 /api/*）。局域网开放之后这就成了
+// 一扇没锁的门 —— 实测（2026-09-28）不带任何 cookie：
+//   GET  http://<lan>:3081/lab/api/health       → 200
+//   POST http://<lan>:3081/lab/api/generate/start → 400（校验后才拦，说明请求已进网关）
+//   GET  http://<lan>:3081/lab/api/ai/web        → 200，响应里直接给出带 token 的
+//        dsh 地址 —— 等于把"AI 对话"的门票发给任何一个能连上局域网的机器。
+// 我们拿不到 dsh 签 cookie 的密钥，所以把校验**外包给 dsh 自己**：拿调用方的
+// Host+Cookie 回环访问 dsh 的首页（那是栅栏保护的路径），401 即未鉴权。
+// 结果按 (host, cookie) 缓存 30 s，页面 10 s 一轮的轮询不会每次都多跑一趟。
+// --------------------------------------------------------------------------- //
+const AUTH_CACHE_TTL = 30000;
+const authCache = new Map();  // key -> { ok, at }
+
+function dshVerifies(req) {
+  return new Promise((resolve) => {
+    const r = http.get(
+      {
+        host: '127.0.0.1',
+        port: PORTS.dsh,
+        path: '/',
+        timeout: 2500,
+        headers: {
+          host: req.headers.host || `127.0.0.1:${PORTS.dsh}`,
+          cookie: req.headers.cookie || '',
+          'user-agent': 'yue2-lab-auth-check',
+        },
+      },
+      (up) => { resolve(up.statusCode !== 401 && up.statusCode !== 403); up.resume(); },
+    );
+    r.on('error', (e) => {
+      console.error(`[yue2-lab] 鉴权自检请求失败（按未授权处理，宁可误拒）：${e && e.code ? e.code : e}`);
+      resolve(false);
+    });
+    r.on('timeout', () => { r.destroy(); console.error('[yue2-lab] 鉴权自检超时（按未授权处理）'); resolve(false); });
+  });
+}
+
+/** 调用方是否已经通过 dsh 的 token/cookie 鉴权。 */
+async function isAuthorized(req) {
+  const key = `${req.headers.host || ''}\n${req.headers.cookie || ''}`;
+  if (!req.headers.cookie) return false;          // 没 cookie 一定是裸请求
+  const hit = authCache.get(key);
+  if (hit && Date.now() - hit.at < AUTH_CACHE_TTL) return hit.ok;
+  if (authCache.size > 64) authCache.clear();     // 粗略封顶，别让缓存无限长
+  const ok = await dshVerifies(req);
+  authCache.set(key, { ok, at: Date.now() });
+  return ok;
+}
+
+/** 统一拒绝：留日志（静默退化必须有痕迹），并回可读的 401。 */
+function deny(req, res) {
+  console.error(`[yue2-lab] ${req.method} ${req.url} → 401 未经 dsh 鉴权（Host=${req.headers.host}，`
+    + `来自局域网的裸请求；请用带 token 的地址打开工作台）`);
+  json(res, 401, {
+    ok: false,
+    error: '请先用带 token 的工作台地址打开页面（token 见本机 dsh-plugin\\_dsh_web.log），再访问面板接口。',
+  });
 }
 
 function gatewayAlive() {
@@ -281,7 +364,8 @@ export function apply(ctx) {
   disposers.push(ws.register({
     kind: 'prefix',
     path: '/lab-api',
-    handler: (req, res) => {
+    handler: async (req, res) => {
+      if (!(await isAuthorized(req))) return deny(req, res);
       const url = req.url.slice('/lab-api'.length);
       proxy(req, res, '/api' + (url.startsWith('/') ? url : '/' + url));
     },
@@ -292,6 +376,7 @@ export function apply(ctx) {
     kind: 'exact',
     path: '/lab-status',
     handler: async (_req, res) => {
+      if (!(await isAuthorized(_req))) return deny(_req, res);
       const alive = await gatewayAlive();
       const body = JSON.stringify({
         ok: true,
@@ -315,7 +400,8 @@ export function apply(ctx) {
   disposers.push(ws.register({
     kind: 'prefix',
     path: '/lab',
-    handler: (req, res) => {
+    handler: async (req, res) => {
+      if (!(await isAuthorized(req))) return deny(req, res);
       const urlPath = req.url.slice('/lab'.length) || '/';
       if (urlPath === '/api' || urlPath.startsWith('/api/')) {
         return proxy(req, res, urlPath);   // /lab/api/x → 网关 /api/x

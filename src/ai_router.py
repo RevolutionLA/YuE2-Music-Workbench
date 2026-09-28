@@ -15,7 +15,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 import sys as _sys
@@ -31,6 +31,21 @@ DSH_PORT = _port("dsh")
 import ai_lab
 
 router = APIRouter(prefix="/api/ai")
+
+def _caller_authority(request: Request) -> str:
+    """调用方浏览器正在用的 host[:port]，取不到就回 127.0.0.1:<dsh>。
+
+    面板反代会把 Host 改写成 127.0.0.1:7863，所以 Host 不能当证据；能用的是
+    浏览器自带的 Origin/Referer（页面从哪个地址打开，这两个头就是哪个地址）。
+    """
+    for h in ("origin", "referer"):
+        v = (request.headers.get(h) or "").strip()
+        if not v:
+            continue
+        m = re.match(r"^[a-zA-Z]+://([^/?#]+)", v)
+        if m:
+            return m.group(1)
+    return f"127.0.0.1:{DSH_PORT}"
 
 DSH_RUNNER = Path(__file__).parent.parent / "dsh-plugin" / "src" / "runner.mjs"
 
@@ -59,8 +74,17 @@ def ai_session(sid: str):
 
 
 @router.get("/web")
-def ai_web():
-    """重定向到 dsh 原生 Web UI；未运行则自动后台拉起并等待就绪。"""
+def ai_web(request: Request):
+    """重定向到 dsh 原生 Web UI；未运行则自动后台拉起并等待就绪。
+
+    这个端点返回的是带进程 token 的 dsh 地址，等于"门票"，所以它只能经由面板
+    反代到达调用方，而面板路由自 2026-09-28 起加了鉴权闸门（ui-panel.mjs 的
+    isAuthorized：拿调用方 Host+Cookie 回环问 dsh 自己，未鉴权一律 401）。
+    网关口 7863 本身不对局域网放行（防火墙 + 面板是唯一入口），因此这里不再
+    额外拦 token，只做一件事：把 URL 里的 127.0.0.1 换成调用方正在使用的那个
+    地址 —— 否则局域网电脑点"AI 助手"会被指到 127.0.0.1，打开的是它自己那台
+    机器上的端口，必然失败。
+    """
     import subprocess
     import time as _t
     from fastapi.responses import RedirectResponse
@@ -142,9 +166,18 @@ def ai_web():
                "DSH_HOME": str(root / "dsh-plugin" / "_dsh_home"),
                "DSH_NO_BROWSER": "1"}
         log_fd = open(log, "ab")
+        # --trusted-host 与启动脚本/看门狗保持同一口径：局域网白名单从环境变量读，
+        # 少了这个参数，局域网打开的页面能渲染但所有按钮没反应（dsh 的同源栅栏把
+        # /api 拒了）。历史上这条链路就是漏了参数才出现"本机好用、别处点不动"。
+        spawn_argv = [
+            "node", str(root / "dsh-plugin" / "node_modules" / "@deepseek-ai" / "dsh" / "lib" / "bin.js"),
+            "web", "--port", str(DSH_PORT), "--no-open",
+        ]
+        _lan_hosts = [h.strip() for h in (os.environ.get("YUE2_LAN_HOSTS") or "").split(",") if h.strip()]
+        if _lan_hosts:
+            spawn_argv += ["--trusted-host", *_lan_hosts]
         subprocess.Popen(
-            ["node", str(root / "dsh-plugin" / "node_modules" / "@deepseek-ai" / "dsh" / "lib" / "bin.js"),
-             "web", "--port", str(DSH_PORT), "--no-open"],
+            spawn_argv,
             cwd=str(root / "dsh-plugin"), env=env,
             stdout=log_fd, stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0),
@@ -156,6 +189,9 @@ def ai_web():
             _t.sleep(2.0)
         url = _read_token()
     if url:
+        # 把 token 地址改写成调用方正在用的地址：否则局域网电脑点"AI 助手"
+        # 会被指到它自己的 127.0.0.1:3081，必然打不开。
+        url = url.replace(f"127.0.0.1:{DSH_PORT}", _caller_authority(request), 1)
         return {"ok": True, "url": url}
     raise HTTPException(status_code=503, detail="dsh 原生界面启动失败（查看 dsh-plugin/_dsh_web.log）")
 

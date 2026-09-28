@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -14,7 +15,11 @@ class Settings:
     # 192.168.1.7，逗号分隔）——只放宽不列名单等于把 DNS 重绑定请回门内，所以缺名单
     # 仍然拒绝启动。本工作台没有鉴权与多用户隔离，开放前必须自己套反代 + 鉴权，
     # 且不要暴露到公网。
-    app_host: str = "127.0.0.1"
+    # 绑定地址可由环境变量 YUE2_HOST 覆盖（默认回环），目的是让"开放/收回局域网"这件事
+    # 和上面两个开关一起集中在 secrets\local_env.bat 里改一处：写死在代码里时，看门狗
+    # 拉到的是它自己那份环境，改代码 + 只重启网关就会出现"代码说开放、进程说没开放"的
+    # 两套行为。取值非法（比如漏了 YUE2_LAN_HOSTS）仍由 app.py 在启动时抛错拦下。
+    app_host: str = (os.environ.get("YUE2_HOST") or "").strip() or "127.0.0.1"
     app_port: int = _port("gateway")
 
     # dsh 工作台（UI 宿主）端口：UI 归属 3081，网关只在 gateway_serve_ui=False 时

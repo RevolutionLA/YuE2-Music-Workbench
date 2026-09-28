@@ -387,6 +387,28 @@ class TestLocalGuard(Sandbox):
         self.assertEqual(self.client.post("/api/batch/status",
                                           headers={"origin": LOCAL_BASE}).status_code, 405)
 
+    def test_lan_mode_still_allows_this_machines_own_origin(self):
+        """开局域网之后，本机工作台的写请求不能被自己的守卫 403。
+
+        LAN_MODE 下 Origin 判据换成了 LAN_HOSTS 白名单，而本机页面的 Origin 恒是
+        http://127.0.0.1:3081 —— 只查白名单的结果是"局域网一开、本机点生成就失败"
+        （2026-09-28 实测：403 跨站请求被拒绝）。回环 Origin 不比白名单更危险。
+        """
+        saved = (app.LAN_MODE, app.LAN_HOSTS)
+        app.LAN_MODE = True
+        app.LAN_HOSTS = {"192.168.1.6"}
+        try:
+            for origin, why in (("http://127.0.0.1:3081", "本机工作台"),
+                                ("http://localhost:3081", "本机别名"),
+                                ("http://192.168.1.6:3081", "局域网白名单"),
+                                ("http://192.168.1.6:7863", "局域网直连网关端口")):
+                r = self.client.post("/api/batch/status", headers={"origin": origin})
+                self.assertEqual(r.status_code, 405, f"{why} 的 Origin 不该被守卫拦：{origin}")
+            self.assertEqual(self.client.post(
+                "/api/batch/status", headers={"origin": "http://evil.example"}).status_code, 403)
+        finally:
+            app.LAN_MODE, app.LAN_HOSTS = saved
+
     def test_security_headers_on_every_response(self):  # 蓝军 Y4
         h = self.client.get("/api/batch/status").headers
         self.assertEqual(h.get("x-content-type-options"), "nosniff")

@@ -38,5 +38,14 @@ set "YUE2_DSH_DIR=%cd%\dsh-plugin"
 set "YUE2_DSH_OUT=%cd%\dsh-plugin\_dsh_web.log"
 set "YUE2_DSH_ERRLOG=%cd%\dsh-plugin\_dsh_err.log"
 set "YUE2_DSH_BIN=node_modules\@deepseek-ai\dsh\lib\bin.js"
-powershell -NoProfile -Command "try{Start-Process -WindowStyle Hidden -FilePath $env:NODE_EXE -WorkingDirectory $env:YUE2_DSH_DIR -RedirectStandardOutput $env:YUE2_DSH_OUT -RedirectStandardError $env:YUE2_DSH_ERRLOG -ArgumentList $env:YUE2_DSH_BIN,'web','--port',$env:DSH_PORT,'--no-open' -ErrorAction Stop | Out-Null}catch{exit 1}"
+rem ---- 局域网开放：把 YUE2_LAN_HOSTS 翻成 dsh 的 /api 信任栅栏白名单 ----
+rem dsh 出于安全拒绝 --host 0.0.0.0（它带能读写本机文件的 agent 工具），所以本进程
+rem 照旧只绑 127.0.0.1，对外由 netsh portproxy（见 scripts\开放局域网.bat）把
+rem <本机 LAN IP>:3081 转进来。转发不改 Host 头，浏览器发出的 Host/Origin 仍是
+rem 192.168.1.6:3081，不在 dsh 回环派生名单里就会被 /api 栅栏 403 掉——症状是
+rem "页面能打开、按钮全都没反应"。故凡开了 YUE2_LAN_HOSTS 就逐个补成 --trusted-host
+rem （不带端口 = 该主机任意端口，正好覆盖 3081 与内嵌代理用的 7863）。
+set "YUE2_DSH_TRUSTED="
+if defined YUE2_LAN_HOSTS set "YUE2_DSH_TRUSTED=--trusted-host %YUE2_LAN_HOSTS:,= %"
+powershell -NoProfile -Command "$Extra=@(); if($env:YUE2_DSH_TRUSTED){$Extra=$env:YUE2_DSH_TRUSTED -split '\s+' | Where-Object {$_}}; try{Start-Process -WindowStyle Hidden -FilePath $env:NODE_EXE -WorkingDirectory $env:YUE2_DSH_DIR -RedirectStandardOutput $env:YUE2_DSH_OUT -RedirectStandardError $env:YUE2_DSH_ERRLOG -ArgumentList (($env:YUE2_DSH_BIN,'web','--port',$env:DSH_PORT,'--no-open') + $Extra) -ErrorAction Stop | Out-Null}catch{exit 1}"
 exit /b 0

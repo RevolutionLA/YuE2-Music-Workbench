@@ -39,6 +39,7 @@ import uvicorn
 from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from starlette.concurrency import run_in_threadpool
 import httpx
 
 import main  # 编译网关
@@ -261,8 +262,12 @@ async def _guard_local_only(request, call_next):
         return JSONResponse(status_code=403, content={"detail": "只接受面向本机回环地址的请求"})
     if request.method.upper() in _WRITE_METHODS:
         origin = request.headers.get("origin") or request.headers.get("referer") or ""
-        # 浏览器同源 POST 也会带 Origin，所以放行条件是"本机/白名单"，而不是"没带 Origin 就放过"
-        if origin and not (_origin_in_allowlist(origin) if LAN_MODE else _origin_is_loop(origin)):
+        # 浏览器同源 POST 也会带 Origin，所以放行条件是"本机/白名单"，而不是"没带 Origin 就放过"。
+        # LAN 模式下必须同时认回环：本机工作台的 Origin 恒是 http://127.0.0.1:3081，只查
+        # LAN_HOSTS 白名单会把本机的每一个"生成/换声/保存"都 403 掉（实测：开 LAN 后
+        # 本机点生成即失败），而回环 Origin 本来就不比 LAN 白名单更危险。
+        if origin and not (_origin_is_loop(origin)
+                           or (_origin_in_allowlist(origin) if LAN_MODE else False)):
             return JSONResponse(status_code=403, content={"detail": "跨站请求被拒绝"})
     response = await call_next(request)
     # 蓝军 Y4：任何网页都能把 127.0.0.1 iframe 进自己页面做点击劫持（诱导用户点"生成/删除"）。
@@ -2672,7 +2677,8 @@ async def rvc_pitch_advice(file: UploadFile, model: str = Form(...)):
     probe = work / f"src{ext}"
     try:
         await _stream_upload_to(file, probe, 200 * 1024 * 1024, "音频")
-        src = _rvc_f0_of_audio(probe)
+        # f0 提取要解码整段音频 + 跑基频检测，几十秒起步，不能占事件循环
+        src = await run_in_threadpool(_rvc_f0_of_audio, probe)
         tgt = _rvc_f0_stats(model)
         out = {"ok": True, "source": src, "target": tgt, "model": model}
         if tgt:
@@ -2723,7 +2729,8 @@ async def rvc_model_f0_reference(name: str, file: UploadFile):
     probe = work / f"ref{ext}"
     try:
         await _stream_upload_to(file, probe, 60 * 1024 * 1024, "参考音频")
-        stats = _rvc_f0_of_audio(probe)  # 有声帧太少会在里面直接 422，不编数
+        # 同上：f0 建档丢线程池，别冻事件循环（有声帧太少会在里面直接 422，不编数）
+        stats = await run_in_threadpool(_rvc_f0_of_audio, probe)
         sidecar = RVC_DIR / "logs" / stem / "f0_stats.json"
         sidecar.parent.mkdir(parents=True, exist_ok=True)
         # _stamp 用参考音频文件的 mtime（评审方案）：与训练 2a_f0 的 npy 戳共用一把尺，
@@ -5374,10 +5381,13 @@ async def save_voice(
     tmp = ROOT / "tmp" / "voices" / (datetime.now().strftime("%H%M%S_") + os.urandom(2).hex() + suffix)
     try:
         await _stream_upload_to(audio, tmp, 100 * 1024 * 1024, "音色参考音频")
-        data = tmp.read_bytes()
+        data = await run_in_threadpool(tmp.read_bytes)
     finally:
         tmp.unlink(missing_ok=True)
-    item = voices.save_voice(name, reference_text, data, suffix)
+    # 音色建档要跑嵌入模型推理（秒级到十几秒）。以前直接在 async 处理器里同步跑，
+    # 整个事件循环被冻住 —— 表现是"面板所有请求一起转圈"（health/状态/列表全 pending），
+    # 而不是只有这个请求慢。凡是在 async def 里做重活，一律丢线程池。
+    item = await run_in_threadpool(voices.save_voice, name, reference_text, data, suffix)
     return {"ok": True, "voice": item}
 
 
@@ -5398,7 +5408,9 @@ async def transcribe_voice(audio: UploadFile = File(...)):
     f = p / (datetime.now().strftime("%H%M%S_") + os.urandom(2).hex() + ext)
     await _stream_upload_to(audio, f, 200 * 1024 * 1024, "音频")
     try:
-        text = asr.recognize_wav_bytes(f.read_bytes(), audio.filename or "prompt.wav")
+        # ASR 是分钟级重活，留在事件循环上会把整个网关冻住（见 save_voice 同处注释）
+        text = await run_in_threadpool(
+            lambda: asr.recognize_wav_bytes(f.read_bytes(), audio.filename or "prompt.wav"))
     finally:
         f.unlink(missing_ok=True)
     return {"ok": True, "text": text}
@@ -5415,7 +5427,9 @@ async def denoise_voice(audio: UploadFile = File(...)):
     f = p / (datetime.now().strftime("%H%M%S_") + os.urandom(2).hex() + ext)
     await _stream_upload_to(audio, f, 200 * 1024 * 1024, "音频")
     try:
-        out = denoise.denoise_wav_bytes(f.read_bytes(), audio.filename or "ref.wav")
+        # 净化（UVR 小模型）在 CUDA 上也要十几秒；同步跑在 async 处理器里 = 全网关冻结
+        out = await run_in_threadpool(
+            lambda: denoise.denoise_wav_bytes(f.read_bytes(), audio.filename or "ref.wav"))
     finally:
         f.unlink(missing_ok=True)
     return Response(
@@ -5633,4 +5647,9 @@ if __name__ == "__main__":
         host=settings.app_host,
         port=settings.app_port,
         reload=False,
+        # keep-alive 配对：dsh 面板的反代客户端把空闲连接留 15 s（ui-panel.mjs 的
+        # keepAliveMsecs），而 uvicorn 默认 5 s 就单方面关掉 —— 客户端下次复用这条
+        # "看着还活着、其实服务器已关"的连接，请求发出去石沉大海。服务器必须比客户端
+        # 更晚关，取一个明显大于 15 s 的值。
+        timeout_keep_alive=75,
     )

@@ -75,8 +75,22 @@ def probe(url: str, timeout: float | None = None) -> bool:
         return False
 
 
+# 只有绑在这些地址上的监听才是本看门狗负责的服务（网关、dsh 工作台）。
+# 局域网开放后 3081 上还会出现一条 netsh portproxy 的监听（192.168.1.6:3081），
+# 它属于 svchost 里的 IP Helper（iphlpsvc）。按端口第一条命中就杀的做法已经真的
+# 把这个系统服务宿主杀过两次（09-28 两次日志："已击杀假死进程 PID 21848"），
+# 后果是端口转发静默失效——"本机一切正常、局域网突然打不开"。故此处按本地地址收口。
+_OWN_BIND_PREFIXES = ("127.", "0.0.0.0", "[::1]", "[::]", ":::")
+
+
+def _is_own_bind(local_addr: str) -> bool:
+    return local_addr.startswith(_OWN_BIND_PREFIXES)
+
+
 def find_listener_pid(port: int) -> int | None:
-    """返回占用指定端口的进程 PID（用于精准击杀假死进程）。匹配行尾端口，避免 :78630 误命中。"""
+    """返回占用指定端口的"自家服务"进程 PID（用于精准击杀假死进程）。
+    匹配行尾端口避免 :78630 误命中；本地地址必须在 _OWN_BIND_PREFIXES 里，
+    以免把端口转发（netsh portproxy，宿主是 svchost/iphlpsvc）当成假死服务杀掉。"""
     try:
         out = subprocess.run(
             ["netstat", "-ano", "-p", "tcp"], capture_output=True, text=True, timeout=15,
@@ -86,7 +100,7 @@ def find_listener_pid(port: int) -> int | None:
             if "LISTENING" not in line:
                 continue
             parts = line.split()
-            if len(parts) >= 2 and parts[1].rstrip().endswith(f":{port}"):
+            if len(parts) >= 2 and parts[1].rstrip().endswith(f":{port}") and _is_own_bind(parts[1]):
                 return int(parts[-1])
     except Exception:
         pass
@@ -144,9 +158,15 @@ def spawn_dsh():
             stderr=subprocess.DEVNULL,
         )
     try:
+        # 与 scripts\启动dsh工作台.bat 同一份参数口径：局域网白名单非空时必须补
+        # --trusted-host，否则这条回退路径起来的 3081 只认回环，局域网按钮全 403。
+        _lan = [h.strip() for h in os.environ.get("YUE2_LAN_HOSTS", "").split(",") if h.strip()]
+        args = ["node", "node_modules/@deepseek-ai/dsh/lib/bin.js",
+                "web", "--port", str(DSH_PORT), "--no-open"]
+        if _lan:
+            args += ["--trusted-host", *_lan]
         return subprocess.Popen(
-            ["node", "node_modules/@deepseek-ai/dsh/lib/bin.js",
-             "web", "--port", str(DSH_PORT), "--no-open"],
+            args,
             cwd=str(ROOT / "dsh-plugin"),
             env={**os.environ, "DSH_HOME": str(ROOT / "dsh-plugin" / "_dsh_home"),
                  "DSH_NO_BROWSER": "1"},
