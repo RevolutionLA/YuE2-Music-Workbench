@@ -19,10 +19,16 @@
 #
 # 故意**不**给网关端口（7863）开防火墙规则：局域网设备只经 3081 的内部代理访问网关，
 # 网关虽因 LAN 模式绑了 0.0.0.0，但入站被防火墙挡在外，等于少一个无鉴权入口。
+# （这条设计说明只写进日志，不再占屏幕行。）
+#
+# 屏幕与日志的分工（2026-09-29 改版）：屏幕上只有"标题 + 每步一行对勾 + 分享地址 +
+# 三条提示"，一眼看完；所有带时间戳的流水（netsh 原文、改了哪几行、读自哪个文件、
+# 复核结果）统统进 runtime\data\logs\lan-open.log。排障看日志，看结果看屏幕。
 #
 # 用法：
 #   powershell -File 开放局域网.ps1                  # 开放（非管理员时自动提权）
 #   powershell -File 开放局域网.ps1 -Preview         # 只打印地址，什么都不改，不用管理员
+#   powershell -File 开放局域网.ps1 -Preview -Revoke # 只读预演"收回会动哪些东西"
 #   powershell -File 开放局域网.ps1 -Restart         # 开放并重启工作台让名单生效
 #   powershell -File 开放局域网.ps1 -Revoke          # 收回（同时把名单三行注释掉）
 #   powershell -File 开放局域网.ps1 -Revoke -KeepEnv # 只拆转发和防火墙，不动名单
@@ -41,13 +47,42 @@ $LogDir = Join-Path $Root 'runtime\data\logs'
 $LogFile = Join-Path $LogDir 'lan-open.log'
 
 function Log([string]$msg) {
+    # 明细只进文件，不上屏（屏幕那套见下面的呈现层）
     $line = "[{0}] {1}" -f (Get-Date -Format 'MM-dd HH:mm:ss'), $msg
-    Write-Host $line
     try {
         if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
         Add-Content -Path $LogFile -Value $line -Encoding UTF8
     } catch { }
 }
+
+# --------------------------------------------------------------------------- //
+# 屏幕呈现层：标题一行、每步一行 √/×、地址一块、提示三行。
+#
+# 对齐用"视觉宽度"而不是字符数：中文在控制台里占两格，'防火墙' 与 '名单' 差 2 个
+# 字但差 4 格，按 .Length 补齐会歪（实测歪过一次）。0x2E80 起按全角算。
+# √ × 都收在 GBK 里，另外还有个前提：配套 .bat 进门就 chcp 65001。
+# --------------------------------------------------------------------------- //
+$DASH = [string][char]0x2500
+function Vis([string]$s) {
+    $w = 0
+    foreach ($ch in $s.ToCharArray()) { if ([int]$ch -ge 0x2E80) { $w += 2 } else { $w += 1 } }
+    return $w
+}
+function Rule { Write-Host ('  ' + ($DASH * 58)) -ForegroundColor DarkGray }
+function Head([string]$title) {
+    Write-Host ''
+    Write-Host ('  ' + $title) -ForegroundColor White
+    Rule
+}
+function Step([bool]$ok, [string]$label, [string]$detail) {
+    $mark = if ($ok) { '√' } else { '×' }
+    Write-Host ('  ' + $mark + ' ') -ForegroundColor $(if ($ok) { 'DarkGreen' } else { 'DarkRed' }) -NoNewline
+    Write-Host ($label + (' ' * [Math]::Max(2, 8 - (Vis $label))) + $detail)
+}
+function Memo([string]$label, [string]$detail) {
+    Write-Host ('    ' + $label + (' ' * [Math]::Max(2, 8 - (Vis $label))) + $detail) -ForegroundColor DarkGray
+}
+function Tail { Memo '明细' 'runtime\data\logs\lan-open.log' }
 
 # ---- 端口唯一真源：ports.json ----
 $dshPort = 3081
@@ -62,7 +97,7 @@ $RuleName = "YuE2 工作台 · 局域网 $dshPort"
 $EnvKeys = @('YUE2_HOST', 'YUE2_ALLOW_LAN', 'YUE2_LAN_HOSTS')
 
 # 直接跑本 ps1（不经 .bat）且提权到新窗口时，结束前等一下，否则地址刚打印完窗口就闪没。
-# 经 .bat 调用时由 bat 自己的 pause 留窗，不需要 Hold。
+# 经 .bat 调用时由 bat 自己的收尾留窗，不需要 Hold。
 function Wait-Hold {
     if ($Hold) {
         Write-Host ''
@@ -86,6 +121,7 @@ function Get-LanIp {
 # 只动这三个已知变量行，别的一概不碰（那文件里还有密钥）；首次改动前留 .bak。
 # 写盘按"无 BOM 的 UTF-8 + CRLF"整体回写：ASCII 会把文件里的中文注释变成问号，
 # 而带 BOM 的 UTF8 又会让 cmd 把第一行 @echo off 认不出来。
+# 返回 @{ok; text; changed}：text 给屏幕那一行用，明细（改了哪几行、备份在哪）进日志。
 function Get-LanEnvToggle([string[]]$lines, [bool]$Enable) {
     # 纯函数：返回 [需改动的行号数组]，Preview 用它只读地报状态，Set-LanEnv 用它落盘
     $todo = @()
@@ -97,30 +133,34 @@ function Get-LanEnvToggle([string[]]$lines, [bool]$Enable) {
     }
     return ,$todo
 }
-function Get-LanEnvPresent([bool]$Enable) {
-    # 只读：那三行现在是开着还是关着（供 -Preview 报口径，不改文件）
+function Get-LanEnvState {
+    # 只读：那三行现在是开着还是关着（只报状态，不掺"会怎么改"，措辞由调用方拼）
     $f = Join-Path $Root 'secrets\local_env.bat'
-    if (-not (Test-Path $f)) { return '文件不存在' }
+    if (-not (Test-Path $f)) { return '名单文件不存在' }
     $lines = @(Get-Content $f)
-    $found = @()
+    $on = 0; $have = 0
     foreach ($k in $EnvKeys) {
         $hit = @($lines | Where-Object { $_ -match "^\s*(rem\s+)?set\s+$k=" })
         if ($hit.Count -eq 0) { continue }
-        if ($Enable) { if ($hit[0] -match '^\s*set\s') { $found += $k } }
-        else { if ($hit[0] -match '^\s*rem\s') { $found += $k } }
+        $have++
+        if ($hit[0] -match '^\s*set\s') { $on++ }
     }
-    if ($found.Count -eq 3) { return $(if ($Enable) { '已是开启' } else { '已是关闭' }) }
-    if ($found.Count -eq 0) { return $(if ($Enable) { '当前关闭（需放开）' } else { '当前开启（需注释）' }) }
-    return "部分不一致（$($found -join ', ')），应各 3 行"
+    if ($have -lt 3) { return "只找到 $have/3 行" }
+    if ($on -eq 3) { return '开启' }
+    if ($on -eq 0) { return '关闭' }
+    return "部分开启（$on/3）"
 }
 function Set-LanEnv([bool]$Enable) {
     $f = Join-Path $Root 'secrets\local_env.bat'
-    if (-not (Test-Path $f)) { Log "本地名单文件不存在：$f（跳过，请自行配置）"; return }
+    if (-not (Test-Path $f)) {
+        Log "本地名单文件不存在：$f（跳过，请自行配置）"
+        return @{ ok = $false; changed = $false; text = '名单文件不存在，请配 secrets\local_env.bat' }
+    }
     $lines = @(Get-Content $f)
     $todo = Get-LanEnvToggle $lines $Enable
     if ($todo.Count -eq 0) {
         Log ("名单三行本来就是{0}状态，未改动" -f $(if ($Enable) { '开启' } else { '关闭' }))
-        return
+        return @{ ok = $true; changed = $false; text = $(if ($Enable) { '三行已是开启状态' } else { '三行已是注释状态' }) }
     }
     if (-not (Test-Path "$f.bak")) { Copy-Item $f "$f.bak" }
     foreach ($i in $todo) {
@@ -131,6 +171,10 @@ function Set-LanEnv([bool]$Enable) {
     [System.IO.File]::WriteAllText($f, (($lines -join "`r`n") + "`r`n"), $enc)
     Log ("名单三行已{0}（改动 {1} 行，备份在 secrets\local_env.bat.bak）" -f $(if ($Enable) { '放开' } else { '注释掉' }), $todo.Count)
     Log '名单是启动时读的，要重启工作台才生效（本脚本加 -Restart，或双击 scripts\启动音乐工作台.bat）'
+    return @{
+        ok = $true; changed = $true
+        text = ("三行已{0}（备份 local_env.bat.bak）" -f $(if ($Enable) { '放开' } else { '注释掉' }))
+    }
 }
 
 # ---- HTTP 探一下，只拿状态码 ----
@@ -160,9 +204,10 @@ function Probe-Http([string]$url, [int]$timeoutSec = 8) {
 # 注意：必须由用户自己把地址粘进浏览器地址栏（浏览器发起的顶层导航）。不要用 file://
 # 书签或从别的网页跳转打开——鉴权 cookie 是 SameSite=Strict，跨站发起的导航里浏览器
 # 不保存它，表现就是"明明带了 token 却仍提示 authentication required"。
-function Show-Share([string]$lanIp) {
+function Show-Share([string]$lanIp, [switch]$NoRule) {
     $share = $null
     $note = ''
+    $ok = $false
     $logF = Join-Path $Root 'dsh-plugin\_dsh_web.log'
     if (Test-Path $logF) {
         $m = Select-String -Path $logF -Pattern 'http://127\.0\.0\.1:\d+/\?token=([A-Za-z0-9_.\-]+)' |
@@ -171,28 +216,26 @@ function Show-Share([string]$lanIp) {
             $token = $m.Matches[0].Groups[1].Value
             $share = "http://${lanIp}:${dshPort}/?token=$token"
             $code = Probe-Http "http://127.0.0.1:${dshPort}/?token=$token"
-            if ($code -in @(200, 302, 303)) { $note = "token 实测有效（HTTP $code）" }
-            elseif ($code -eq 0) { $note = "⚠ 本机工作台 :$dshPort 现在没在跑——先启动工作台，再双击 开放局域网.bat 取地址" }
-            else { $note = "⚠ 这个 token 已被拒（HTTP $code），多半是 dsh 之后重启过换了 token。双击 scripts\启动dsh工作台.bat 再跑本脚本可取新的" }
+            if ($code -in @(200, 302, 303)) { $ok = $true; $note = '实测有效'; Log "token 实测状态码 $code（有效）" }
+            elseif ($code -eq 0) { $note = "本机工作台 :$dshPort 没在跑——先启动工作台，再双击 开放局域网.bat 取地址" }
+            else { $note = "已被拒（HTTP $code），多半是 dsh 之后重启过；启动工作台后重跑本脚本可取新的" }
         }
     }
     if (-not $share) {
         $share = "http://${lanIp}:${dshPort}/"
-        $note = "⚠ 没在 dsh-plugin\_dsh_web.log 里找到 token——工作台尚未启动，启动后重跑可自动带上"
+        $note = "日志里还没有（工作台未启动）；启动后重跑可自动带上"
     }
+    # 预览模式上面没有步骤流水，不必再画一条分隔线
+    if (-not $NoRule) { Rule }
     Write-Host ''
-    Write-Host '  ============================================================'
-    Write-Host  '  给局域网其它电脑的地址（已复制到剪贴板）'
+    Write-Host ('    ' + $share) -ForegroundColor Cyan
     Write-Host ''
-    Write-Host ('    ' + $share)
-    Write-Host ''
-    Write-Host ('    ' + $note)
-    Write-Host '    用法：在对方浏览器地址栏粘贴后回车（不要从别的页面里点跳转）'
-    Write-Host ('    收回：双击 scripts\关闭局域网.bat')
-    Write-Host  '    只看地址、什么都不改：本脚本加 -Preview'
-    Write-Host '  ============================================================'
+    $copied = $false
+    try { Set-Clipboard -Value $share; $copied = $true } catch { Log '剪贴板不可用，请手工复制上面的地址' }
+    Step $ok 'token' $(if ($copied) { $note + ' · 已复制到剪贴板' } else { $note })
+    Memo '用法' '粘到对方浏览器地址栏后回车（别从别的页面点跳转）'
+    Memo '收回' '双击 scripts\关闭局域网.bat'
     Log "分享地址：$share（$note）"
-    try { Set-Clipboard -Value $share } catch { Log '剪贴板不可用，请手工复制上面的地址' }
 }
 
 # ---- 读转发表：netsh 的输出是"地址 端口 地址 端口"四列，**中间没有冒号** ----
@@ -230,7 +273,10 @@ function Restart-Workbench {
             } catch { Log "停止 PID $($c.OwningProcess) 失败：$($_.Exception.Message)" }
         }
     }
-    if ($killed -eq 0) { Log '本机没有 dsh/网关在听（工作台本来就没跑），无需重启'; return }
+    if ($killed -eq 0) {
+        Memo '重启' '工作台本来就没跑，无需重启'
+        return
+    }
     for ($i = 0; $i -lt 40; $i++) {
         Start-Sleep -Seconds 3
         $up = $true
@@ -239,18 +285,43 @@ function Restart-Workbench {
                    Where-Object { $_.LocalAddress -in '127.0.0.1', '0.0.0.0', '::', '::0' })
             if (-not $l) { $up = $false }
         }
-        if ($up) { Log "工作台已重新监听 $dshPort/$gwPort，上面的新地址立即可用"; return }
+        if ($up) {
+            Step $true '重启' '工作台已重新监听，上面的地址立即可用'
+            Log "工作台已重新监听 $dshPort/$gwPort"
+            return
+        }
     }
-    Log "⚠ 120s 内没等到两个端口都回来——请双击 scripts\启动音乐工作台.bat 手工启动"
+    Step $false '重启' "120s 没等齐两个端口——双击 scripts\启动音乐工作台.bat 手工启动"
 }
 
 # ---- 预览：不碰系统、不需要管理员，只把地址算出来打印 ----
+# -Preview -Revoke 是"收回预演"：只报现在挂着什么、真收回会动哪些东西。
 if ($Preview) {
     $lanIpP = Get-LanIp
-    if (-not $lanIpP) { Log '找不到默认路由上的局域网 IPv4'; exit 1 }
+    if (-not $lanIpP) {
+        Head '音乐工作台 · 预览'
+        Step $false '地址' '找不到默认路由上的局域网 IPv4'
+        Tail
+        Wait-Hold
+        exit 1
+    }
+    $mode = if ($Revoke) { '收回预演（不动任何东西）' } else { '预览（不动任何东西）' }
+    Head ('音乐工作台 · ' + $mode + '    :' + $dshPort + ' @ ' + $lanIpP)
     Log "===== 预览（未改动端口转发/防火墙/名单）：工作台 :$dshPort @ $lanIpP ====="
-    Log ("名单三行{0}——开放会保持/置为开启，收回会把这三行注释掉" -f (Get-LanEnvPresent $true))
-    Show-Share $lanIpP
+    $envSt = Get-LanEnvState
+    if ($Revoke) {
+        $pOut = @(Get-PortProxyRules | Where-Object { $_.ListenPort -eq $dshPort })
+        # 注意 -join 的优先级低于 +：必须先括号把 -join 的结果括起来，再接后缀文案
+        $pTxt = if ($pOut.Count) { (($pOut | ForEach-Object { "$($_.Listen):$dshPort" }) -join '、') + ' 在挂着，真收回会删' } else { ":$dshPort 上没有转发" }
+        Memo '转发' $pTxt
+        Memo '防火墙' $(if (Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue) { '规则还在，真收回会删' } else { '无本脚本建的规则' })
+        Memo '名单' $(if ($envSt -eq '开启') { '开启，真收回会注释这三行' } else { "$envSt，无需改动" })
+        Tail
+    } else {
+        Memo '名单' $(if ($envSt -eq '开启') { '开启，无需改动' } else { "$envSt，开放时会放开这三行" })
+        Show-Share $lanIpP -NoRule
+        Tail
+    }
     Wait-Hold
     exit 0
 }
@@ -265,8 +336,13 @@ if (-not $isAdmin -and -not $Elevated) {
     if ($Restart) { $argList += '-Restart' }
     try {
         Start-Process powershell -Verb RunAs -ArgumentList $argList -Wait
+        Memo '提权' '已在管理员窗口执行完（那份窗口里有地址）'
         Log '已以管理员身份执行完毕（明细见本日志）'
-    } catch { Log "提权被取消或失败：$($_.Exception.Message)" }
+    } catch {
+        Head '音乐工作台 · 未执行'
+        Step $false '提权' '授权被取消，系统没有任何改动'
+        Tail
+    }
     Wait-Hold
     exit 0
 }
@@ -278,12 +354,18 @@ if (-not $isAdmin -and -not $Elevated) {
 # 只把要执行的命令原样说破。
 $svc = Get-Service -Name 'iphlpsvc' -ErrorAction SilentlyContinue
 if (-not $svc) {
-    Log '本机没有 IP Helper（iphlpsvc）服务，portproxy 不可用——需改用反向代理（nginx/caddy）方案'
+    Head '音乐工作台 · 无法开放'
+    Step $false '服务' '本机没有 IP Helper（iphlpsvc），portproxy 不可用——需改用反向代理（nginx/caddy）'
+    Tail
+    Log '本机没有 IP Helper（iphlpsvc）服务，portproxy 不可用'
     exit 1
 }
 if ($svc.StartType -eq 'Disabled') {
-    Log '⚠ IP Helper 启动类型被设为 Disabled，portproxy 不会监听。确需开放请执行：'
-    Log '    Set-Service -Name iphlpsvc -StartupType Automatic; Start-Service iphlpsvc'
+    Head '音乐工作台 · 无法开放'
+    Step $false '服务' 'IP Helper 启动类型被设为 Disabled，portproxy 不会监听'
+    Memo '修复' 'Set-Service -Name iphlpsvc -StartupType Automatic; Start-Service iphlpsvc'
+    Tail
+    Log 'IP Helper 启动类型为 Disabled，已放弃开放'
     exit 1
 }
 if ($svc.Status -ne 'Running') {
@@ -291,14 +373,20 @@ if ($svc.Status -ne 'Running') {
         Start-Service -Name 'iphlpsvc' -ErrorAction Stop
         Log 'IP Helper（iphlpsvc）原为停止状态，已启动（portproxy 的承载服务）'
     } catch {
-        Log "⚠ IP Helper 启动失败：$($_.Exception.Message)——portproxy 将无法监听"
+        Head '音乐工作台 · 无法开放'
+        Step $false '服务' ("IP Helper 启动失败：" + $_.Exception.Message)
+        Tail
+        Log "IP Helper 启动失败：$($_.Exception.Message)"
         exit 1
     }
 }
 
 if ($Revoke) {
+    Head '音乐工作台 · 收回局域网'
     Log '===== 收回局域网 ====='
     $ours = @(Get-PortProxyRules | Where-Object { $_.ListenPort -eq $dshPort })
+    $deleted = @()
+    $foreign = @()
     foreach ($p in $ours) {
         if ($p.Connect -eq '127.0.0.1' -and $p.ConnectPort -eq $dshPort) {
             $r = netsh interface portproxy delete v4tov4 listenaddress=$p.Listen listenport=$dshPort 2>&1
@@ -310,41 +398,70 @@ if ($Revoke) {
                 $say = (($r | Out-String).Trim()) + '（已重试一次）'
             }
             Log ("删除转发 {0}:{1} -> {2}:{3} —— {4}" -f $p.Listen, $dshPort, $p.Connect, $p.ConnectPort, $say)
+            $deleted += $p.Listen
         } else {
+            $foreign += $p
             Log ("⚠ :$dshPort 上还有一条不是本脚本建的转发（目标 $($p.Connect):$($p.ConnectPort)），未动它——请自行确认")
         }
     }
-    if (-not $ours) { Log "本机没有监听 :$dshPort 的端口转发（未动其它端口的规则）" }
-    else {
+    if (-not $ours) {
+        Memo '转发' ":$dshPort 上本来就没有转发"
+        Log "本机没有监听 :$dshPort 的端口转发（未动其它端口的规则）"
+    } else {
         $still = @(Get-PortProxyRules | Where-Object { $_.ListenPort -eq $dshPort -and $_.Connect -eq '127.0.0.1' })
-        if ($still.Count -eq 0) { Log '复核：本脚本格式的转发已全部清除' }
-        else { Log ("⚠ 复核：:{0} 上还剩 {1} 条转发（{2}）——删除没生效，请手工执行 netsh interface portproxy delete" -f `
-              $dshPort, $still.Count, (($still | ForEach-Object { $_.Listen }) -join ', ')) }
+        if ($still.Count -eq 0) {
+            if ($deleted.Count) {
+                Step $true '转发' ("已删除 {0} 条（{1}）" -f $deleted.Count, ($deleted -join '、'))
+            } else {
+                Memo '转发' '本脚本格式的转发本来就没有'
+            }
+            Log '复核：本脚本格式的转发已全部清除'
+        } else {
+            Step $false '转发' ("还剩 {0} 条没删掉（{1}）——手工执行 netsh interface portproxy delete" -f `
+                  $still.Count, (($still | ForEach-Object { $_.Listen }) -join ', '))
+            Log ("⚠ 复核：:{0} 上还剩 {1} 条转发" -f $dshPort, $still.Count)
+        }
+        if ($foreign.Count) { Memo '转发' ("另有 {0} 条不是本脚本建的，未动（目标 {1}）" -f $foreign.Count, (($foreign | ForEach-Object { "$($_.Connect):$($_.ConnectPort)" }) -join ', ')) }
     }
     if (Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue) {
         Remove-NetFirewallRule -DisplayName $RuleName
+        Step $true '防火墙' '规则已删除'
         Log "删除防火墙规则：$RuleName"
     } else {
+        Memo '防火墙' '无本脚本建的规则'
         Log "无本脚本建的防火墙规则：$RuleName"
     }
     if ($KeepEnv) {
-        Log '-KeepEnv：未改动 secrets\local_env.bat（网关仍会绑 0.0.0.0 并认 LAN 名单）'
+        Memo '名单' '-KeepEnv：未改动（网关仍绑 0.0.0.0 并认 LAN 名单）'
+        Log '-KeepEnv：未改动 secrets\local_env.bat'
     } else {
-        Set-LanEnv $false
+        $ev = Set-LanEnv $false
+        Step $ev.ok '名单' $ev.text
+        if ($ev.changed -and -not $Restart) { Memo '提醒' '名单要重启工作台才生效（本脚本加 -Restart）' }
     }
     if ($Restart) { Restart-Workbench }
     Write-Host ''
-    Write-Host ('  局域网已收回：同网段设备现在打不开 http://本机IP:' + $dshPort)
-    Write-Host  '  （本机照常可以用 http://127.0.0.1 上的工作台，未受影响）'
+    Write-Host ('  同网段设备已经连不上 :' + $dshPort + '；本机 127.0.0.1 上的工作台照常用')
+    Tail
     Wait-Hold
     exit 0
 }
 
 $lanIp = Get-LanIp
-if (-not $lanIp) { Log '找不到默认路由上的局域网 IPv4，放弃'; exit 1 }
+if (-not $lanIp) {
+    Head '音乐工作台 · 无法开放'
+    Step $false '地址' '找不到默认路由上的局域网 IPv4'
+    Tail
+    Log '找不到默认路由上的局域网 IPv4，放弃'
+    Wait-Hold
+    exit 1
+}
+Head ('音乐工作台 · 开放局域网    ' + $lanIp + ':' + $dshPort)
 Log "===== 开放局域网（工作台 :$dshPort @ $lanIp）====="
 
-Set-LanEnv $true
+$ev = Set-LanEnv $true
+Step $ev.ok '名单' $ev.text
+if ($ev.changed -and -not $Restart) { Memo '提醒' '名单要重启工作台才生效（本脚本加 -Restart）' }
 
 # ---- 与启动名单对一下口径，不一致直接说破，不留"静默 403" ----
 # 先认进程环境变量；为空时再回读 local_env.bat（.bat 是先 call 名单再跑本脚本的，
@@ -362,10 +479,13 @@ if ($allowList.Count -eq 0) {
     }
 }
 if ($allowList.Count -eq 0) {
-    Log '⚠ YUE2_LAN_HOSTS 为空：TCP 通了但 dsh/网关的同源名单还没开。请配好 secrets\local_env.bat 三行再重启工作台'
+    Step $false '白名单' "名单还没配：TCP 通了但 dsh/网关会 403，请填 secrets\local_env.bat 三行"
+    Log '⚠ YUE2_LAN_HOSTS 为空：TCP 通了但 dsh/网关的同源名单还没开'
 } elseif ($allowList -notcontains $lanIp) {
+    Step $false '白名单' ("本机 $lanIp 不在名单（{0}）里，请求会被 403" -f ($allowList -join ', '))
     Log "⚠ 本机地址 $lanIp 不在 YUE2_LAN_HOSTS（$(($allowList) -join ', ')，读自$from）里：白名单对不上，请求会被 403"
 } else {
+    Step $true '白名单' ("本机 {0} 已在名单内" -f $lanIp)
     Log "白名单核对通过：$lanIp 在 YUE2_LAN_HOSTS 内（读自$from）"
 }
 
@@ -377,15 +497,18 @@ if ($same.Count) {
 }
 netsh interface portproxy add v4tov4 listenaddress=$lanIp listenport=$dshPort `
     connectaddress=127.0.0.1 connectport=$dshPort | Out-Null
+Step $true '转发' ("{0}:{1} → 127.0.0.1:{1}" -f $lanIp, $dshPort)
 Log "端口转发：${lanIp}:$dshPort -> 127.0.0.1:$dshPort"
 
 # ---- 防火墙：只放行这一个端口，且只在 Private 配置文件下 ----
 if (Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue) {
     Set-NetFirewallRule -DisplayName $RuleName -Enabled True -Action Allow -Profile Private | Out-Null
+    Step $true '防火墙' ("只放 :{0}，仅 Private 网络（规则已更新）" -f $dshPort)
     Log "防火墙规则已更新：$RuleName（仅 Private）"
 } else {
     New-NetFirewallRule -DisplayName $RuleName -Direction Inbound -Action Allow `
         -Protocol TCP -LocalPort $dshPort -Profile Private | Out-Null
+    Step $true '防火墙' ("只放 :{0}，仅 Private 网络（规则已新建）" -f $dshPort)
     Log "防火墙规则已新建：$RuleName（仅 Private）"
 }
 Log '注意：网关端口未放行，属有意为之（局域网只能经 3081 的内部代理到网关）'
@@ -394,11 +517,20 @@ Log '注意：网关端口未放行，属有意为之（局域网只能经 3081 
 Start-Sleep -Seconds 1
 $listen = @(netstat -ano -p tcp | Select-String 'LISTENING' | Select-String ":$dshPort ")
 $reach = Probe-Http "http://${lanIp}:$dshPort/"
-$reachTxt = if ($reach -eq 0) { '不可达（连接失败——转发口没在听或 iphlpsvc 停了）' } else { "HTTP $reach" }
 Log ('转发口监听：{0}' -f $(if ($listen.Count) { "在听（$($listen.Count) 行）" } else { '未监听——检查 iphlpsvc 服务是否运行' }))
-Log "HTTP 实测 http://${lanIp}:$dshPort/ ：$reachTxt（401 属正常，说明栅栏在工作，带 token 即可进）"
+Log "HTTP 实测 http://${lanIp}:$dshPort/ ：$(if ($reach -eq 0) { '不可达' } else { "HTTP $reach" })"
+if (-not $listen.Count) {
+    Step $false '自检' "转发口没在听——查 IP Helper（iphlpsvc）是否在跑"
+} elseif ($reach -eq 0) {
+    Step $false '自检' ("http://{0}:{1} 连不上" -f $lanIp, $dshPort)
+} elseif ($reach -eq 401) {
+    Step $true '自检' "转发口在听，未登录回 401（栅栏在挡人，正常）"
+} else {
+    Step $true '自检' ("转发口在听，HTTP {0}" -f $reach)
+}
 
 Show-Share $lanIp
 if ($Restart) { Restart-Workbench }
+Tail
 Log '===== 完成 ====='
 Wait-Hold
