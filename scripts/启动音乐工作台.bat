@@ -119,21 +119,54 @@ echo   AI 助手: 页面内 "AI 工作台" 页签
 echo ================================================
 rem 等待 dsh web 就绪后，打开带 token 的 3081 地址（无 token 则回退 7863）
 set /a DSH_TRIES=0
+set /a DSH_VT=0
+set "DSH_CODE=000"
 :dshwait
 ping -n 3 127.0.0.1 >nul
-set "DSH_URL="
-for /f "tokens=*" %%u in ('powershell -NoProfile -Command "if(Test-Path 'dsh-plugin\_dsh_web.log'){Select-String -Path 'dsh-plugin\_dsh_web.log' -Pattern 'http://127\.0\.0\.1:%DSH_PORT%/\?token=\S+' | ForEach-Object { $_.Matches[0].Value } | Select-Object -Last 1}" 2^>nul') do set "DSH_URL=%%u"
-if defined DSH_URL goto open
+call :read_dsh_url
+if defined DSH_URL goto dshverify
 set /a DSH_TRIES+=1
 if %DSH_TRIES% lss 15 goto dshwait
+goto open
+
+:dshverify
+rem 门票必须实测再开浏览器：dsh 每重启一次就换一张，日志里那条可能是上一代进程留下的。
+rem 实测踩过（2026-09-30 07:59）：3081 假死 → 本脚本见端口在 LISTENING 就跳过启动 →
+rem 直接把旧 token 开进浏览器 → 401，Edge 画成一页"找不到页面"；60 秒后看门狗才把它救活，
+rem 而那时新门票已经换好了，没人再开一次。所以现在：先验，不通就等看门狗自愈并回读新票。
+set "DSH_CODE=000"
+del /q "%TEMP%\_lab_dsh_verify.tmp" 2>nul
+"%SystemRoot%\System32\curl.exe" -s --noproxy "*" -m 5 -o nul -w "%%{http_code}" "%DSH_URL%" > "%TEMP%\_lab_dsh_verify.tmp" 2>nul
+set /p DSH_CODE=<"%TEMP%\_lab_dsh_verify.tmp"
+if "%DSH_CODE%"=="303" goto open
+if "%DSH_CODE%"=="200" goto open
+set /a DSH_VT+=1
+if %DSH_VT% geq 24 goto open
+echo     门票未生效（HTTP %DSH_CODE%），等工作台自愈换票... %DSH_VT%/24
+ping -n 4 127.0.0.1 >nul
+call :read_dsh_url
+if defined DSH_URL goto dshverify
+goto dshwait
+
 :open
-rem 被 vbs 静默启动器调用时带 no-open 参数：由 vbs 负责打开浏览器（隐藏窗口里 start 不可靠）
+rem 静默启动器（计划任务 no-open）不负责开浏览器，直接退出
 if "%~1"=="no-open" exit /b 0
-rem 只打开 3081 工作台；token 未就绪时静默放弃，绝不弹 7863 迷惑用户
-if defined DSH_URL (
-    echo   打开 AI 工作台: %DSH_URL%
-    start "" "%DSH_URL%"
-) else (
+rem 只打开 3081 工作台；门票没验通时宁可不弹，也绝不弹 7863 迷惑用户
+if not defined DSH_URL (
     echo   dsh token 未就绪，请手动打开 3081 工作台页面
+    exit /b 0
 )
+if not "%DSH_CODE%"=="303" if not "%DSH_CODE%"=="200" (
+    echo   工作台地址仍未生效（HTTP %DSH_CODE%），%DSH_PORT% 可能正在重启，稍后再双击本脚本
+    echo   最新门票: %DSH_URL%
+    exit /b 0
+)
+echo   打开 AI 工作台: %DSH_URL%
+start "" "%DSH_URL%"
+exit /b 0
+
+:read_dsh_url
+rem 从 _dsh_web.log 取最后一条带 token 的工作台地址；读不到就置空 DSH_URL
+set "DSH_URL="
+for /f "tokens=*" %%u in ('powershell -NoProfile -Command "if(Test-Path 'dsh-plugin\_dsh_web.log'){Select-String -Path 'dsh-plugin\_dsh_web.log' -Pattern 'http://127\.0\.0\.1:%DSH_PORT%/\?token=\S+' | ForEach-Object { $_.Matches[0].Value } | Select-Object -Last 1}" 2^>nul') do set "DSH_URL=%%u"
 exit /b 0

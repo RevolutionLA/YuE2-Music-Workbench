@@ -6,7 +6,8 @@
 //   * /lab-api/*   → 网关 /api/*   （dsh 侧 client.js 用；JSON API + 音频文件）
 //   * /lab/api/*   → 网关 /api/*   （页面侧 index.html 用：它把 fetch("/api/x")
 //                                   改写成 "/lab/api/x"，见 LAB_BASE）
-//   * /lab/*       → 本仓库 static/ 静态文件（本地托管，不再反代网关根路径）
+//   * /lab/*       → 本仓库 static/ 静态文件（本地托管，不再反代网关根路径）；
+//                    其中不带 embed 参数的文档请求 302 回 /，见 apply() 里的★注释
 //   * /lab-status  → 网关存活探测（client 探活 / 首次自检）
 //
 // 即：跨进程通道只剩 "…/api/*" 这一支，网关的其余路由不再对外可达。
@@ -266,14 +267,156 @@ async function isAuthorized(req) {
   return ok;
 }
 
+/** dsh 每次重启换一次门票，当前有效的那条只写在它自己的 stdout 日志里。 */
+const WEB_LOG = path.join(ROOT, 'dsh-plugin', '_dsh_web.log');
+
+function currentTokenUrl() {
+  try {
+    const txt = fs.readFileSync(WEB_LOG, 'utf8');
+    const re = new RegExp(`http://127\\.0\\.0\\.1:${PORTS.dsh}/\\?token=[A-Za-z0-9_\\-]+`, 'g');
+    let last = null;
+    for (const m of txt.matchAll(re)) last = m[0];
+    return last;
+  } catch { return null; }
+}
+
+/**
+ * 调用方是不是本机浏览器。
+ * 判据只能用 Host 头，不能用 socket 地址：局域网开放后外部机器经 netsh portproxy
+ * 转发进来，TCP 对端一律是 127.0.0.1（转发不改 Host 头，所以 Host 才是真身份）。
+ * 本机浏览器只会用 127.0.0.1 / localhost 访问，局域网那台机器不会。
+ */
+function isLocalAuthority(req) {
+  const h = String(req.headers.host || '').replace(/^\[/, '').replace(/\]$/, '');
+  return /^(127\.[0-9.]+|localhost|::1)(:[0-9]+)?$/.test(h);
+}
+
+function tokenInUrl(req) {
+  const m = /[?&]token=([A-Za-z0-9_\-]{8,})/.exec(req.url || '');
+  return m ? m[1] : null;
+}
+
+/** 去掉 token、留其余查询参数：浏览器不会把 # 片段发给服务端，所以只管 ? 之后。 */
+function locationWithoutToken(req) {
+  const raw = req.url || '/';
+  const i = raw.indexOf('?');
+  if (i < 0) return raw;
+  const keep = raw.slice(i + 1).split('&').filter((kv) => kv && !/^token=/i.test(kv));
+  return keep.length ? `${raw.slice(0, i)}?${keep.join('&')}` : raw.slice(0, i);
+}
+
+/**
+ * 拿 URL 上的 token 找 dsh 本体换 cookie。
+ * 不带调用方原有的 cookie —— 那枚 cookie 已经判死，掺进去只会让结果看不清楚。
+ * 转发调用方的 Host 头，dsh 才会签出与浏览器地址栏匹配的 cookie 名（名字含 authority 派生值）。
+ */
+function redeemToken(req, token) {
+  return new Promise((resolve) => {
+    const r = http.get(
+      {
+        host: '127.0.0.1',
+        port: PORTS.dsh,
+        path: `/?token=${encodeURIComponent(token)}`,
+        timeout: 3000,
+        headers: {
+          host: req.headers.host || `127.0.0.1:${PORTS.dsh}`,
+          'user-agent': 'yue2-lab-token-redeem',
+        },
+      },
+      (up) => {
+        const sc = up.headers['set-cookie'];
+        const ok = up.statusCode >= 300 && up.statusCode < 400 && Array.isArray(sc) && sc.length > 0;
+        up.resume();
+        resolve(ok ? sc : null);
+      },
+    );
+    r.on('error', (e) => {
+      console.error(`[yue2-lab] token 换 cookie 失败（${e && e.code ? e.code : e}），按未授权处理`);
+      resolve(null);
+    });
+    r.on('timeout', () => { r.destroy(); console.error('[yue2-lab] token 换 cookie 超时，按未授权处理'); resolve(null); });
+  });
+}
+
+/**
+ * 鉴权闸门。返回 true = 放行；返回 false = 响应已写好，调用方直接 return。
+ * cookie 过了 dsh 的校验 → 放行；没过但地址里带 token → 就地换 cookie 并 303 回原路径
+ * （这样收藏夹 / 会话恢复 / 手打的 /lab/?embed=1 带一次 token 就能进门，
+ *  不必先绕 dsh 首页 —— 原来只有 `/` 认 token，别的路径一律 401，Edge 把它画成"找不到页面"）。
+ */
+async function authorize(req, res) {
+  if (await isAuthorized(req)) return true;
+  const token = tokenInUrl(req);
+  if (!token) return deny(req, res, false);
+  const cookies = await redeemToken(req, token);
+  if (!cookies) return deny(req, res, true);
+  console.error(`[yue2-lab] ${req.method} ${req.url} → 303 用 URL 上的 token 换 cookie 后放回 ${locationWithoutToken(req)}`);
+  res.writeHead(303, {
+    location: locationWithoutToken(req),
+    'set-cookie': cookies,
+    'cache-control': 'no-store',
+    'referrer-policy': 'no-referrer',
+  });
+  res.end();
+  return false;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+/** 文档请求要的是能看懂的一页，不是一坨 JSON —— Edge 会把裸 401 渲染成"找不到页面"。 */
+function wantsHtml(req) {
+  return req.method === 'GET' && /text\/html|application\/xhtml\+xml/i.test(req.headers.accept || '');
+}
+
 /** 统一拒绝：留日志（静默退化必须有痕迹），并回可读的 401。 */
-function deny(req, res) {
+function deny(req, res, hadToken) {
+  const local = isLocalAuthority(req);
+  const tokenUrl = local ? currentTokenUrl() : null;
   console.error(`[yue2-lab] ${req.method} ${req.url} → 401 未经 dsh 鉴权（Host=${req.headers.host}，`
-    + `来自局域网的裸请求；请用带 token 的地址打开工作台）`);
+    + `本机=${local}，URL带token=${hadToken ? '是但无效' : '否'}）`);
+  if (wantsHtml(req)) {
+    const why = hadToken
+      ? '地址里那串 token 已经过期。工作台每次重启都会换一张新门票，旧地址（包括收藏夹里的、浏览器上次会话恢复出来的）就此失效。'
+      : '浏览器没有带上有效的进门 cookie，通常是工作台刚刚重启过、门票换了一张。';
+    const door = tokenUrl
+      ? `<p><a class="btn" href="${escapeHtml(tokenUrl)}">点此进入工作台</a></p>`
+        + `<p class="url">${escapeHtml(tokenUrl)}</p>`
+      : (local
+        ? '<p>当前门票暂时读不到。请双击仓库根的 <b>启动音乐工作台.bat</b>，它会自动打开正确的地址。</p>'
+        : '<p>门票只在本机页面上显示。请让这台电脑的使用者重新打开工作台，或把带 token 的完整地址发给你。</p>');
+    const body = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">`
+      + `<meta name="viewport" content="width=device-width,initial-scale=1">`
+      + `<title>工作台门票已过期</title><style>`
+      + `body{margin:0;padding:48px 20px;background:#0f1115;color:#e6e8ee;font:15px/1.75 "Microsoft YaHei",system-ui,sans-serif}`
+      + `main{max-width:640px;margin:0 auto}h1{font-size:22px;margin:0 0 18px}`
+      + `p{margin:14px 0}.btn{display:inline-block;padding:10px 22px;border-radius:8px;`
+      + `background:#3b82f6;color:#fff;text-decoration:none;font-weight:600}`
+      + `.url{word-break:break-all;font-family:consolas,monospace;font-size:13px;color:#9aa3b2;`
+      + `background:#161a22;border:1px solid #262c38;border-radius:6px;padding:10px 12px}`
+      + `.tip{color:#9aa3b2;font-size:13px}</style></head><body><main>`
+      + `<h1>工作台门票已过期</h1><p>${why}</p>${door}`
+      + (local
+        ? `<p class="tip">找不到这串地址？它在 <code>dsh-plugin\\_dsh_web.log</code> 里，`
+          + `或直接双击仓库根的 <b>启动音乐工作台.bat</b>。</p>`
+        : '')
+      + `<p class="tip">状态码 401 · 面板鉴权闸门（局域网开放后 3081 不再对裸请求开门）</p>`
+      + `</main></body></html>`;
+    res.writeHead(401, {
+      'content-type': 'text/html; charset=utf-8',
+      'content-length': Buffer.byteLength(body),
+      'cache-control': 'no-store',
+    });
+    return res.end(body);
+  }
   json(res, 401, {
     ok: false,
     error: '请先用带 token 的工作台地址打开页面（token 见本机 dsh-plugin\\_dsh_web.log），再访问面板接口。',
   });
+  return false;
 }
 
 function gatewayAlive() {
@@ -318,6 +461,18 @@ function resolveStatic(urlPath) {
   const abs = path.resolve(STATIC_DIR, rel);
   if (abs !== STATIC_DIR && !abs.startsWith(STATIC_DIR + path.sep)) return null; // 目录穿越
   return abs;
+}
+
+/** 会渲染整张工作台页的"文档级"路径：空路径、目录形式、或 index.html。 */
+function isLabDocument(urlPath) {
+  const clean = decodeURIComponent(urlPath.split('?')[0].split('#')[0]);
+  if (!clean || clean === '/' || clean.endsWith('/')) return true;
+  return /\/index\.html?$/i.test(clean);
+}
+
+/** dsh 壳装载 iframe 和看门狗 ping 都带 embed=1——带这个参数的才真给页面。 */
+function hasEmbed(url) {
+  return /(^|[?&])embed(=|&|$)/.test(url);
 }
 
 async function serveStatic(req, res, urlPath) {
@@ -365,7 +520,7 @@ export function apply(ctx) {
     kind: 'prefix',
     path: '/lab-api',
     handler: async (req, res) => {
-      if (!(await isAuthorized(req))) return deny(req, res);
+      if (!(await authorize(req, res))) return;
       const url = req.url.slice('/lab-api'.length);
       proxy(req, res, '/api' + (url.startsWith('/') ? url : '/' + url));
     },
@@ -376,7 +531,7 @@ export function apply(ctx) {
     kind: 'exact',
     path: '/lab-status',
     handler: async (_req, res) => {
-      if (!(await isAuthorized(_req))) return deny(_req, res);
+      if (!(await authorize(_req, res))) return;
       const alive = await gatewayAlive();
       const body = JSON.stringify({
         ok: true,
@@ -401,10 +556,22 @@ export function apply(ctx) {
     kind: 'prefix',
     path: '/lab',
     handler: async (req, res) => {
-      if (!(await isAuthorized(req))) return deny(req, res);
+      if (!(await authorize(req, res))) return;
       const urlPath = req.url.slice('/lab'.length) || '/';
       if (urlPath === '/api' || urlPath.startsWith('/api/')) {
         return proxy(req, res, urlPath);   // /lab/api/x → 网关 /api/x
+      }
+      // ★ 单一入口：3081 上工作台只有一个门，就是 dsh 壳 `http://<host>:3081/`
+      //   （AI 对话 + 侧栏五页签 + 引擎/显存状态卡都在那里）。
+      //   /lab/ 只作为那层壳主面板里的 iframe 内容存在，client.js 装载它时一律带
+      //   embed=1；手动打开 /lab/ 不再变成"第二个功能一样的页面"，直接跳回 /。
+      //   判据只认"文档级路径 + 无 embed"，所以 /lab/api/*（上面已分流）、iframe
+      //   本体与 10s 看门狗 ping（都带 embed）、以及静态资源都不受影响。
+      //   网关 :7863 直连不经过这里；当前 settings 的 gateway_serve_ui=false，
+      //   网关根路径只回一块"请打开 3081"的说明牌，页面本体只从这里的 embed 路径出来。
+      if ((req.method === 'GET' || req.method === 'HEAD') && isLabDocument(urlPath) && !hasEmbed(req.url)) {
+        res.writeHead(302, { location: '/', 'cache-control': 'no-store' });
+        return res.end();
       }
       return serveStatic(req, res, urlPath);
     },
