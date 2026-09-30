@@ -386,7 +386,9 @@ window.__ModuleLoader__.load({
       react.useEffect(function () {
         function onTab(e) {
           if (ref.current && ref.current.contentWindow) {
-            try { ref.current.contentWindow.location.hash = e.detail; } catch (err) { ref.current.src = "/lab/#" + e.detail; }
+            // 兜底重载也必须带 embed=1：/lab/ 现在对"裸文档请求"会 302 回 /，
+            // 少了这个参数就会把整层 dsh 壳套进 iframe（壳里又有壳，无限嵌套）。
+            try { ref.current.contentWindow.location.hash = e.detail; } catch (err) { ref.current.src = "/lab/?embed=1#" + e.detail; }
           }
         }
         window.addEventListener("yue2-lab-tab", onTab);
