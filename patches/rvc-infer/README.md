@@ -7,7 +7,18 @@
 | 文件 | 改动 | 对应评审项 |
 |---|---|---|
 | `cli.py` | `--f0-method` choices 增加 `fcpe`；新增 `--filter-radius`（默认 3）并传给 `vc_single` | C1 / C2 |
-| `vc/pipeline.py` | `get_f0` 新增 `filter_radius` 参数：提取后、清音插值前做 `signal.medfilt`（奇数核兜底 `radius \| 1`）；fcpe 分支本来就随 vendored 版存在 | C2 / H1 |
+| `vc/pipeline.py` | ① `get_f0` 新增 `filter_radius` 参数：提取后、清音插值前做 `signal.medfilt`（奇数核兜底 `radius \| 1`）；fcpe 分支本来就随 vendored 版存在；② **长音频分段处加交叉淡化**（见下） | C2 / H1 / 音质 |
+
+### ② 段间交叉淡化（本仓库自查项，上游没有）
+
+上游 `pipeline()` 对超过 `x_max` 秒的音频先算 `opt_ts` 切点、逐段推理，最后
+`np.concatenate(audio_opt)` **硬拼**。切点虽然选在查询窗内能量最低处（多半是换气/弱音），
+拼接点依然存在音量与音色的阶跃——听感就是"偶尔一声怪响 / 金属声"，每条边界都可能来一次
+（3.5 分钟的歌在 6GB 卡上会被切成 3~4 段）。
+
+补丁做法：给非末段多喂 `xf_src` 个输入样本（输出侧多出等长的 `xf_tgt` = 50ms），
+拼接时在重叠区做线性交叉淡化；多出来的长度正好被淡化吸收，**总长度保持不变**
+（末尾还有一次 pad/truncate 兜底），所以人声不会相对伴奏产生累积漂移。单段音频行为完全不变。
 | `vc/modules.py` | `vc_single` / `vc_multi` 透传 `filter_radius` | C2 |
 
 ## 恢复步骤

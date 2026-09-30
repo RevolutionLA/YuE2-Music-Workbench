@@ -2141,10 +2141,17 @@ class TestRvcDoneMeta(Sandbox):
         # 但失败必须留痕（meta.src_f0.error），不许静默。
         self.assertIn("src_f0", meta)
         self.assertIn("error", meta["src_f0"])
+        # 听感体检也必须在：源是假文件 → 量不出来 → 只留 error，不许编数、
+        # 也不许因为体检失败把成功的换声改判失败
+        self.assertIn("quality", meta)
+        self.assertIn("error", meta["quality"])
+        self.assertEqual(meta["status"], "done", "体检失败不许影响产物状态")
 
 
 class TestPitchRange(Sandbox):
-    """评审 C4：音域匹配与自动变调建议。目标端只采信本机训练留下的 2a_f0 实测值；
+    """评审 C4：音域匹配与自动变调建议。目标端只采信本机训练留下的 f0 实测值，
+    且**必须读 2b-f0nsf（连续 Hz）**——2a_f0 存的是量化成 1–255 的 mel bin，
+    不是 Hz，拿它当中位数会把变调建议算出两个八度的偏差（蛋卷那次就是这个坑）；
     源端用 pyworld 真跑（纯 CPU、毫秒级），测试不落任何真实 runtime 目录。"""
 
     def setUp(self):
@@ -2161,7 +2168,8 @@ class TestPitchRange(Sandbox):
 
     def test_target_range_only_from_real_training_data(self):
         import numpy as np
-        d = app.RVC_DIR / "logs" / "试唱" / "2a_f0"
+        # 必须是 2b-f0nsf（连续 Hz）：2a_f0 是量化 mel bin，写 200 在那儿不是 200Hz
+        d = app.RVC_DIR / "logs" / "试唱" / "2b-f0nsf"
         d.mkdir(parents=True)
         np.save(d / "a.npy", np.array([100.0, 200.0, 300.0, 0.0]))  # 0 帧必须被剔除
         np.save(d / "b.npy", np.array([200.0, 250.0]))
@@ -2173,6 +2181,51 @@ class TestPitchRange(Sandbox):
                         "算过一次要落 sidecar，模型列表不该每次重扫几百个 npy")
         self.assertIsNone(app._rvc_f0_stats("王菲.pth"),
                           "外部下载音色没有训练素材——如实给 None，绝不拿别人的数字冒充")
+
+    def test_coarse_2a_f0_is_converted_not_read_as_hz(self):
+        """回归锁：2a_f0 存的是 coarse bin，直接当中位 Hz 会把变调建议算飞两个八度。
+
+        蛋卷那次的真实数字：2a_f0 中位 89（bin）被当成 89Hz，于是对 365.8Hz 的源唱
+        给出 -24 半音；真实舒适音域中位是 314.7Hz（2b-f0nsf），正确建议是 -3。"""
+        import numpy as np
+        d = app.RVC_DIR / "logs" / "老音色" / "2a_f0"
+        d.mkdir(parents=True)
+        np.save(d / "x.npy", np.full(500, 89.0))  # 蛋卷 2a_f0 的实测中位 bin
+        st = app._rvc_f0_stats("老音色.pth")
+        self.assertNotEqual(st["median_hz"], 89.0,
+                            "89 是 mel bin 序号，绝不能再当成 89Hz 输出")
+        self.assertTrue(150.0 <= st["median_hz"] <= 400.0,
+                        f"bin 89 反演回 Hz 应落在人声区，实际 {st['median_hz']}")
+        # 用它去建议变调：对 365.8Hz 的源唱不该再给出 -24
+        s = app._rvc_pitch_suggestion(365.8, st["median_hz"], 0)
+        self.assertGreater(s["suggested_pitch"], -12,
+                           "旧口径给出 -24 就是把人声压到听不见的低区")
+
+    def test_hz_dir_wins_over_coarse_dir(self):
+        """两个目录都在时，2b-f0nsf（真 Hz）优先，且不许被 2a_f0 污染。"""
+        import numpy as np
+        base = app.RVC_DIR / "logs" / "双目录"
+        (base / "2a_f0").mkdir(parents=True)
+        (base / "2b-f0nsf").mkdir(parents=True)
+        np.save(base / "2a_f0" / "x.npy", np.full(200, 89.0))     # bin，会反演成 ~200Hz
+        np.save(base / "2b-f0nsf" / "x.npy", np.full(200, 314.7))  # 真 Hz
+        st = app._rvc_f0_stats("双目录.pth")
+        self.assertEqual(st["median_hz"], 314.7)
+
+    def test_stale_sidecar_without_ver_is_recomputed(self):
+        """老 sidecar 里存的是错口径（无 _ver），即使 _stamp 对得上也必须重算。"""
+        import numpy as np
+        base = app.RVC_DIR / "logs" / "旧缓存"
+        d = base / "2b-f0nsf"
+        d.mkdir(parents=True)
+        np.save(d / "x.npy", np.full(200, 314.7))
+        stamp = max(p.stat().st_mtime_ns for p in d.glob("*.npy"))
+        (base / "f0_stats.json").write_text(
+            json.dumps({"median_hz": 89.0, "p5_hz": 54.0, "p95_hz": 132.0,
+                        "source": "training", "_stamp": stamp}),  # _stamp 一致但没 _ver
+            encoding="utf-8")
+        st = app._rvc_f0_stats("旧缓存.pth")
+        self.assertEqual(st["median_hz"], 314.7, "_stamp 相同但缺 _ver 的旧错值必须被淘汰")
 
     def test_source_f0_measured_for_real(self):
         """pyworld 走真路径：220Hz 正弦要量出 ~220；纯静音必须 422 而不是编一个数。"""
@@ -2203,7 +2256,153 @@ class TestPitchRange(Sandbox):
         s = app._rvc_pitch_suggestion(440.0, 110.0, 0)   # 低八度 → -24
         self.assertEqual(s["suggested_pitch"], -24)
 
-    def test_advice_endpoint_states_and_cleanup(self):
+    def test_suggestion_clamped_by_target_high_range(self):
+        """高音覆盖钳位：只按中位数对齐会把源的高音一起抬到模型没见过的地方。
+
+        源中位 220 / 目标中位 440 → 光看中位数要 +12；但源 p95 已到 600Hz，
+        抬高 12 个半音 = 1200Hz，远超目标 p99 的 700Hz → 必须收住，
+        否则高音顶出训练覆盖范围，听着就是发虚、丢声。"""
+        s = app._rvc_pitch_suggestion(220.0, 440.0, 0, src_p95=600.0, tgt_p99=700.0)
+        self.assertEqual(s["clamped_by"], "target_p99")
+        self.assertLess(s["suggested_pitch"], 12)
+        # 1200 > 700，cap = 12*log2(700/600) ≈ 2.66 → floor 2
+        self.assertEqual(s["suggested_pitch"], 2)
+        # 降调方向不看高音上界（降调只会让高音更安全），也不该被凭空收住
+        s2 = app._rvc_pitch_suggestion(440.0, 220.0, 0, src_p95=600.0, tgt_p99=700.0)
+        self.assertIsNone(s2["clamped_by"])
+        self.assertEqual(s2["suggested_pitch"], -12)
+
+    def test_suggestion_clamped_by_target_low_range(self):
+        """降调方向的对称约束：源低音被压出目标低音覆盖时要收住下限。
+
+        两个方向各管一头——曾经只写了高音上界，结果降调也被它钳（源 365.8 → 目标 314.7
+        被算成 -8 而不是 -3），正是"只防了一边"的坑。"""
+        s = app._rvc_pitch_suggestion(300.0, 150.0, 0, src_p5=200.0, tgt_p5=120.0)
+        self.assertEqual(s["clamped_by"], "target_p5")
+        # 光看中位数要 -12；但 200Hz 降 12 = 100Hz，低于目标 p5 的 120Hz
+        # → 下限 = 12*log2(120/200) ≈ -8.82 → ceil → -8
+        self.assertEqual(s["suggested_pitch"], -8)
+        # 升调方向不看低音下界
+        s2 = app._rvc_pitch_suggestion(150.0, 300.0, 0, src_p5=200.0, tgt_p5=120.0)
+        self.assertIsNone(s2["clamped_by"])
+        self.assertEqual(s2["suggested_pitch"], 12)
+
+    def test_quality_report_flags_high_note_drop_and_octave_jump(self):
+        """听感体检要能量出用户抱怨的那两件事：高音丢声、八度怪响。"""
+        import numpy as np
+        import soundfile as sf
+        sr = 22050
+        n = int(sr * 2.0)
+        t = np.arange(n) / sr
+        lo = 0.5 * np.sin(2 * np.pi * 220 * t)
+        hi = 0.5 * np.sin(2 * np.pi * 700 * t)
+        src = np.concatenate([lo, hi])
+        p_src = self.tmp / "q_src.wav"
+        sf.write(str(p_src), src.astype("float32"), sr)
+        # 产物：低音段照唱，高音段整段没声音（= "高音没有声音"）
+        p_out = self.tmp / "q_out.wav"
+        sf.write(str(p_out), np.concatenate([lo, np.zeros(n)]).astype("float32"), sr)
+        rep = app._rvc_quality_report(p_src, p_out, 0)
+        self.assertGreater(rep["hi_threshold_hz"], 400, "高音阈值该落在 700Hz 那一档")
+        self.assertGreater(rep["hi_drop_ratio"], 0.8, "整段高音没了必须被量出来")
+        self.assertGreater(rep["voiced_drop_ratio"], 0.4)
+        self.assertTrue(any("fcpe" in x for x in rep["tips"]),
+                        "高音丢声要给得出可执行建议：换 fcpe")
+        # 音高正常、只有极少量跳变的产物不该报警
+        rep2 = app._rvc_quality_report(p_src, p_src, 0)
+        self.assertLess(rep2["voiced_drop_ratio"], 0.05)
+        self.assertLess(rep2["octave_jump_ratio"], 0.005)
+        self.assertFalse(any("金属" in x for x in rep2["tips"]))
+        # 源几乎无声 → 量不出来就如实说，不编数
+        z = self.tmp / "q_sil.wav"
+        sf.write(str(z), np.zeros(int(sr * 3), dtype="float32"), sr)
+        self.assertIn("error", app._rvc_quality_report(z, p_out, 0))
+
+    def test_safe_range_keeps_whole_vocal_range_inside_model_coverage(self):
+        """中位数对齐只保中枢，两端的音可能整段飞出去 —— 安全区间就是管这个的。
+
+        真实教训：蛋卷×《等你回来》推荐 -3，实际用了 +2；源 p95 480Hz 抬 2 个半音
+        变 539Hz，而蛋卷练过的 p95 只有 468Hz → 28% 的音高越界 → 一片一片地失真。
+        安全区间必须把 +2 判为越界。"""
+        safe = app._rvc_pitch_safe_range(
+            {"p5_hz": 270.3, "p95_hz": 480.1},     # 源《等你回来》
+            {"p5_hz": 199.4, "p95_hz": 476.5})     # 蛋卷
+        self.assertEqual((safe["min"], safe["max"]), (-5, -1))
+        self.assertLessEqual(safe["max"], 0, "这组合根本不该允许升调")
+        # 推荐值 -3 在区间内；用户用的 +2 越界 3 个半音
+        self.assertTrue(safe["min"] <= -3 <= safe["max"])
+        self.assertGreater(2 - safe["max"], 0)
+        # 缺任一端就不给区间，绝不拿半截数据编一个
+        self.assertIsNone(app._rvc_pitch_safe_range({"p5_hz": 270.3}, {"p5_hz": 199.4}))
+        self.assertIsNone(app._rvc_pitch_safe_range(None, None))
+
+    def test_quality_report_flags_pitch_pushed_out_of_model_coverage(self):
+        """失真类问题必须被测出来：音高被推到该音色没学过的高度。
+
+        前三项（丢声 / 高音丢声 / 八度跳变）在这种情形下全都测不出来——
+        音高在、声音也在，就是难听。这一项专治它。"""
+        import numpy as np
+        import soundfile as sf
+        sr = 22050
+        n = int(sr * 3.0)
+        t = np.arange(n) / sr
+        # 源唱 400Hz；产物被抬到 700Hz，而该音色 p95 只到 500Hz
+        src = 0.5 * np.sin(2 * np.pi * 400 * t)
+        out = 0.5 * np.sin(2 * np.pi * 700 * t)
+        ps, po = self.tmp / "q2_src.wav", self.tmp / "q2_out.wav"
+        sf.write(str(ps), src.astype("float32"), sr)
+        sf.write(str(po), out.astype("float32"), sr)
+        rep = app._rvc_quality_report(ps, po, 0, {"p95_hz": 500.0, "p99_hz": 560.0})
+        self.assertGreater(rep["out_of_range_ratio"], 0.8, "整段都越界了必须被量出来")
+        self.assertGreater(rep.get("far_out_ratio", 0), 0.8)
+        self.assertTrue(any("失真" in x for x in rep["tips"]),
+                        "越界要给得出可执行建议")
+        # 不越界的产物不该报警
+        rep2 = app._rvc_quality_report(ps, ps, 0, {"p95_hz": 500.0, "p99_hz": 560.0})
+        self.assertLess(rep2["out_of_range_ratio"], 0.05)
+        self.assertFalse(any("失真" in x for x in rep2["tips"]))
+
+    def test_suggestion_refuses_to_answer_across_more_than_an_octave(self):
+        """跨一个八度以上 = 源唱音域基本是测错了（整曲带伴奏把基频拽到低音区）。
+
+        真实事故：整曲量出中位 124Hz（分离后真值 365.8Hz）→ 算出 +16 半音 → 被 p99 钳成
+        +2 → 前端自动套用 → 29% 的音高越界、一片失真。**明知测错还给建议比不给更糟。**"""
+        s = app._rvc_pitch_suggestion(124.0, 314.7, 0, 300.0, 549.1, 90.0, 199.4)
+        self.assertTrue(s["suspicious"])
+        # 男女声互换这种真实场景（±12）不能被误判
+        self.assertFalse(app._rvc_pitch_suggestion(160.0, 320.0, 0)["suspicious"])
+        self.assertFalse(app._rvc_pitch_suggestion(320.0, 160.0, 0)["suspicious"])
+
+    def test_advice_gives_no_number_when_source_range_is_suspect(self):
+        """可疑时端点必须返回 suggestion=None：前端靠它决定要不要自动套用。"""
+        import numpy as np
+        import soundfile as sf
+        # 目标音色要有音域数据，否则走的是"没有音域数据"分支，测不到可疑判定
+        d = app.RVC_DIR / "logs" / "试唱" / "2b-f0nsf"
+        d.mkdir(parents=True, exist_ok=True)
+        np.save(d / "x.npy", np.full(300, 314.7))
+        app._RVC_F0STATS_MEM.clear()
+        sr = 22050
+        t = np.arange(int(sr * 3.5)) / sr
+        p = self.tmp / "low.wav"
+        sf.write(str(p), (0.5 * np.sin(2 * np.pi * 124 * t)).astype("float32"), sr)
+        client = TestClient(app.app, base_url=LOCAL_BASE)
+        saved_models = app._rvc_models
+        try:
+            app._rvc_models = lambda: ["试唱.pth"]
+            r = client.post("/api/rvc/pitch/advice",
+                            files={"file": ("low.wav", p.read_bytes(), "audio/wav")},
+                            data={"model": "试唱.pth"})
+            self.assertEqual(r.status_code, 200, r.text)
+            j = r.json()
+            self.assertIsNone(j.get("suggestion"), "测错了就不许给数，否则会被自动套用")
+            self.assertIn("suspect", j)
+            self.assertIn("超过一个八度", j["text"])
+            self.assertIn("人声分离", j["suspect"]["hint"])
+        finally:
+            app._rvc_models = saved_models
+
+    def test_advice_states_and_cleanup(self):
         import math
         import numpy as np
         import soundfile as sf
@@ -2228,7 +2427,7 @@ class TestPitchRange(Sandbox):
             self.assertIn("没有音域数据", j["text"], "目标没数据就直说，不含糊")
             self.assertNotIn("suggestion", j)
             # 给"试唱"落一份中位 440Hz 的训练 f0 → 建议应恰为 +12
-            d = app.RVC_DIR / "logs" / "试唱" / "2a_f0"
+            d = app.RVC_DIR / "logs" / "试唱" / "2b-f0nsf"
             d.mkdir(parents=True)
             np.save(d / "x.npy", np.full(500, 440.0))
             app._RVC_F0STATS_MEM.clear()
@@ -2243,6 +2442,87 @@ class TestPitchRange(Sandbox):
                              "分析是一次性的，临时目录不能留在盘上")
         finally:
             app._rvc_models = saved_models
+
+
+class TestRvcRecommend(Sandbox):
+    """推荐参数端点：页面默认值、一键套用、历史页转发三个入口共用这一份数字，
+    所以它必须是接口而不是文档——改一处要三处同步，落在这里才不会漂。"""
+
+    NAME = "试唱.pth"
+
+    def setUp(self):
+        super().setUp()
+        self._saved_dirs = (app.RVC_DIR, app.RVC_MODELS_DIR)
+        app.RVC_DIR = self.tmp / "rvc"
+        app.RVC_MODELS_DIR = app.RVC_DIR / "assets" / "weights"
+        app.RVC_MODELS_DIR.mkdir(parents=True)
+        (app.RVC_MODELS_DIR / self.NAME).write_bytes(b"x")
+        stem = self.NAME.removesuffix(".pth")
+        d = app.RVC_DIR / "logs" / stem / "2b-f0nsf"
+        d.mkdir(parents=True)
+        import numpy as np
+        np.save(d / "x.npy", np.full(300, 314.7))   # 舒适音域中位 314.7Hz
+        app._RVC_F0STATS_MEM.clear()
+        self.client = TestClient(app.app, base_url=LOCAL_BASE)
+
+    def tearDown(self):
+        app._RVC_F0STATS_MEM.clear()
+        (app.RVC_DIR, app.RVC_MODELS_DIR) = self._saved_dirs
+        super().tearDown()
+
+    def _get(self, q=""):
+        return self.client.get(f"/api/rvc/models/{self.NAME}/recommend{q}")
+
+    def test_recommend_is_official_default_and_never_empty(self):
+        j = self._get().json()
+        r = j["recommend"]
+        self.assertEqual(r["f0_method"], "rmvpe")
+        self.assertEqual(r["index_rate"], 0.5, "官方 0.75，本机素材音质不如推理源 → 0.5")
+        self.assertEqual(r["protect"], 0.33)
+        self.assertEqual(r["rms_mix_rate"], 0.25, "官方现行默认，不是上游 CLI 的 1.0")
+        self.assertEqual(r["filter_radius"], 3)
+        self.assertEqual(r["resample_sr"], 0)
+        for k in r:
+            self.assertIn(k, j["why"], f"每个推荐值都必须给出理由，{k} 没有")
+
+    def test_pitch_requires_source_range_and_is_computed_when_given(self):
+        j = self._get().json()
+        self.assertIsNone(j["pitch"], "没量源唱音域就不许猜变调")
+        self.assertIn("分析音域", j["pitch_note"])
+        j = self._get("?src_median_hz=365.8&src_p95_hz=480.1").json()
+        self.assertEqual(j["pitch"], -3, "源 365.8 → 音色 314.7 = -2.6 半音 → -3")
+        self.assertIn("366", j["pitch_why"])
+
+    def test_warns_when_source_high_notes_exceed_model_range(self):
+        # 音色 p95 = 314.7（全等值），源 p95 = 480 → 明显超出练过的范围
+        j = self._get("?src_median_hz=365.8&src_p95_hz=480").json()
+        self.assertIn("warn", j)
+        self.assertIn("高音", j["warn"])
+
+    def test_unknown_model_404(self):
+        r = self.client.get("/api/rvc/models/查无此人.pth/recommend")
+        self.assertEqual(r.status_code, 404)
+
+    def test_recommend_carries_safe_range_and_stays_inside_it(self):
+        # 这个用例要的是"音域有分布"的音色：试唱.pth 的 f0 是全等 314.7，
+        # p5=p95 会让区间退化成空集，测不出真实行为。
+        import numpy as np
+        stem = "宽音域"
+        (app.RVC_MODELS_DIR / f"{stem}.pth").write_bytes(b"x")
+        d = app.RVC_DIR / "logs" / stem / "2b-f0nsf"
+        d.mkdir(parents=True)
+        np.save(d / "x.npy", np.linspace(190.0, 500.0, 400))   # p5≈205 p95≈485 中位≈345
+        app._RVC_F0STATS_MEM.clear()
+        r = self.client.get(
+            f"/api/rvc/models/{stem}.pth/recommend"
+            "?src_median_hz=365.8&src_p95_hz=480.1&src_p5_hz=270.3")
+        j = r.json()
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn("safe_range", j, "推荐值必须连安全区间一起给，不然用户照样能填飞")
+        sr = j["safe_range"]
+        self.assertTrue(sr["feasible"])
+        self.assertTrue(sr["min"] <= j["pitch"] <= sr["max"],
+                        f"推荐值 {j['pitch']} 必须落在安全区间 {sr['min']}~{sr['max']} 内")
 
 
 class TestRvcModelsList(Sandbox):
@@ -2922,7 +3202,7 @@ class TestF0Reference(Sandbox):
 
     def test_training_data_refuses_downgrade_by_reference(self):
         import numpy as np
-        d = app.RVC_DIR / "logs" / self.NAME.removesuffix(".pth") / "2a_f0"
+        d = app.RVC_DIR / "logs" / self.NAME.removesuffix(".pth") / "2b-f0nsf"
         d.mkdir(parents=True)
         np.save(d / "x.npy", np.full(500, 440.0))
         r = self._post_ref(self._sine(220))
@@ -2938,23 +3218,25 @@ class TestF0Reference(Sandbox):
         side.parent.mkdir(parents=True)
         side.write_text(json.dumps({"median_hz": 200.0, "p5_hz": 190.0, "p95_hz": 210.0,
                                     "source": "reference", "_stamp": 1}), encoding="utf-8")
-        d = side.parent / "2a_f0"
+        d = side.parent / "2b-f0nsf"
         d.mkdir()
         np.save(d / "x.npy", np.full(500, 440.0))
         got = app._rvc_f0_stats(self.NAME)
         self.assertEqual((got["source"], got["median_hz"]), ("training", 440.0),
                          "几百切片的训练实测永远赢过一段 12 秒参考——不许降级")
 
-    def test_empty_2a_f0_falls_back_to_reference(self):
+    def test_empty_f0_dir_falls_back_to_reference(self):
         stem = self.NAME.removesuffix(".pth")
         side = app.RVC_DIR / "logs" / stem / "f0_stats.json"
         side.parent.mkdir(parents=True)
         side.write_text(json.dumps({"median_hz": 200.0, "source": "reference",
                                     "_stamp": 1}), encoding="utf-8")
-        (side.parent / "2a_f0").mkdir()  # 空目录：一个 npy 都没留下
+        # 两个 f0 目录都是空壳：一个 npy 都没留下
+        (side.parent / "2b-f0nsf").mkdir()
+        (side.parent / "2a_f0").mkdir()
         got = app._rvc_f0_stats(self.NAME)
         self.assertEqual(got["source"], "reference",
-                         "2a_f0 空壳不该把参考档案也挡没")
+                         "空壳 f0 目录不该把参考档案也挡没")
 
     def test_unknown_voice_404_and_silence_422_no_lie(self):
         r = self._post_ref(self._sine(220), name="查无此人.pth")

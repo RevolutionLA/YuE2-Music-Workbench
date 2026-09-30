@@ -2545,17 +2545,42 @@ _RVC_F0STATS_LOCK = threading.Lock()
 _RVC_F0STATS_MEM: dict[str, dict] = {}
 
 
+# 训练产物里有两个 f0 目录，单位天差地别，读错一个整个变调建议就跑飞两个八度：
+#   2a_f0    —— coarse：把 Hz 压成 1–255 的**整数 mel bin**，只喂给训练用，它不是 Hz
+#   2b-f0nsf —— nsf：连续 Hz 的音高曲线，这才是「舒适音域」该读的东西
+# 旧版误读 2a_f0：蛋卷被算成中位 89（其实是 bin 序号），真实值 314.7Hz，
+# 于是变调建议给出 -24 半音——用户真照做会把人声压到听不见的低区。
+# sidecar 里写 _ver 就是为了淘汰这批已经落盘的错值。
+_RVC_F0STATS_VER = 2
+
+
+def _rvc_coarse_to_hz(a):
+    """2a_f0 的 coarse bin → Hz，与 train/dataset/extract_f0.py:coarse_f0 严格互逆。
+    只在 2b-f0nsf 缺失（老训练产物/被清过盘）时才走这条退路。"""
+    import math
+    import numpy as np
+    f0_bin = 256
+    mel_min = 1127.0 * math.log(1.0 + 50.0 / 700.0)
+    mel_max = 1127.0 * math.log(1.0 + 1100.0 / 700.0)
+    v = np.asarray(a, dtype=np.float64)
+    mel = (v - 1.0) * (mel_max - mel_min) / (f0_bin - 2) + mel_min
+    return 700.0 * (np.exp(mel / 1127.0) - 1.0)
+
+
 def _rvc_f0_stats(model: str, refresh: bool = False) -> dict | None:
-    """目标音色的舒适音域。**两个来源，优先级固定**（评审 J1）：
-    ① 训练实测：读 logs/<stem>/2a_f0/*.npy（训练时 rmvpe 实测的每切片 f0），
-      算全集中位数与 p5–p95，落 sidecar `f0_stats.json`，2a_f0 目录未变则复用；
+    """目标音色的舒适音域（中位 / p5 / p95 / p99，单位 Hz）。**两个来源，优先级固定**（评审 J1）：
+    ① 训练实测：logs/<stem>/2b-f0nsf/*.npy（rmvpe 逐切片实测的连续 Hz）——**这是唯一正确的口径**；
+       只有该目录缺失时才退回 2a_f0，并把 coarse bin 反演成 Hz（见 _rvc_coarse_to_hz）。
+       算完落 sidecar `f0_stats.json`，目录未变且 _ver 一致则复用；
     ② 参考音频建档：下载音色（本机 孙燕姿/王菲/邓丽君 等）没有训练素材，
       但用户可以上传该歌手的一段歌建档——sidecar 里 source="reference" 时照用。
-    有 2a_f0 时**永远以训练实测为准**：建档接口会拒绝覆盖，取值也不看参考 sidecar，
+    有训练 f0 时**永远以训练实测为准**：建档接口会拒绝覆盖，取值也不看参考 sidecar，
     防止一个 12 秒片段把几百切片的实测数字降级。数字绝不跨音色冒充。"""
     stem = os.path.basename(str(model)).removesuffix(".pth")
-    f0_dir = RVC_DIR / "logs" / stem / "2a_f0"
-    cache = RVC_DIR / "logs" / stem / "f0_stats.json"
+    log_dir = RVC_DIR / "logs" / stem
+    hz_dir = log_dir / "2b-f0nsf"
+    coarse_dir = log_dir / "2a_f0"
+    cache = log_dir / "f0_stats.json"
 
     def _reference_stats() -> dict | None:
         try:
@@ -2566,20 +2591,23 @@ def _rvc_f0_stats(model: str, refresh: bool = False) -> dict | None:
             return {k: v for k, v in c.items() if not k.startswith("_")}
         return None
 
-    if not f0_dir.is_dir():
+    f0_dir = hz_dir if hz_dir.is_dir() else (coarse_dir if coarse_dir.is_dir() else None)
+    if f0_dir is None:
         return _reference_stats()
+    coarse = f0_dir is coarse_dir
     try:
         stamp = max(p.stat().st_mtime_ns for p in f0_dir.glob("*.npy"))
     except ValueError:
         return _reference_stats()
     with _RVC_F0STATS_LOCK:
         mem = _RVC_F0STATS_MEM.get(stem) if not refresh else None
-        if mem and mem.get("_stamp") == stamp:
+        if (mem and mem.get("_stamp") == stamp
+                and mem.get("_ver") == _RVC_F0STATS_VER):
             return {k: v for k, v in mem.items() if not k.startswith("_")}
     if cache.is_file() and not refresh:
         try:
             c = json.loads(cache.read_text(encoding="utf-8"))
-            if c.get("_stamp") == stamp:
+            if c.get("_stamp") == stamp and c.get("_ver") == _RVC_F0STATS_VER:
                 c.setdefault("source", "training")  # 旧 sidecar 没标来源，补上
                 with _RVC_F0STATS_LOCK:
                     _RVC_F0STATS_MEM[stem] = c
@@ -2591,6 +2619,7 @@ def _rvc_f0_stats(model: str, refresh: bool = False) -> dict | None:
     for f in sorted(f0_dir.glob("*.npy")):
         try:
             a = np.load(f)
+            a = _rvc_coarse_to_hz(a) if coarse else np.asarray(a, dtype=np.float64)
             v = a[a > 0]  # 0 帧 = 无声/清音，音域统计不该把它们算进去
         except Exception:
             continue
@@ -2600,10 +2629,16 @@ def _rvc_f0_stats(model: str, refresh: bool = False) -> dict | None:
     if not parts:
         return None
     allv = np.concatenate(parts)
+    # 生理音域外（<50Hz / >1100Hz）的离谱值不进统计：rmvpe 在气声、混音、擦音上会吐这种数
+    allv = allv[(allv >= 50.0) & (allv <= 1100.0)]
+    if not allv.size:
+        return None
     stats = {"median_hz": round(float(np.median(allv)), 1),
              "p5_hz": round(float(np.percentile(allv, 5)), 1),
              "p95_hz": round(float(np.percentile(allv, 95)), 1),
-             "frames": int(allv.size), "files": files, "source": "training"}
+             "p99_hz": round(float(np.percentile(allv, 99)), 1),
+             "frames": int(allv.size), "files": files, "source": "training",
+             "_ver": _RVC_F0STATS_VER, "_dir": f0_dir.name}
     with _RVC_F0STATS_LOCK:
         _RVC_F0STATS_MEM[stem] = {**stats, "_stamp": stamp}
     try:
@@ -2611,7 +2646,8 @@ def _rvc_f0_stats(model: str, refresh: bool = False) -> dict | None:
                          encoding="utf-8")
     except Exception:
         pass
-    return stats
+    # _ver/_dir 是给缓存判定用的内部标记，不外泄到 API / 产物 meta 里
+    return {k: v for k, v in stats.items() if not k.startswith("_")}
 
 
 # 源音域只分析前 5 分钟：dio 线性耗时，整首长跑只是让提交按钮多转几秒；
@@ -2647,24 +2683,181 @@ def _rvc_f0_of_audio(path: Path) -> dict:
             "analyzed_sec": round(analyzed, 1)}
 
 
-def _rvc_pitch_suggestion(src_median: float, tgt_median: float,
-                          pitch_used: int) -> dict:
-    """建议变调 = 两个中位数的半音距离（±24 钳位，与换声闸门同口径）。"""
+def _rvc_quality_report(src_path: Path, out_path: Path, pitch: int,
+                        tgt_f0: dict | None = None) -> dict:
+    """换声产物的听感体检：把"高音没声音 / 电音 / 偶尔怪响"从靠耳朵猜变成可量化的数字。
+
+    四个数各对应一类听感问题，成因不同、解法也不同，所以分开统计：
+      · voiced_drop —— 源里在唱、产物里却没声音的帧占比。短促的一串就是"偶尔没声"。
+      · hi_drop     —— 只统计源音高处于前 25% 的帧。高音区单独看：它和整体丢声不同源，
+                       常见成因是 f0 提取器在高音区判成无声（rmvpe 比 fcpe 更容易）。
+      · octave_jump —— 产物音高与"源音高 × 变调"差超过 900 音分（八度量级）的占比，
+                       这就是偶尔那一声金属怪响。
+      · out_of_range—— **产物音高落在该音色训练覆盖范围之外的比例**。这一项专治"整首一片
+                       一片地失真"：音高被抬到模型没学过的高度时，它只能硬凑，削波/破音
+                       全来了，而前面三项全都测不出来（音高在、音也在，就是难听）。
+                       蛋卷 ×《等你回来》那次的实测：pitch=+2 → 28% 的音高于训练 p95，
+                       6.6% 高于 p99，用户听到的"很多地方失真"就出自这里。
+    另外给一句可执行建议。测不出来就返回 error，绝不编数——宁可没有诊断，也不要假诊断。"""
+    import numpy as np
+    import soundfile as sf
+    import pyworld as pw
+
+    def _f0(p: Path):
+        x, sr = sf.read(str(p), dtype="float32")
+        if getattr(x, "ndim", 1) > 1:
+            x = x.mean(axis=1)
+        return pw.dio(x.astype(np.float64), int(sr), frame_period=10.0)[0]
+
+    fs, fo = _f0(src_path), _f0(out_path)
+    n = min(fs.size, fo.size)
+    fs, fo = fs[:n], fo[:n]
+    src_v, out_v = fs > 0, fo > 0
+    if int(src_v.sum()) < 100:
+        return {"error": "源人声可测出的有声帧太少，质检跳过"}
+    drop = src_v & ~out_v
+    hi_thr = float(np.percentile(fs[src_v], 75))
+    hi = src_v & (fs >= hi_thr)
+    hi_drop = hi & ~out_v
+    both = src_v & out_v
+    exp = np.where(both, fs * (2.0 ** (float(pitch) / 12.0)), 1.0)
+    cents = np.where(both, 1200.0 * np.log2(np.where(both, fo, 1.0) / np.maximum(exp, 1e-6)), 0.0)
+    jump = both & (np.abs(cents) > 900)
+    rep = {
+        "src_voiced_frames": int(src_v.sum()),
+        "voiced_drop_ratio": round(float(drop.sum()) / max(1, int(src_v.sum())), 4),
+        "hi_threshold_hz": round(hi_thr, 1),
+        "hi_drop_ratio": round(float(hi_drop.sum()) / max(1, int(hi.sum())), 4),
+        "octave_jump_ratio": round(float(jump.sum()) / max(1, int(both.sum())), 4),
+        "pitch_error_cents_median": (round(float(np.median(cents[both])), 1)
+                                     if int(both.sum()) else None),
+    }
+    tips: list[str] = []
+    # 音高覆盖：产物到底有多少音被推到了该音色没学过的高度
+    if tgt_f0:
+        p95_t, p99_t = tgt_f0.get("p95_hz"), tgt_f0.get("p99_hz")
+        if p95_t:
+            above95 = float((fo[out_v] > float(p95_t)).mean()) if out_v.any() else 0.0
+            rep["out_of_range_ratio"] = round(above95, 4)
+            rep["out_of_range_hz"] = round(float(p95_t), 1)
+            if p99_t:
+                rep["far_out_ratio"] = round(
+                    float((fo[out_v] > float(p99_t)).mean()) if out_v.any() else 0.0, 4)
+            if above95 >= 0.12:
+                tips.append(
+                    f"有 {above95 * 100:.0f}% 的音高超过该音色练过的上限（p95 "
+                    f"{float(p95_t):.0f}Hz）——这就是那一片一片的失真：模型在这些高度上"
+                    f"基本没学过，只能硬凑。把变调往{'低' if pitch > 0 else '高'}调 "
+                    f"{max(2, int(round(abs(above95) * 12)))} 个半音再试，或换一个音域更"
+                    f"{'高' if pitch > 0 else '低'}的音色")
+    if rep["hi_drop_ratio"] >= 0.15:
+        tips.append(f"高音丢声偏多（{rep['hi_drop_ratio'] * 100:.0f}%）：优先把变调算法换成 "
+                    "fcpe（rmvpe 在高音区更容易判成无声），并把音高平滑半径降到 0~3")
+    if rep["octave_jump_ratio"] >= 0.005:
+        tips.append(f"有 {rep['octave_jump_ratio'] * 100:.1f}% 的音高大跳（八度量级）——"
+                    "就是偶尔那声金属怪响：把音高平滑半径调到 5~7")
+    if rep["voiced_drop_ratio"] >= 0.10:
+        tips.append(f"整体丢声偏多（{rep['voiced_drop_ratio'] * 100:.0f}%）：把音色检索强度降到 "
+                    "0.3（检索拉太满时，模型在匹配不上的帧上会直接不出声）")
+    if not tips:
+        tips.append("丢声与音高跳变都在正常范围，剩下的听感问题更可能来自训练素材本身"
+                    "（底噪、混响、切片削波）")
+    rep["tips"] = tips
+    return rep
+
+
+def _rvc_pitch_safe_range(src_f0: dict, tgt_f0: dict) -> dict | None:
+    """变调的**安全区间**：把源唱整条音域尽量塞进该音色练过的范围。
+
+    为什么光有"推荐值"不够：中位数对齐只保证**中枢**对得上，两端的音可能整个飞出去。
+    《等你回来》+ 蛋卷就是活例子——推荐 -3 是对的，但用户填了 +2：源唱 p95 480Hz
+    抬 2 个半音变 539Hz，而蛋卷练过的 p95 只有 468Hz，于是 **28% 的音高落在训练覆盖之外**，
+    模型在那些高度上只能硬凑，听感就是一片一片的失真/破音。
+
+    上界 = 让源 p95 落到目标 p95；下界 = 让源 p5 落到目标 p5。
+    只报区间、不替用户决定（越界仍然允许提交，但页面要红字警告）。"""
+    import math
+    try:
+        s5, s95 = float(src_f0["p5_hz"]), float(src_f0["p95_hz"])
+        t5, t95 = float(tgt_f0["p5_hz"]), float(tgt_f0["p95_hz"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (s5 > 0 and s95 > 0 and t5 > 0 and t95 > 0):
+        return None
+    hi = 12.0 * math.log2(t95 / s95)
+    lo = 12.0 * math.log2(t5 / s5)
+    lo_i, hi_i = max(-24, int(math.ceil(lo))), min(24, int(math.floor(hi)))
+    return {"min": lo_i, "max": hi_i,
+            # 源唱音域比该音色练过的还宽时，两个方向的要求会打架（min>max）——
+            # 此时不存在"全覆盖"的变调，如实说无解，别硬给一个假区间。
+            "feasible": lo_i <= hi_i,
+            "hi_limit": round(hi, 2), "lo_limit": round(lo, 2),
+            "basis": "源 p5–p95 对齐到音色 p5–p95"}
+
+
+def _rvc_pitch_suggestion(src_median: float, tgt_median: float, pitch_used: int,
+                          src_p95: float | None = None,
+                          tgt_p99: float | None = None,
+                          src_p5: float | None = None,
+                          tgt_p5: float | None = None) -> dict:
+    """建议变调 = 两个中位数的半音距离（±24 钳位，与换声闸门同口径）。
+
+    额外一道**音域覆盖钳位**（评审 K2）：只按中位数对齐，会把源唱的整个音域一起搬走。
+      · 升调方向：源 p95 若被抬过目标 p99，高音就进了训练里几乎没见过的区域
+        → 发虚、丢声（"高音没声音"最常见的成因之一）。上界 = 12·log2(tgt_p99/src_p95)。
+      · 降调方向：源 p5 若被压到目标 p5 以下，低音同样会掉出覆盖范围
+        → 发闷、失真。下界 = 12·log2(tgt_p5/src_p5)。
+    两个方向各管一头，**只在该方向真的越界时才收**（升调不看降调的界，反之亦然），
+    宁可少动几个半音，也不把音域推出模型见过的范围。钳过就在结果里留 `clamped_by`。"""
     import math
     semis = 12.0 * math.log2(float(tgt_median) / float(src_median))
     pitch = max(-24, min(24, int(round(semis))))
+    clamped_by = None
+    if semis > 0 and src_p95 and src_p95 > 0 and tgt_p99 and tgt_p99 > 0:
+        cap = 12.0 * math.log2(float(tgt_p99) / float(src_p95))
+        if pitch > cap:
+            pitch = max(-24, min(24, int(math.floor(cap))))
+            clamped_by = "target_p99"
+    elif semis < 0 and src_p5 and src_p5 > 0 and tgt_p5 and tgt_p5 > 0:
+        floor_ = 12.0 * math.log2(float(tgt_p5) / float(src_p5))
+        if pitch < floor_:
+            pitch = max(-24, min(24, int(math.ceil(floor_))))
+            clamped_by = "target_p5"
     diff = pitch - int(pitch_used)
     return {"suggested_pitch": pitch, "raw_semis": round(semis, 2),
+            "src_median_hz": round(float(src_median), 1),
+            "tgt_median_hz": round(float(tgt_median), 1),
+            "clamped_by": clamped_by,
+            # 跨越超过一个八度几乎不可能是真的：正常换声最多跨 ±12（男女声互换），
+            # 再往上基本都是**源唱音域测错了**——整曲带伴奏时 dio 会被贝斯/底鼓拉走。
+            # 《等你回来》那次就是这样：整曲测出中位 124Hz（分离后真值 365.8Hz），
+            # 算出 +16 半音，被 p99 钳到 +2 还自动套用了，用户听到的就是一片失真。
+            "suspicious": abs(semis) >= _RVC_SEMIS_SUSPECT,
             "delta": diff,
             "apply": diff != 0 and abs(semis) >= 1.0}
 
 
+# 判定"源唱音域测错了"的阈值（半音）。见 _rvc_pitch_suggestion.suspicious 的注释。
+_RVC_SEMIS_SUSPECT = 13.0
+
+_RVC_SUSPECT_HINT = ("这个音域差超过一个八度，几乎可以肯定是**源唱音域没测准**"
+                     "（整曲带伴奏时基频会被伴奏的低音带跑偏）——按它调一定出问题。"
+                     "请勾选「先做人声分离」重测，或改用干声片段；"
+                     "也可以直接开「先做人声分离」跑一次换声，成品 meta 里会带可信的源音域。")
+
+
 @router.post("/rvc/pitch/advice")
-async def rvc_pitch_advice(file: UploadFile, model: str = Form(...)):
+async def rvc_pitch_advice(file: UploadFile, model: str = Form(...),
+                           separate: bool = Form(False)):
     """换声前的音域体检：量源唱音域 → 对照目标音色舒适音域 → 给一句可执行的变调建议。
-    不占 GPU、不进换声队列，几秒出结果。三档诚实：
+
+    `separate=1` 时先跑人声分离再量（整曲必勾，慢 1~2 分钟，但准）；不勾则直接量上传的
+    音频——**整曲带伴奏时基频会被贝斯/底鼓拉偏**，所以直量结果一旦跨过 _RVC_SEMIS_SUSPECT
+    （一个八度）就判定为测错，**直接不给数**而不是给一个看着专业其实错误的建议。
+
+    不占 GPU（不勾选分离时）、不进换声队列，几秒出结果。三档诚实：
     ① 双方都有数据 → 建议；② 目标音色是外部下载（无训练 f0）→ 只报源音域，说明没法建议；
-    ③ 源带伴奏 → 数字可能被伴奏带偏，提示改用干声或看换声后 meta 里的可信值。"""
+    ③ 源音域可疑（大概率整曲带伴奏）→ 明确说测错了，请勾分离重测，绝不给数。"""
     models = _rvc_models()
     if model not in models:
         raise HTTPException(status_code=400, detail=f"未知音色模型：{model}（可用：{models}）")
@@ -2677,25 +2870,69 @@ async def rvc_pitch_advice(file: UploadFile, model: str = Form(...)):
     probe = work / f"src{ext}"
     try:
         await _stream_upload_to(file, probe, 200 * 1024 * 1024, "音频")
+        if separate:
+            # 分离要占 GPU（BS-Roformer），与换声/生成同一把锁，排队等是应该的：
+            # 不分离就量，整曲的基频会被伴奏拽到低音区，换来一个错得离谱的变调建议。
+            job = {"id": rid, "status": "running", "step": "分析用：人声分离",
+                   "src_name": file.filename or "in.wav"}
+            with _GPU_SEM:
+                vocals, _art = await run_in_threadpool(
+                    _run_vocal_separation, probe, work, job, False)
+            if vocals and Path(vocals).is_file():
+                probe = Path(vocals)
         # f0 提取要解码整段音频 + 跑基频检测，几十秒起步，不能占事件循环
         src = await run_in_threadpool(_rvc_f0_of_audio, probe)
         tgt = _rvc_f0_stats(model)
         out = {"ok": True, "source": src, "target": tgt, "model": model}
         if tgt:
-            out["suggestion"] = _rvc_pitch_suggestion(
-                src["median_hz"], tgt["median_hz"], 0)
-            n = out["suggestion"]["suggested_pitch"]
+            sug = _rvc_pitch_suggestion(
+                src["median_hz"], tgt["median_hz"], 0,
+                src.get("p95_hz"), tgt.get("p99_hz"),
+                src.get("p5_hz"), tgt.get("p5_hz"))
             tgt_cn = ("参考音频实测" if tgt.get("source") == "reference"
                       else "训练素材实测")
-            out["text"] = (f"源唱中位 {src['median_hz']:.0f}Hz，音色「{model}」舒适音域中位 "
-                           f"{tgt['median_hz']:.0f}Hz（{tgt_cn}）→ 建议变调 "
-                           f"{n:+d} 半音（音域差 {out['suggestion']['raw_semis']:+.1f}）")
+            if sug["suspicious"]:
+                # 不给数：明知测错了还给一个"建议"，比不给更糟——上次就是这么把
+                # +2 自动套用上去的。宁可让用户重测，也不要一个看着专业其实错误的数字。
+                out["suggestion"] = None
+                out["suspect"] = {"raw_semis": sug["raw_semis"],
+                                  "src_median_hz": sug["src_median_hz"],
+                                  "tgt_median_hz": sug["tgt_median_hz"],
+                                  "hint": _RVC_SUSPECT_HINT}
+                out["text"] = (f"⚠️ 源唱中位量到 {src['median_hz']:.0f}Hz，与音色「{model}」的 "
+                               f"{tgt['median_hz']:.0f}Hz（{tgt_cn}）差了 {sug['raw_semis']:+.1f} "
+                               f"半音——超过一个八度，基本可以肯定是整曲带伴奏把基频测偏了，"
+                               f"所以**不给变调建议**。")
+            else:
+                out["suggestion"] = sug
+                out["text"] = (f"源唱中位 {src['median_hz']:.0f}Hz，音色「{model}」舒适音域中位 "
+                               f"{tgt['median_hz']:.0f}Hz（{tgt_cn}）→ 建议变调 "
+                               f"{sug['suggested_pitch']:+d} 半音"
+                               f"（音域差 {sug['raw_semis']:+.1f}）")
+                if sug.get("clamped_by") == "target_p99":
+                    out["text"] += (f"；已按该音色高音覆盖（p99 {tgt.get('p99_hz', 0):.0f}Hz）"
+                                    f"收过上限，再升高音会发虚")
+                elif sug.get("clamped_by") == "target_p5":
+                    out["text"] += (f"；已按该音色低音覆盖（p5 {tgt.get('p5_hz', 0):.0f}Hz）"
+                                    f"收过下限，再降低音会发闷")
+                safe = _rvc_pitch_safe_range(src, tgt)
+                if safe:
+                    out["safe_range"] = safe
+                    # 区间两端打架（源音域比音色还宽）时不能报一个 min>max 的假区间，
+                    # 上次就显示成"安全区间 +17 ~ +0"，推荐值自己都在区间外，自相矛盾。
+                    out["text"] += (f"；安全区间 {safe['min']:+d} ~ {safe['max']:+d}"
+                                    f"（区间外会有音高落在该音色练过的范围之外，高音易失真）"
+                                    if safe.get("feasible", True) else
+                                    "；源唱音域与该音色练过的范围不重叠，给不出安全区间")
         else:
             out["text"] = (f"源唱中位 {src['median_hz']:.0f}Hz；音色「{model}」没有音域数据"
                            "（外部下载的音色没有训练素材），无法给变调建议——"
                            "在音色卡片上给它传一段该歌手本人的歌（10~30 秒即可）建档后即可。")
-        out["caveat"] = ("整曲带伴奏时 f0 会被伴奏污染，此数字仅供参考；"
-                         "开「先人声分离」跑完后，成品 meta 里会带可信的源音域与最终建议。")
+        out["separated"] = bool(separate)
+        out["caveat"] = ("" if separate else
+                         "你量的是原始文件：整曲带伴奏时 f0 会被伴奏污染（这是变调建议跑偏的"
+                         "头号原因）。建议勾上「先做人声分离」重测，或开「先做人声分离」跑一次"
+                         "换声——成品 meta 里会带可信的源音域与最终建议。")
         return out
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -2704,11 +2941,11 @@ async def rvc_pitch_advice(file: UploadFile, model: str = Form(...)):
 @router.post("/rvc/models/{name}/f0-reference")
 async def rvc_model_f0_reference(name: str, file: UploadFile):
     """给外部下载音色建"参考音域"档案（评审 J1）。本机 4 个现役音色全是下载的、
-    没有训练素材，2a_f0 永远为空 → C4 的变调建议对它们 0% 生效。唯一可信的补救是
+    没有训练素材，2b-f0nsf / 2a_f0 永远为空 → C4 的变调建议对它们 0% 生效。唯一可信的补救是
     **这个本人的一段干净人声**（不能拿换声产物反推——那是源音高的镜像，不含目标音色信息，
     评审实测两个不同音色产物中位只差 0.09 半音）。传一段该音色本人的歌（建议干声，
     10~30 秒足够）→ 复用 _rvc_f0_of_audio 算中位/p5–p95 → 落 sidecar f0_stats.json，
-    标记 source="reference"。此后 _rvc_f0_stats 的取值顺序：训练 2a_f0 实测 → 参考档案 → None。
+    标记 source="reference"。此后 _rvc_f0_stats 的取值顺序：训练 2b-f0nsf 实测 → 参考档案 → None。
     诚实口径：参考数字绝不冒充训练实测，卡片与文案都标注来源；已有训练实测的音色不许被
     参考档案覆盖（端点直接拒绝——一段 12 秒片段不许降级几百切片的实测）。"""
     name = os.path.basename(name)
@@ -2716,8 +2953,11 @@ async def rvc_model_f0_reference(name: str, file: UploadFile):
         raise HTTPException(status_code=404,
                             detail=f"音色模型不存在：{name}（可用：{_rvc_models()}）")
     stem = name.removesuffix(".pth")
-    f0_dir = RVC_DIR / "logs" / stem / "2a_f0"
-    if any(f0_dir.glob("*.npy")):
+    # 两个 f0 目录任一有货都算"已有训练实测"（40k 训练两个都写，老产物可能只剩一个）
+    _has_train_f0 = any(
+        (RVC_DIR / "logs" / stem / d).is_dir() and any((RVC_DIR / "logs" / stem / d).glob("*.npy"))
+        for d in ("2b-f0nsf", "2a_f0"))
+    if _has_train_f0:
         raise HTTPException(status_code=409, detail=(
             f"「{stem}」已有本机训练素材的音域实测，不用也不许用参考音频建档覆盖"))
     ext = Path(file.filename or "in.wav").suffix.lower()
@@ -2745,6 +2985,101 @@ async def rvc_model_f0_reference(name: str, file: UploadFile):
                 "stats": {k: v for k, v in record.items() if not k.startswith("_")}}
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+# 换声参数的"推荐档"：**唯一真源**。页面默认值、一键套用、历史页送去换声，
+# 全部从这里取——以前推荐值只写在文档里，用户根本不知道该填多少。
+_RVC_RECO_BASE = {
+    "f0_method": "rmvpe",
+    "index_rate": 0.5,
+    "protect": 0.33,
+    "rms_mix_rate": 0.25,
+    "filter_radius": 3,
+    "resample_sr": 0,
+}
+_RVC_RECO_WHY = {
+    "f0_method": "官方默认；高音丢声/发闷时换 fcpe（本机已支持）",
+    "index_rate": "官方默认 0.75，但训练素材过过降噪去混响、音质不如分离干声，"
+                  "检索拉满反而更糊——0.5 是够像又不电的落点",
+    "protect": "官方默认；越小越保留原唱咬字与呼吸（电音更少），0.5 等于不保护",
+    "rms_mix_rate": "官方现行默认（1.0 是早期默认）：跟原唱动态走，静音段不再被填气声",
+    "filter_radius": "官方默认；哑音毛刺明显时 5~7，调大会发闷",
+    "resample_sr": "跟随模型原生：40k 音色上采样到 48k 不会补出高频，只多一次失真",
+}
+
+
+def _rvc_recommend_params(model: str, src_median: float | None = None,
+                          src_p95: float | None = None,
+                          src_p5: float | None = None) -> dict:
+    """按音色算出这套旋钮的推荐值，并**逐项给出理由**。
+
+    为什么要有这个端点：推荐值只写在文档/对话里等于没有——用户在页面上看到的是
+    一堆空输入框和游标，不知道该填什么。这里把它变成接口，页面默认值、
+    「一键套用」、历史页转发三个入口共用同一份数字，改一处三处同步。
+
+    src_median/src_p95 给了才算 pitch（变调是唯一需要知道源唱音高才能定的参数），
+    没给就老实返回 null，不猜。"""
+    rec = dict(_RVC_RECO_BASE)
+    why = dict(_RVC_RECO_WHY)
+    tgt = _rvc_f0_stats(model)
+    out: dict = {"model": model, "recommend": rec, "why": why,
+                 "f0_range": tgt, "pitch": None}
+    if not tgt or not src_median or src_median <= 0:
+        out["pitch_note"] = ("这个音色没有音域数据（外部下载、未建档），变调只能自己听；"
+                             if not tgt else
+                             "还没量过源唱音域——选好音频后点「分析音域」即可算出变调")
+        return out
+    sug = _rvc_pitch_suggestion(src_median, tgt["median_hz"], 0,
+                                src_p95, tgt.get("p99_hz"), src_p5, tgt.get("p5_hz"))
+    if sug["suspicious"]:
+        # 与 advice 同一口径：测错的源音域绝不给数，否则会被自动套用成一个错误的变调
+        out["pitch"] = None
+        out["suspect"] = {"raw_semis": sug["raw_semis"], "hint": _RVC_SUSPECT_HINT}
+        out["pitch_note"] = _RVC_SUSPECT_HINT
+        return out
+    out["pitch"] = sug["suggested_pitch"]
+    out["pitch_why"] = (
+        f"源唱中位 {src_median:.0f}Hz → 音色「{model.removesuffix('.pth')}」实测中位 "
+        f"{tgt['median_hz']:.0f}Hz，差 {sug['raw_semis']:+.1f} 半音")
+    # 安全区间：中位数对齐只保中枢，两端可能整段飞出训练覆盖范围 → 收进区间
+    if src_p5 and src_p95:
+        safe = _rvc_pitch_safe_range({"p5_hz": src_p5, "p95_hz": src_p95}, tgt)
+        if safe:
+            out["safe_range"] = safe
+            lo, hi = safe["min"], safe["max"]
+            if not safe.get("feasible", True):
+                out["pitch_why"] += "；源唱音域比该音色练过的还宽，怎么调都会有音高落在覆盖外"
+            else:
+                if out["pitch"] > hi:
+                    out["pitch"] = hi
+                    out["pitch_why"] += f"；已收进安全上限 {hi:+d}"
+                elif out["pitch"] < lo:
+                    out["pitch"] = lo
+                    out["pitch_why"] += f"；已收进安全下限 {lo:+d}"
+    if sug.get("clamped_by") == "target_p99":
+        out["pitch_why"] += f"；已按该音色高音覆盖（p99 {tgt.get('p99_hz', 0):.0f}Hz）收过上限"
+    elif sug.get("clamped_by") == "target_p5":
+        out["pitch_why"] += f"；已按该音色低音覆盖（p5 {tgt.get('p5_hz', 0):.0f}Hz）收过下限"
+    # 高音覆盖预警：源唱高音区明显超出音色练过的范围 → 提醒降调或换音色
+    if src_p95 and tgt.get("p95_hz") and src_p95 > tgt["p95_hz"] * 1.25:
+        out["warn"] = (f"源唱高音区（p95 {src_p95:.0f}Hz）明显高于该音色练过的范围"
+                       f"（p95 {tgt['p95_hz']:.0f}Hz），高音可能发虚或丢声——"
+                       f"试试再降几个半音，或换一个音域更高的音色")
+    return out
+
+
+@router.get("/rvc/models/{name}/recommend")
+def rvc_model_recommend(name: str, src_median_hz: float | None = None,
+                        src_p95_hz: float | None = None,
+                        src_p5_hz: float | None = None):
+    """该音色的推荐换声参数（含变调，前提是给了源唱音域）。纯读 sidecar，毫秒级。
+
+    页面三个入口共用这一份：换声页默认值、一键套用、历史页「送去换声」。"""
+    name = os.path.basename(name)
+    if name not in _rvc_models():
+        raise HTTPException(status_code=404,
+                            detail=f"音色模型不存在：{name}（可用：{_rvc_models()}）")
+    return _rvc_recommend_params(name, src_median_hz, src_p95_hz, src_p5_hz)
 
 
 def _rvc_pitch(raw) -> int:
@@ -2785,10 +3120,19 @@ def _rvc_convert_params(model: str, f0_method, index_rate, protect, rms_mix_rate
             raise HTTPException(status_code=400,
                                 detail="fcpe 需要 torchfcpe 依赖，本机 import 失败："
                                        "py312\\python.exe -m pip install torchfcpe，或改用 rmvpe")
+    # 三个旋钮的默认值全部对齐「官方现行默认 + 本机实测」而非上游 CLI 的陈旧默认：
+    #   · index_rate 0.75 → 0.5：上游默认 0.75 是"检索优先"，但官方 FAQ Q11/Q12 说得很直白——
+    #     训练素材的音质不如推理源时，检索拉得越满，音质越往素材那头倒，长音/高音上
+    #     就是金属电音。本机训练素材都过过 UVR 去混响+降噪，高频细节本来就比分离干声差，
+    #     0.5 是"够像又不糊"的落点；嫌不像再往上加，别一上来就 0.75。
+    #   · rms_mix_rate 1.0 → 0.25：官方现行默认就是 0.25（1.0 是早期版本的默认）。
+    #     1.0 = 完全用模型自己算的音量包络，静音/换气处会被模型填出随机气声，
+    #     整首还容易忽大忽小；0.25 = 七成跟原唱的动态走，配合静音门最干净。
+    #   · protect 0.33 不动：官方默认，兼顾咬字与音色。
     out = []
-    for label, raw, lo, hi, dflt in (("音色检索强度", index_rate, 0.0, 1.0, 0.75),
+    for label, raw, lo, hi, dflt in (("音色检索强度", index_rate, 0.0, 1.0, 0.5),
                                      ("protect", protect, 0.0, 0.5, 0.33),
-                                     ("音量对齐强度", rms_mix_rate, 0.0, 1.0, 1.0)):
+                                     ("音量对齐强度", rms_mix_rate, 0.0, 1.0, 0.25)):
         try:
             v = float(dflt if raw is None or raw == "" else raw)
         except (TypeError, ValueError):
@@ -3673,19 +4017,42 @@ def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
         # 音域留档（评审 C4）：这里量的 src 是**分离后真正送进 RVC 的人声**（没开分离时
         # 是用户自称的干声），比换声前拿整曲探针量的数字可信。测不出来绝不把成功的换声
         # 改判失败，但失败必须留痕（meta.src_f0.error），不许静默。
+        tgt_f0 = None   # 下面体检要用；音域那步若失败，这里保持 None，体检照跑不误判
         try:
             src_f0 = _rvc_f0_of_audio(src)
             meta["src_f0"] = src_f0
             tgt_f0 = _rvc_f0_stats(model)
             if tgt_f0:
-                sug = _rvc_pitch_suggestion(src_f0["median_hz"], tgt_f0["median_hz"], pitch)
+                meta["pitch_safe"] = _rvc_pitch_safe_range(src_f0, tgt_f0)
+                sug = _rvc_pitch_suggestion(src_f0["median_hz"], tgt_f0["median_hz"], pitch,
+                                            src_f0.get("p95_hz"), tgt_f0.get("p99_hz"),
+                                            src_f0.get("p5_hz"), tgt_f0.get("p5_hz"))
                 meta["pitch_advice"] = {**sug, "pitch_used": pitch}
                 if abs(pitch - sug["suggested_pitch"]) >= 4:
                     meta["pitch_note"] = (
-                        f"源唱与「{model}」的音域差 {sug['raw_semis']:+.1f} 半音，"
-                        f"本单只变了 {pitch:+d}——结果若发紧/电音重，下次试 {sug['suggested_pitch']:+d}")
+                        f"源唱中位 {src_f0['median_hz']:.0f}Hz、"
+                        f"「{model}」实测中位 {tgt_f0['median_hz']:.0f}Hz，"
+                        f"差 {sug['raw_semis']:+.1f} 半音；本单用了 {pitch:+d}"
+                        f"（换声后人声中位被拉到约 "
+                        f"{src_f0['median_hz'] * (2 ** (pitch / 12)):.0f}Hz）。"
+                        f"结果若发紧/电音重，下次试 {sug['suggested_pitch']:+d}")
+                elif sug.get("clamped_by") == "target_p99":
+                    meta["pitch_note"] = (
+                        f"变调已按「{model}」的高音覆盖（p99 {tgt_f0.get('p99_hz', 0):.0f}Hz）"
+                        f"收过上限：再升就会顶到训练里几乎没见过的音高，高音容易发虚或丢声")
+                elif sug.get("clamped_by") == "target_p5":
+                    meta["pitch_note"] = (
+                        f"变调已按「{model}」的低音覆盖（p5 {tgt_f0.get('p5_hz', 0):.0f}Hz）"
+                        f"收过下限：再降就会掉出训练里见过的低音区，人声容易发闷失真")
         except Exception as e:
             meta["src_f0"] = {"error": str(e)[:200]}
+        # 产物听感体检（丢声 / 高音丢声 / 八度跳变）：上面只解决了"该变几个半音"，
+        # 用户真正抱怨的是"高音没声音、偶尔电音"，这三个数把抱怨变成可定位的数字。
+        # 纯 CPU、几秒出结果；测不出来只留 error，绝不因此把成功的换声改判失败。
+        try:
+            meta["quality"] = _rvc_quality_report(src, wav, pitch, tgt_f0)
+        except Exception as e:
+            meta["quality"] = {"error": str(e)[:200]}
         # 排队阶段的 step/queue_pos 不留进产物 meta：status=done 却挂着"排队中"，
         # 事后翻 meta 排查会被带偏（评审 v1.2.0 G4）
         meta.pop("step", None)
@@ -4780,6 +5147,16 @@ def _rvc_train_worker(rid: str, name: str, epochs: int,
         #    一旦被改写（测试沙箱、以后挪盘），这里就会静默指向一个不存在的 train/
         _rvc_run_step([str(RVC_PY), str(RVC_DIR / "train" / "preprocess.py"),
                        str(train_dir), "40000", str(n_p), str(exp_logs), "False", "3.7"], job, "预处理切片")
+        # 1.5) 切片峰值归一（peak>1.0 的切片会把削波失真教给模型，见 _rvc_normalize_slices）
+        #     必须在 F0/HuBERT 提取**之前**做：特征是从 1_16k_wavs 抽的，
+        #     GT 是从 0_gt_wavs 读的，两边同一个增益才对得上。
+        try:
+            norm = _rvc_normalize_slices(exp_logs)
+            if norm:
+                job["slice_norm"] = norm
+                _rvc_train_write(rid, job)
+        except Exception as e:
+            job["slice_norm"] = {"error": str(e)[:200]}
         # 2) F0 提取（rmvpe）3) Hubert 特征（v2 → 768 维）
         # 设备跟随引擎当前模式：以前硬写 "cuda"，无独显机器上这两步会直接抛
         # torch 设备错误（README 声称"无独显也能跑"，CPU 只是慢不是不能跑）
@@ -4951,6 +5328,48 @@ _RVC_SCAN_MAX_SEC = 600     # 单文件只分析前 10 分钟：更长的按抽�
 _RVC_SILENCE_DB = -45.0     # 帧 RMS 低于此视为静音（干声口径）
 
 
+def _rvc_normalize_slices(exp_logs: Path) -> dict:
+    """切片峰值归一：把 peak>0.99 的切片整体压到 0.95，0_gt_wavs 与 1_16k_wavs 用**同一个增益**。
+
+    为什么非做不可：素材体检报过 peak 顶到 0 dBFS（蛋卷那批 644 片里有 90 片 peak>1.0，
+    最高 1.093）。切片直接当训练 GT 用，等于拿削过波的波形去教模型——模型学到的就是
+    过载时的失真纹理，成品在同样的高音/高动态处会重现那层毛刺感（用户听到的"电音"
+    有一部分来自这里）。而 16k 那份是 HuBERT 的输入，不同步缩放会让内容特征和 GT 对不上。
+    只在真超标时才动（<0.99 的切片一个字节都不改），所以这条对干净素材是无操作。"""
+    gt_dir = exp_logs / "0_gt_wavs"
+    k16_dir = exp_logs / "1_16k_wavs"
+    if not k16_dir.is_dir():
+        return {}
+    import numpy as np
+    import soundfile as sf
+    fixed, peak_max, seen = 0, 0.0, 0
+    for f16 in sorted(k16_dir.glob("*.wav")):
+        try:
+            x16, sr16 = sf.read(str(f16), dtype="float32")
+            if getattr(x16, "ndim", 1) > 1:
+                x16 = x16.mean(axis=1)
+            if x16.size == 0:
+                continue
+            seen += 1
+            pk = float(np.abs(x16).max())
+            peak_max = max(peak_max, pk)
+            if pk <= 0.99:
+                continue
+            g = 0.95 / pk
+            sf.write(str(f16), (x16 * g).astype(np.float32), sr16)
+            fgt = gt_dir / f16.name
+            if fgt.is_file():
+                xgt, srgt = sf.read(str(fgt), dtype="float32")
+                sf.write(str(fgt), (xgt * g).astype(np.float32), srgt)
+            fixed += 1
+        except Exception:
+            continue
+    return {"slices": seen, "clipped": fixed,
+            "peak_before": round(peak_max, 3),
+            "note": ("峰值超 1.0 会让模型学到削波失真，已统一压到 0.95" if fixed else
+                     "切片峰值正常，未改动")}
+
+
 def _rvc_suggest_epochs(total_sec: float) -> tuple[int, str]:
     """三档轮数（官方口径：至少 10 分钟低噪干声；素材差才靠加轮数硬救）。
 
@@ -4962,7 +5381,9 @@ def _rvc_suggest_epochs(total_sec: float) -> tuple[int, str]:
         return 100, f"{total_sec / 60:.1f} 分钟素材：100 轮起步，听完不满意再加到 200"
     if total_sec < 1800:
         return 200, f"{total_sec / 60:.1f} 分钟素材：200 轮（官方推荐的常规档）"
-    return 100, f"{total_sec / 60:.1f} 分钟素材很足：100 轮通常就到顶了，多练只是耗时"
+    return 100, (f"{total_sec / 60:.1f} 分钟素材很足：100 轮通常就到顶了，多练只是耗时。"
+                 "反过来——成品电音重、细节发糊时，先试 50~60 轮：数据不算大还练满，"
+                 "模型会把底模的细节磨掉，只留下训练素材的纹理（官方 FAQ Q9 与社区实测口径一致）")
 
 
 def _rvc_train_pace() -> dict | None:
@@ -5575,6 +5996,23 @@ async def denoise_voice(audio: UploadFile = File(...)):
 
 
 # --------------------------------------------------------------------------- #
+# 歌词结构自检（前端「检查歌词结构」按钮用）
+# 真源只有一份：src/ai_tools.py::_validate_lyrics_impl —— 那是 AI 工作台工具
+# tool_validate_lyrics 走的同一套规则。页面复制一份 JS 规则迟早和后端漂移，
+# 所以这里只把后端的实现暴露成一个只读接口，不重新判定。
+# --------------------------------------------------------------------------- #
+@router.post("/lyrics/validate")
+def validate_lyrics_endpoint(payload: dict):
+    from ai_tools import _validate_lyrics_impl
+    lyrics = payload.get("lyrics")
+    if not isinstance(lyrics, str):
+        raise HTTPException(status_code=400, detail="lyrics (string) is required")
+    # 只做长度保护，不截断：截断会让校验结果针对一份并不存在的歌词
+    lyrics = _limit_text("待校验歌词", lyrics, _MAX_LYRICS)
+    return _validate_lyrics_impl(lyrics)
+
+
+# --------------------------------------------------------------------------- #
 # 模板管理（前后端均可使用；此处提供服务端持久化到本地 templates.json）
 # --------------------------------------------------------------------------- #
 _TEMPLATES_FILE = ROOT / "templates.json"
@@ -5606,16 +6044,24 @@ def save_template(payload: dict):
         "created_at": datetime.now().isoformat(),
     }
     # 全量参数白名单，便于模板一键回填
+    # "asm" = 创作页曲风装配台的六要素配方（语种/曲风/情绪/人声音色/配器/节奏/补充）。
+    # 只存 style 文本的话，回填后六要素格子是空的，用户看不到这句话是怎么拼出来的，
+    # 也没法只改一个维度再装配 —— 所以配方本身要跟着模板走。
     _CAPS = {"style": _MAX_STYLE, "lyrics": _MAX_LYRICS, "abc": _MAX_ABC}
     for key in ("style", "lyrics", "cot", "abc", "seed", "cfg", "steps",
                 "gender", "abc_temperature", "abc_top_p", "abc_top_k",
-                "semantic_temperature", "semantic_top_p", "semantic_top_k"):
+                "semantic_temperature", "semantic_top_p", "semantic_top_k",
+                "asm", "taskName"):
         if key in payload and payload[key] is not None:
             val = payload[key]
             # 模板的三本文本用与生成入口相同的上限：以前统一砍到 4000 字符，
             # 比 _MAX_ABC/_MAX_LYRICS 短，回填出的谱会比原稿少一截且不留痕迹。
             if isinstance(val, str):
                 tpl[key] = _limit_text(f"模板字段 {key}", val, _CAPS.get(key, 4000))
+            elif isinstance(val, dict):
+                # 配方是前端受控的小对象；仍然按长度设上限，避免模板文件被塞成大杂烩
+                if len(json.dumps(val, ensure_ascii=False)) <= 8000:
+                    tpl[key] = val
             else:
                 tpl[key] = val
     items = _load_templates()

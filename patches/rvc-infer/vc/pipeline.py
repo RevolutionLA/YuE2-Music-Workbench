@@ -309,6 +309,17 @@ class Pipeline(object):
                         == audio_sum[t - self.t_query : t + self.t_query].min()
                     )[0][0]
                 )
+        # ===== 段间交叉淡化（本仓库补丁，上游没有）=====
+        # 上游把长音频切成 <=x_max 秒的段各自推理，然后 np.concatenate **硬拼**。
+        # 切点虽然选在查询窗内能量最低处（多半是换气/弱音），但拼接点上仍存在音量与
+        # 音色的阶跃——听感就是"偶尔一声怪响 / 金属声"，而且每段边界都可能出现一次。
+        # 做法：给非末段多喂 xf_src 个输入样本（输出侧多出等长的 xf_tgt），
+        # 拼接时在重叠区做线性交叉淡化；多出来的长度正好被淡化吸收，总长度不变，
+        # 所以不会让换声人声相对伴奏产生累积漂移。
+        xf_tgt = max(1, int(tgt_sr * 0.05))  # 输出侧 50ms，够吃掉咔哒又不糊字
+        xf_src = int(xf_tgt * self.sr / tgt_sr) // self.window * self.window
+        xf_src = max(self.window, xf_src)  # window 对齐，pitch 切片才不会错位
+        xf_tgt = int(xf_src * tgt_sr / self.sr)
         s = 0
         audio_opt = []
         t = None
@@ -340,9 +351,9 @@ class Pipeline(object):
                         model,
                         net_g,
                         sid,
-                        audio_pad[s : t + self.t_pad2 + self.window],
-                        pitch[:, s // self.window : (t + self.t_pad2) // self.window],
-                        pitchf[:, s // self.window : (t + self.t_pad2) // self.window],
+                        audio_pad[s : t + self.t_pad2 + self.window + xf_src],
+                        pitch[:, s // self.window : (t + self.t_pad2 + xf_src) // self.window],
+                        pitchf[:, s // self.window : (t + self.t_pad2 + xf_src) // self.window],
                         times,
                         index,
                         index_vectors,
@@ -357,7 +368,7 @@ class Pipeline(object):
                         model,
                         net_g,
                         sid,
-                        audio_pad[s : t + self.t_pad2 + self.window],
+                        audio_pad[s : t + self.t_pad2 + self.window + xf_src],
                         None,
                         None,
                         times,
@@ -403,7 +414,29 @@ class Pipeline(object):
                     protect,
                 )[self.t_pad_tgt : -self.t_pad_tgt]
             )
-        audio_opt = np.concatenate(audio_opt)
+        if len(audio_opt) > 1:
+            raw_total = sum(int(a.shape[0]) for a in audio_opt)
+            merged = audio_opt[0]
+            for seg in audio_opt[1:]:
+                ov = int(min(xf_tgt, merged.shape[0], seg.shape[0]))
+                if ov > 0:
+                    w = np.linspace(0.0, 1.0, ov, dtype=np.float32)
+                    mixed = merged[-ov:] * (1.0 - w) + seg[:ov] * w
+                    merged = np.concatenate([merged[:-ov], mixed, seg[ov:]])
+                else:
+                    merged = np.concatenate([merged, seg])
+            # 长度兜底：理论总长 = 各段之和 - 每处边界吃掉的重叠。模型输出与输入的比例
+            # 若与 tgt_sr/sr 有细微出入（不同 hop 的模型），这里一次性对齐，
+            # 保证交叉淡化不会把人声相对伴奏拖出累积漂移。
+            want = raw_total - (len(audio_opt) - 1) * xf_tgt
+            if merged.shape[0] < want:
+                merged = np.concatenate(
+                    [merged, np.zeros(want - merged.shape[0], dtype=merged.dtype)])
+            elif merged.shape[0] > want:
+                merged = merged[:want]
+            audio_opt = merged
+        else:
+            audio_opt = np.concatenate(audio_opt)
         if rms_mix_rate != 1:
             audio_opt = change_rms(audio, 16000, audio_opt, tgt_sr, rms_mix_rate)
         if tgt_sr != resample_sr >= 16000:
