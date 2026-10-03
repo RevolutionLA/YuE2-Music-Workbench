@@ -5462,7 +5462,8 @@ function renderRvcTrainList() {
         toast(err.message, "err");
       }
     };
-    // 逐点试听 / 选点定稿：训练完成只剩最近两个检查点，听完再决定用哪个定稿，
+    // 逐点试听 / 选点定稿：训练完成留最终档 + 约 25%/50%/75% 共四档（练过头要听早中段，
+    // 10-03 实测 30/42/60 轮越练越脏，只留最近两档等于把唯一干净的那档删了），
     // 不必"练到第几轮"全凭运气
     const cp = d.querySelector(".rvc-ck");
     const cb = d.querySelector("[data-ckplay]");
