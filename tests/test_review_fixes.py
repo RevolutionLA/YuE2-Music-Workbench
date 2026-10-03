@@ -1143,6 +1143,87 @@ class TestChordProseGuard(Sandbox):
         self.assertFalse(app._abc_has_chords('X:1\nK:G\n|: C,2 D,2 :| "D.C."\n'))
 
 
+class TestWatchdogSparesWorkingTrain(unittest.TestCase):
+    """2026-10-03 实测：音色重训提交后 02:31 / 02:33 / 02:38 三次"判定假死→击杀"，
+    每次都把刚起步的训练连带砍掉，页面上只留下一句"服务重启，任务中断"。
+    /api/health 在编译内核里改不动，那就改做错误推断的一方——探测不回话时先看
+    本机长任务有没有在推进；在推进就是整机被占满，不是死了。
+    """
+
+    import watchdog as _wd
+
+    def setUp(self):
+        self.wd = self._wd
+        self._tmp = tempfile.TemporaryDirectory(prefix="yue2-wd-")
+        self.root = Path(self._tmp.name)
+        (self.root / "runtime").mkdir()
+        self._saved_root = self.wd.ROOT
+        self.wd.ROOT = self.root
+
+    def tearDown(self):
+        self.wd.ROOT = self._saved_root
+        self._tmp.cleanup()
+
+    def _touch(self, rel: str, age_sec: float) -> Path:
+        p = self.root / "runtime" / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x", encoding="utf-8")
+        t = time.time() - age_sec
+        os.utime(p, (t, t))
+        return p
+
+    def test_recent_training_progress_is_reported(self):
+        self._touch("rvc/logs/CKPT/train.log", 40)
+        self._touch("rvc/trains/20260101_000000_aaaaaaaa/job.json", 300)
+        age, which = self.wd.long_job_age()
+        self.assertIsNotNone(age)
+        self.assertLess(age, 60, "取的是最活跃那一份，不是最旧的")
+        self.assertIn("train.log", which)
+
+    def test_stale_files_are_not_mistaken_for_progress(self):
+        """"很久以前动过"不能当免死金牌：真卡死的训练也要能被击杀。"""
+        self._touch("rvc/logs/CKPT/train.log", self.wd.LONG_JOB_WINDOW + 60)
+        age, _ = self.wd.long_job_age()
+        self.assertGreater(age, self.wd.LONG_JOB_WINDOW)
+
+    def test_no_files_at_all_returns_none(self):
+        age, which = self.wd.long_job_age()
+        self.assertIsNone(age, "没有证据就说没有证据，调用方按原逻辑处理")
+        self.assertEqual(which, "")
+
+    def _pardon(self, listener, age_sec: float = 40.0, port: int | None = None):
+        """跑一次免死判断，返回理由文本；顺便把 log 收下来看它到底说了什么。"""
+        self._touch("rvc/logs/CKPT/train.log", age_sec)
+        saved = (self.wd.find_listener_pid, self.wd.log)
+        self.msgs = []
+        self.wd.find_listener_pid = lambda p: listener
+        self.wd.log = lambda m: self.msgs.append(m)
+        try:
+            return self.wd.long_job_pardon(port or self.wd.GW_PORT, 5)
+        finally:
+            self.wd.find_listener_pid, self.wd.log = saved
+
+    def test_alive_but_silent_is_pardoned(self):
+        """端口还在监听、训练刚写过文件：探测排不上队而已，击杀会把几小时的训练砍掉。"""
+        p = self._pardon(4321)
+        self.assertIsNotNone(p, "进程活着但不回话时应当免死")
+        self.assertIn("4321", p)
+        self.assertIn("本轮不击杀", p)
+
+    def test_dead_port_is_not_pardoned(self):
+        """02:56 实测的漏口：网关进程已经没了，长任务文件仍是热的，结果看门狗"免死"之后
+        什么都不做，页面一直连不上。没人监听就是真死了，必须照常拉起。"""
+        self.assertIsNone(self._pardon(None), "端口无人监听不能免死")
+        self.assertIn("照常拉起", "".join(self.msgs))
+
+    def test_stale_progress_is_not_pardoned(self):
+        self.assertIsNone(self._pardon(4321, age_sec=self.wd.LONG_JOB_WINDOW + 120))
+
+    def test_other_services_are_never_pardoned(self):
+        """免死规则只对网关生效：引擎 :8080 卡住时该重启就重启，别拿训练文件当挡箭牌。"""
+        self.assertIsNone(self._pardon(4321, port=self.wd.GW_PORT + 1))
+
+
 class TestWatchdogEarlyDeath(unittest.TestCase):
     """评审 P1-3：配置错（开了 YUE2_ALLOW_LAN 却没给 hosts）让 `python -s app.py` 在
     绑定端口之前就抛 RuntimeError。看门狗常规路径要 ~140s 才转一圈，会把日志刷满
@@ -1892,14 +1973,89 @@ class TestRvcCheckpoints(Sandbox):
         os.utime(d, (t, t))
         return p
 
-    def test_prune_keeps_newest_pairs_and_the_final_export(self):
+    def test_prune_keeps_final_and_mid_tiers_not_just_the_newest(self):
+        """剪枝按步数取分位，不按新旧取：练过头的毛病要到中途那一档才听得出来。
+
+        LA 音色（2026-10-03 复盘）就是被"留最近 N 档"坑的：100 轮练满后高频被磨成噪声，
+        想退到体检建议的 50~60 轮那一份，可那几档要么被 -l 1 覆写、要么被剪枝剪掉。
+        """
         for i, age in enumerate((120, 90, 60, 30, 0)):
             self._ckpt(str(1000 * (i + 1)), age_min=age)
         removed = app._rvc_prune_checkpoints(self.NAME)
         left = sorted(p.name for p in self.logs.glob("[GD]_*.pth"))
-        self.assertEqual(removed, 6, "5 对里最旧的 3 对应删除（G+D 各 3）")
-        self.assertEqual(left, ["D_4000.pth", "D_5000.pth", "G_4000.pth", "G_5000.pth"],
-                         "留的是最近 2 对，续跑和换点定稿都还有得用")
+        self.assertEqual(removed, 2, "5 对里删掉 1 对（G+D 各 1），留 4 对")
+        self.assertEqual(left, ["D_1000.pth", "D_2000.pth", "D_4000.pth", "D_5000.pth",
+                                "G_1000.pth", "G_2000.pth", "G_4000.pth", "G_5000.pth"],
+                         "最终档必留，另外三档取 25%/50%/75% 附近——只留最后两档等于没得挑")
+
+    def test_prune_keeps_the_early_tier_because_less_trained_was_cleaner(self):
+        """10-03 LA 重训的实测：30/42/60 轮的谱平坦度 0.667→0.785→量不出，越练越脏。
+        剪枝要是把 25% 那档删了，唯一可能干净的存档就没了。"""
+        for i, age in enumerate((150, 120, 90, 60, 30, 0)):
+            self._ckpt(str(1000 * (i + 1)), age_min=age)     # 1000..6000
+        app._rvc_prune_checkpoints(self.NAME)
+        left = sorted(int(p.stem.split("_")[1]) for p in self.logs.glob("G_*.pth"))
+        self.assertIn(1000, left, "25%（第 1500 附近）那一档必须还在")
+        self.assertIn(6000, left, "最终档必留")
+        self.assertEqual(len(left), app._RVC_KEEP_CKPTS)
+
+    def test_legacy_only_dir_keeps_the_old_scheme(self):
+        """一个目录只能用一种存盘制式：train.py 按文件名数字取最大那份续跑，
+        旧制式写死的 2333333 比任何真实步数都大——和新制的 G_{step}.pth 混在一起，
+        续跑会永远退回旧档，界面上写着"已恢复到第 N 轮"其实是几十轮前的状态。"""
+        self._ckpt("2333333", age_min=60)
+        self.assertEqual(app._rvc_ck_scheme(self.NAME), ("legacy", 1))
+        self._ckpt("5000", age_min=0)
+        self.assertEqual(app._rvc_ck_scheme(self.NAME), ("fresh", 0),
+                         "已经出现按步数命名的档，就归新制，不再覆写那一份死档名")
+        (self.logs / "ckpt_archive").mkdir(exist_ok=True)
+        self.assertEqual(app._rvc_ck_scheme(self.NAME), ("fresh", 0))
+
+    def test_restart_archives_every_checkpoint_instead_of_deleting(self):
+        """重训要归零进度，但不能顺手删掉用户练了 2.5 小时的存档。"""
+        self._ckpt("2333333", age_min=60)
+        self._ckpt("5000", age_min=0)
+        moved = app._rvc_archive_ckpts(self.NAME)
+        self.assertEqual(sorted(moved), ["D_2333333.pth", "D_5000.pth",
+                                         "G_2333333.pth", "G_5000.pth"])
+        self.assertEqual(app._rvc_checkpoints(self.NAME), [], "归档后本轮没有可续的档")
+        self.assertTrue((self.logs / "ckpt_archive" / "G_2333333.pth").is_file(),
+                        "文件必须还在，随时能搬回来")
+        self.assertEqual(app._rvc_ck_scheme(self.NAME), ("fresh", 0),
+                         "归档干净之后重训走新制 -l 0")
+
+    def test_resume_refuses_to_shrink_epochs_without_restart(self):
+        """"少练几轮"不是续跑能表达的意思：那要从头重训，必须先归档、必须先备份成品。"""
+        saved = app._RVC_TRAIN_WORKER
+        try:
+            rid = "20260101_000009_rrrrrrrr"
+            name = "RETEST"
+            (app.RVC_TRAIN_DIR / rid / "dataset").mkdir(parents=True, exist_ok=True)
+            (app.RVC_TRAIN_DIR / rid / "dataset" / "a.wav").write_bytes(b"x")
+            app._rvc_train_write(rid, {"id": rid, "name": name, "status": "error",
+                                       "epochs": 100, "step": "训练中", "error": "旧死因"})
+            from fastapi.testclient import TestClient
+            c = TestClient(app.app, base_url=LOCAL_BASE)
+            bad = c.post("/api/rvc/train/resume/" + rid, data={"epochs": 60})
+            self.assertEqual(bad.status_code, 400, "降轮数必须被挡，并说明该用 restart")
+            self.assertIn("restart", bad.json()["detail"])
+            nod = c.post("/api/rvc/train/resume/" + rid,
+                         data={"epochs": 60, "restart": "yes"})
+            self.assertEqual(nod.status_code, 409, "重训没有 confirm=yes 不受理")
+        finally:
+            app._RVC_TRAIN_WORKER = saved
+
+    def test_checkpoint_label_tells_the_epoch_not_the_step(self):
+        """卡片上要写"第 50 轮"：global_step 用户看不懂，更没法据此挑档。"""
+        self._ckpt("5000", age_min=0)
+        (self.logs / "train.log").write_text(
+            "2026-10-03 01:00:00,000\tLA\tINFO\tSaving model and optimizer state "
+            "at epoch 50 to ./logs\\LA\\G_5000.pth\n", encoding="utf-8")
+        self.assertEqual(app._rvc_ck_label(self.logs / "G_5000.pth"), "G_5000.pth（第 50 轮）")
+        self._ckpt("6000", age_min=0)   # 没写进日志的那一档：如实说清是 step，不是轮次
+        self.assertEqual(app._rvc_ck_label(self.logs / "G_6000.pth"),
+                         "G_6000.pth（step 6000，非轮次）")
+
 
     def test_loss_summary_reports_head_and_tail(self):
         lines = []
@@ -1914,6 +2070,26 @@ class TestRvcCheckpoints(Sandbox):
         self.assertEqual(s["epochs_logged"], 1)
         self.assertLess(s["tail"]["loss_disc"], s["head"]["loss_disc"],
                         "损失首尾要能看出收敛方向，否则'训练完成'四个字说明不了任何事")
+
+    def test_loss_summary_survives_cold_start_and_single_batch_spikes(self):
+        """均值会被两处极端值带走：第 1 轮从底模冷启动的 29.9 亿，和长跑里偶发的单批尖峰。
+
+        LA 的卡片因此写着"loss_disc 从 50,409,154 降到 1,647,492"，看着像大幅进步，
+        实际 train.log 首尾中位数都是 5.5 上下——那条曲线什么都没说明（2026-10-03 复盘）。
+        """
+        lines = []
+        lines.append("2026-10-01 01:16:56,667\tLA\tINFO\tloss_disc=2987190784.000, "
+                     "loss_gen=3.108, loss_fm=491235.281,loss_mel=75.000, loss_kl=9.000")
+        for i in range(1, 80):
+            spike = "5.612" if i != 40 else "99000000.000"     # 一次偶发单批尖峰
+            lines.append(f"2026-10-01 02:00:00,000\tLA\tINFO\tloss_disc={spike}, "
+                         "loss_gen=4.000, loss_fm=8.000,loss_mel=25.000, loss_kl=1.000")
+        (self.logs / "train.log").write_text("\n".join(lines), encoding="utf-8")
+        s = app._rvc_loss_summary(self.NAME)
+        self.assertLess(s["head"]["loss_disc"], 100.0, "冷启动那个 29 亿不许进首档")
+        self.assertLess(s["tail"]["loss_disc"], 100.0, "单批尖峰不许把尾档抬成'暴跌'")
+        self.assertIn("中位数", s["note"], "得说清这个数是怎么来的，否则又是一个假精确")
+
 
     def test_preview_of_a_named_checkpoint_uses_its_own_cache(self):
         """成品和检查点共用一个缓存文件时，先听新的再听旧的会拿到错的音频。"""
@@ -1949,7 +2125,7 @@ class TestRvcCheckpoints(Sandbox):
             bad = self.client.post(f"/api/rvc/train/preview/{self.rid}",
                                    json={"ck": "G_9999.pth"})
             self.assertEqual(bad.status_code, 404)
-            self.assertIn("只保留最近", bad.json()["detail"])
+            self.assertIn("中段档", bad.json()["detail"])
         finally:
             app._rvc_small_model = real_small
             app._rvc_preview_infer = real_infer
@@ -2096,6 +2272,28 @@ class TestRvcCheckpoints(Sandbox):
         self.assertEqual(sorted(p.name for p in app.RVC_MODELS_DIR.iterdir()), before,
                          "整个导出过程音色权重目录必须一个文件都不多")
         self.assertFalse(Path(seen["work"]).exists(), "临时工作目录用完即删")
+
+    def test_restart_forgets_previous_runs_verdict(self):
+        """10-03 实测：60 轮重训跑起来了，卡片上还挂着昨天 100 轮那次的自检结论，
+        检查点下拉框写着已经被归档走的 G_2333333.pth（点"试听这个点"必然 404），
+        播放器里放的是上一个模型的样片。本轮的结论只能由本轮产生。"""
+        (app.RVC_TRAIN_DIR / self.rid / "preview.wav").write_bytes(b"RIFF")
+        job = {**self.job, "self_check": {"ok": True, "roughness": {"in": 0.27, "out": 0.83}},
+               "kept_ckpts": ["G_2333333.pth"], "loss": {"head": {"loss_gen": 4.2}},
+               "preview_source": "s0.wav", "preview_url": "/api/x.wav"}
+        dropped = app._rvc_forget_prev_run(self.rid, job)
+        for k in ("self_check", "kept_ckpts", "loss", "preview_source", "preview_url"):
+            self.assertNotIn(k, job, f"{k} 是上一轮的结论，本轮不许接着显示")
+        self.assertIn("preview.wav", dropped, "上一个模型的样片要挪走，不能留在本轮目录里冒名")
+        self.assertFalse((app.RVC_TRAIN_DIR / self.rid / "preview.wav").exists())
+        self.assertTrue((app.RVC_TRAIN_DIR / self.rid / "before_rerun" / "prev_preview.wav").is_file(),
+                        "挪走≠删掉：那还是用户昨天的成果")
+
+    def test_fresh_run_has_nothing_to_forget(self):
+        """没有上一轮就别硬凑一条"已清理"：空任务记录应当什么都不动也不报东西。"""
+        job = {**self.job}
+        self.assertEqual(app._rvc_forget_prev_run(self.rid, job), [])
+        self.assertFalse((app.RVC_TRAIN_DIR / self.rid / "before_rerun").exists())
 
 
 class TestRvcDoneMeta(Sandbox):
@@ -2718,6 +2916,90 @@ class TestPreprocessEmptySliceGuard(unittest.TestCase):
                              "静音素材切不出片段，产物目录就该是空的")
 
 
+class TestRvcRoughness(Sandbox):
+    """"电音/发沙"这条指标本身要先不会骗人。
+
+    2026-10-03 排查 LA 音色时，我第一版就是把"数字零段落"读成了高频毛刺，
+    当场冤枉了 HP5 去和声和 LA 模型，重测才翻案。这几例锁的就是那个坑。
+    """
+
+    SR = 40000
+
+    def _tone(self, noise: float = 0.0, seconds: float = 3.0):
+        t = np.arange(int(seconds * self.SR)) / self.SR
+        f0 = 220 * (1 + 0.02 * np.sin(2 * np.pi * 5 * t))
+        ph = 2 * np.pi * np.cumsum(f0) / self.SR
+        x = sum(np.sin(k * ph) / k for k in range(1, 71))
+        if noise:
+            x = x + np.random.default_rng(3).standard_normal(x.size) * noise * 0.1 * x.max()
+        return (x / (np.abs(x).max() + 1e-9) * 0.3).astype("float32")
+
+    def _write(self, name: str, x) -> Path:
+        import soundfile as sf
+        p = Path(self.tmp) / name
+        sf.write(str(p), x, self.SR)
+        return p
+
+    def test_digital_silence_is_never_counted_as_fizz(self):
+        pure = self._write("sil.wav", np.zeros(int(3 * self.SR), dtype="float32"))
+        self.assertIn("error", app._rvc_roughness(pure), "全零文件必须说「测不了」，不能报一个高频数")
+        voiced, tail = self._tone(), np.zeros(int(3 * self.SR), dtype="float32")
+        clean = app._rvc_roughness(self._write("h.wav", voiced))
+        mixed = app._rvc_roughness(self._write("hm.wav", np.concatenate([voiced, tail])))
+        self.assertLess(abs(mixed["flat8_16k"] - clean["flat8_16k"]), 0.05,
+                        msg="接一段数字零不该把平坦度抬上去——那正是我误判的成因（不筛帧时能翻几倍）")
+
+    def test_noisier_vocal_reads_worse_on_every_axis(self):
+        a = app._rvc_roughness(self._write("a.wav", self._tone()))
+        b = app._rvc_roughness(self._write("b.wav", self._tone(noise=0.6)))
+        self.assertGreater(b["flat8_16k"], a["flat8_16k"] + 0.1)
+        self.assertGreater(b["e12k"], a["e12k"])
+        self.assertLess(b["envelope_corr"], a["envelope_corr"])
+        sh = app._rvc_roughness_shift(a, b)
+        self.assertTrue(sh["worse"], "谐波被磨成宽带噪声要能判出来，自检与换声体检都靠它")
+        self.assertFalse(sh.get("unmeasurable"), "两侧都量得出时不该走「量不出」那条分支")
+
+    def test_unmeasurable_output_is_the_worst_verdict_not_a_shrug(self):
+        """素材量得出、产物量不出＝产物被打糊了，不许当成"没有数据"。
+
+        10-03 实测：60 轮那次自检产物整段顶在 -0.7dBFS、pyworld 找不着稳定基频，
+        `_rvc_roughness` 回 "唱帧不足"，旧写法直接 return None，卡片上只剩
+        "自检片段已生成"——三个档里最脏的那个反而看起来最没问题（静默退化）。
+        这里锁的是**分支判断**，所以把探针桩上；探针自身的判不动在
+        `test_digital_silence_is_never_counted_as_fizz` 那两例里。"""
+        good = self._write("u_in.wav", self._tone())
+        dead = self._write("u_out.wav", self._tone(noise=0.6))
+        measured = app._rvc_roughness(good)
+        saved = app._rvc_roughness
+        try:
+            app._rvc_roughness = lambda p, max_sec=150.0: (
+                {"error": "唱帧不足（素材可能没人声，或全被静音门压掉了）"}
+                if Path(p).name == dead.name else measured)
+            sh = app._rvc_roughness_shift(measured, {"error": "唱帧不足"})
+            self.assertTrue(sh["worse"] and sh["unmeasurable"],
+                            "量不出必须是结论（最坏那一档），不能是空白")
+            self.assertIsNone(sh["out"], "没有数就不许编一个数")
+            rep = app._rvc_quality_report(good, dead, 0)
+            self.assertTrue(rep.get("roughness", {}).get("unmeasurable"), rep)
+            self.assertIn("量不出唱帧", " ".join(rep["tips"]),
+                          "换声体检也要照实说，不能悄悄省掉这一项")
+        finally:
+            app._rvc_roughness = saved
+
+    def test_convert_quality_report_blames_the_right_layer(self):
+        """换声页的体检要把"电音"这件事说清楚，并且不许把它交给检索强度/protect。"""
+        src = self._write("q_in.wav", self._tone())
+        out = self._write("q_out.wav", self._tone(noise=0.6))
+        rep = app._rvc_quality_report(src, out, 0)
+        self.assertTrue(rep.get("roughness", {}).get("worse"), rep)
+        joined = " ".join(rep["tips"])
+        self.assertIn("电音", joined)
+        self.assertIn("无关", joined, "既然实测调那两项不动它，就别再让用户白试一轮")
+        clean = app._rvc_quality_report(src, self._write("q_ok.wav", self._tone()), 0)
+        self.assertFalse(clean.get("roughness", {}).get("worse"),
+                         "同一份谐波进出不该报警——否则这指标天天喊狼来了")
+
+
 class TestRvcIndexNamed(Sandbox):
     """推理必须点名给索引：本机 王菲 与 王菲V6 并存时，runtime 自己的子串猜测
     会按文件名排序选中 王菲V6 的外链——选 王菲 却在用别人的检索库。"""
@@ -2726,7 +3008,12 @@ class TestRvcIndexNamed(Sandbox):
 
     def setUp(self) -> None:
         super().setUp()
-        self._saved_named = (app.subprocess, app._win_toast)
+        # 快照必须先于任何改写。上一版在 app.subprocess 已被 mock 之后又存了一次
+        # _saved_named，tearDown 于是把"假 run"当成原值还原回去：此后整个测试会话里
+        # app.subprocess 都是那个只记账不起进程的 SimpleNamespace，任何真实子进程调用
+        # 静默失效，且 RVC_MODELS_DIR 也被留成临时目录。本轮新加的守卫用例集
+        # （tests/test_rvc_train_guard.py，要靠 taskkill 真收卡死的训练进程）就是这么被抓到的。
+        self._saved_named = (app.subprocess, app._win_toast, app.RVC_MODELS_DIR)
         app._win_toast = lambda title, body: None
         self.cmds: list[list[str]] = []
 
@@ -2742,7 +3029,6 @@ class TestRvcIndexNamed(Sandbox):
         app.subprocess = types.SimpleNamespace(run=fake_run)
         models = self.tmp / "weights-named"
         models.mkdir()
-        self._saved_named = (app.subprocess, app._win_toast, app.RVC_MODELS_DIR)
         app.RVC_MODELS_DIR = models
         (models / "王菲.pth").write_bytes(b"x")
         # 故意让"别人的"外链按文件名排在前面（IVF2574 < IVF3250）
@@ -3248,6 +3534,36 @@ class TestF0Reference(Sandbox):
         r = self._post_ref(z)
         self.assertEqual(r.status_code, 422, "量不出人声就 422，不许编一个档案")
         self.assertFalse((app.RVC_DIR / "logs" / "试音" / "f0_stats.json").is_file())
+
+
+class TestCheckedTaskVisible(Sandbox):
+    """只体检、从没开练的素材以前不在 `/rvc/train/active` 里：页面上看不见就没有删除入口，
+    上传的几百 MB 一直压在 trains/ 下（10-03 复盘 LA 时翻目录才发现）。删除的边界一起锁住：
+    进行中的任务 409，体检任务要真能把目录带走。"""
+
+    def _job(self, rid: str, status: str, **extra) -> Path:
+        d = app.RVC_TRAIN_DIR / rid
+        (d / "dataset").mkdir(parents=True, exist_ok=True)
+        (d / "dataset" / "sample_000.wav").write_bytes(b"RIFF")
+        job = {"id": rid, "name": "", "status": status, "step": "", "samples": 1}
+        job.update(extra)
+        (d / "job.json").write_text(json.dumps(job), encoding="utf-8")
+        return d
+
+    def test_checked_task_shows_up_and_deletes(self):
+        rid = "20260101_000009_cccccccc"
+        d = self._job(rid, "checked")
+        self.assertIn(rid, [j["id"] for j in app.rvc_train_active()["items"]],
+                      "体检完成未开练的任务必须可见，否则本机没人能把它删掉")
+        self.assertTrue(app.rvc_train_delete(rid)["ok"])
+        self.assertFalse(d.exists(), "删任务要连同上传的素材目录一起带走，不然清的还是空气")
+
+    def test_running_task_refuses_delete(self):
+        self._job("20260101_000010_dddddddd", "running", step="训练中")
+        with self.assertRaises(app.HTTPException) as cm:
+            app.rvc_train_delete("20260101_000010_dddddddd")
+        self.assertEqual(cm.exception.status_code, 409,
+                         "正在练的任务不能删——目录里的 dataset 是 worker 的输入")
 
 
 if __name__ == "__main__":

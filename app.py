@@ -1026,7 +1026,7 @@ def history_active():
             job = _rvc_train_read(d.name)
             # 含 paused：暂停任务需在进度列表显示「▶ 继续」，否则重启后找不到入口续跑
             if job.get("status") in ("running", "pending", "paused"):
-                if job.get("status") == "running" and job.get("step") == "训练中":
+                if job.get("status") == "running" and str(job.get("step") or "").startswith("训练中"):
                     cur, total = _rvc_train_epoch(job.get("name", ""), int(job.get("epochs") or 0))
                     if cur:
                         job["epoch"] = cur
@@ -2683,7 +2683,96 @@ def _rvc_f0_of_audio(path: Path) -> dict:
             "analyzed_sec": round(analyzed, 1)}
 
 
+# 唱帧 8–16kHz 谱平坦度的"变脏"阈值：绝对上升 ≥0.12 且比值 ≥1.35 才报警。
+# 出处是本机 2026-10-03 的实测（同一段 30 秒干净人声）：喂进去 0.372，LA 出 0.553、
+# 孙燕姿出 0.634、邓丽君 0.365（几乎不变）；真人录音素材本身只有 0.271。
+_RVC_ROUGH_FLAT_DELTA = 0.12
+_RVC_ROUGH_FLAT_RATIO = 1.35
+
+
+def _rvc_roughness(path: Path, max_sec: float = 150.0) -> dict:
+    """把"电音/发沙"变成数：只统计确实在唱的帧，看 8–16kHz 那一段是**谐波**还是**宽带噪声**。
+
+    三个坑都是本机踩出来的，别再踩：
+      · **数字零会骗人**。静音门压掉的段落、空白前奏的幅度谱是平的，会被算成"高频毛刺"。
+        我第一版就是这么把 HP5 和 LA 一起冤枉的（LA 复盘 2026-10-03）。所以筛帧条件
+        是两条一起：pyworld 判为有声 **且** 该帧 RMS 落在本文件最响帧 −40dB 以内。
+      · **单看绝对值不跨文件下判决**：采样率、响度、编解码都掺在里面。真正能定责的是
+        "同一趟换声的输入 vs 输出"这一对比值，所以调用方总是量两次。
+      · 判据是代理指标，不是耳朵。它能把"模型把谐波磨成噪声"和"音高跳轨"分开——
+        前者降检索强度/protect 无效（本机实测两组参数四个指标全同），后者才归那些旋钮管。
+    测不出来就返回 error，绝不编数。"""
+    try:
+        import numpy as np
+        import soundfile as sf
+        import pyworld as pw
+        x, sr = sf.read(str(path), dtype="float32")
+        if getattr(x, "ndim", 1) > 1:
+            x = x.mean(axis=1)
+        x = np.asarray(x[:int(max_sec * sr)], dtype="float32")
+        if x.size < sr * 0.5:
+            return {"error": "音频太短，测不了高频纹理"}
+        fl, hop = 2048, max(1, int(round(sr * 0.01)))
+        fr = 1 + (x.size - fl) // hop
+        if fr < 20:
+            return {"error": "可分析帧太少"}
+        idx = np.arange(fr)[:, None] * hop + np.arange(fl)[None, :]
+        frames = x[idx] * np.hanning(fl)[None, :]
+        sp = np.abs(np.fft.rfft(frames, axis=1)) + 1e-12
+        fq = np.fft.rfftfreq(fl, 1.0 / sr)
+        f0 = pw.dio(x.astype(np.float64), int(sr), frame_period=10.0)[0][:fr]
+        rms = np.sqrt((x[idx] ** 2).mean(axis=1))
+        keep = (f0 > 0) & (rms >= rms.max() * 10 ** (-40.0 / 20.0))
+        if int(keep.sum()) < 50:
+            return {"error": "唱帧不足（素材可能没人声，或全被静音门压掉了）"}
+        tot = sp.sum(axis=1) + 1e-12
+        band = (fq >= 8000) & (fq <= min(16000, sr / 2 - 100))
+        if not band.any():
+            return {"error": f"采样率 {sr} 放不下 8–16kHz 分析带"}
+        seg = np.log(sp[:, band])
+        flatness = float((np.exp(seg.mean(axis=1)) / (sp[:, band].mean(axis=1) + 1e-12))[keep].mean())
+        fband = (fq >= 500) & (fq <= 6000)
+        ls = np.log(sp[:, fband])
+        ls = ls - ls.mean(axis=1, keepdims=True)
+        sd = ls.std(axis=1) + 1e-9
+        pair = keep[:-1] & keep[1:]
+        corr = float(((ls[:-1] * ls[1:]).sum(axis=1) / (sd[:-1] * sd[1:] * ls.shape[1]))[pair].mean()) \
+            if int(pair.sum()) > 10 else None
+        ok = (f0[:-1] > 0) & (f0[1:] > 0)
+        dc = 1200.0 * np.log2(f0[1:][ok] / f0[:-1][ok]) if int(ok.sum()) else np.array([0.0])
+        return {"sung_frames": int(keep.sum()),
+                "flat8_16k": round(flatness, 4),
+                "e12k": round(float((sp[:, fq >= 12000].sum(axis=1) / tot)[keep].mean()), 5)
+                        if (fq >= 12000).any() else None,
+                "e7k": round(float((sp[:, fq >= 7000].sum(axis=1) / tot)[keep].mean()), 4),
+                "envelope_corr": round(corr, 4) if corr is not None else None,
+                "dcents_median": round(float(np.median(np.abs(dc))), 1),
+                "sr": int(sr)}
+    except Exception as e:
+        return {"error": str(e)[:160]}
+
+
+def _rvc_roughness_shift(a: dict, b: dict) -> dict | None:
+    """输入 vs 输出的"变脏"差值。素材本数量不出（a 无值）就返回 None，不猜。
+
+    素材量得出、产物量不出（b 无值）**不是"没有数据"，而是最坏那一种数据**：60 轮那次
+    自检产物整段顶在 -0.7dBFS、pyworld 连一个稳定基频都找不着，卡片却因为 shift 返回 None
+    只剩一句"自检片段已生成"——三个档里最脏的那个反而最像"没测出问题"，这就是静默退化。"""
+    fa, fb = a.get("flat8_16k"), b.get("flat8_16k")
+    if fa is None:
+        return None
+    if fb is None:
+        return {"in": fa, "out": None, "delta": None, "ratio": None,
+                "worse": True, "unmeasurable": True,
+                "why_out": str(b.get("error") or "量不出高频纹理")}
+    d = round(fb - fa, 3)
+    return {"in": fa, "out": fb, "delta": d,
+            "ratio": round(fb / max(fa, 1e-6), 2),
+            "worse": d >= _RVC_ROUGH_FLAT_DELTA and fb / max(fa, 1e-6) >= _RVC_ROUGH_FLAT_RATIO}
+
+
 def _rvc_quality_report(src_path: Path, out_path: Path, pitch: int,
+
                         tgt_f0: dict | None = None) -> dict:
     """换声产物的听感体检：把"高音没声音 / 电音 / 偶尔怪响"从靠耳朵猜变成可量化的数字。
 
@@ -2750,6 +2839,33 @@ def _rvc_quality_report(src_path: Path, out_path: Path, pitch: int,
                     f"基本没学过，只能硬凑。把变调往{'低' if pitch > 0 else '高'}调 "
                     f"{max(2, int(round(abs(above95) * 12)))} 个半音再试，或换一个音域更"
                     f"{'高' if pitch > 0 else '低'}的音色")
+    # 高频纹理：换声到底有没有把谐波磨成宽带噪声（听感=电音/发沙）。
+    # 这一项和上面三个数不同源：检索强度、protect 都动不了它，本机实测
+    # ir0.5+protect0.33 与 ir0.3+protect0.15 两次任务的四个指标几乎重合。
+    rough_in = _rvc_roughness(src_path)
+    rough_out = _rvc_roughness(out_path)
+    shift = _rvc_roughness_shift(rough_in, rough_out)
+    if shift:
+        rep["roughness"] = {"in": shift["in"], "out": shift["out"],
+                            "delta": shift["delta"], "ratio": shift["ratio"],
+                            "worse": shift["worse"],
+                            "unmeasurable": shift.get("unmeasurable", False),
+                            "why_out": shift.get("why_out"),
+                            "in_detail": {k: rough_in.get(k) for k in ("e7k", "e12k", "envelope_corr")},
+                            "out_detail": {k: rough_out.get(k) for k in ("e7k", "e12k", "envelope_corr")}}
+        if shift.get("unmeasurable"):
+            # 素材量得出、产物量不出：与其写"没测到"，不如照实说产物连基频都找不到
+            tips.append(
+                f"换声产物量不出唱帧（{shift['why_out']}）：同一段素材本来测到谱平坦度 "
+                f"{shift['in']}，输出却连稳定基频都没有，多半是整段糊掉或削顶——这一版别用，"
+                f"先听 part=vocals_original 确认原唱人声本身是好的")
+        elif shift["worse"]:
+            tips.append(
+                f"换声把 8–16kHz 磨成了宽带噪声（谱平坦度 {shift['in']}→{shift['out']}，"
+                f"{shift['ratio']} 倍）——这就是电音/发沙，跟「音色检索强度」「保护辅音」"
+                f"无关（实测调这两项不动它）。责任多半在音色本身：练过头或素材带噪，"
+                f"训练卡片上用逐档试听退到中途那一档定稿；先听一下 part=vocals_original "
+                f"那条原唱人声，若本来就脏，那是源音频的账，换声换不掉")
     if rep["hi_drop_ratio"] >= 0.15:
         tips.append(f"高音丢声偏多（{rep['hi_drop_ratio'] * 100:.0f}%）：优先把变调算法换成 "
                     "fcpe（rmvpe 在高音区更容易判成无声），并把音高平滑半径降到 0~3")
@@ -4132,6 +4248,9 @@ def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
             _RVC_JOBS[rid] = {**_RVC_JOBS[rid], "status": "done",
                               "sec": meta["sec"], "bytes": meta["bytes"],
                               "assets": assets, "gate": gate_info or None,
+                              # 听感体检也回填：只有落盘 meta 里有，换声页就永远看不到，
+                              # 用户于是分不清"电音"是原曲带的还是这个音色加重的
+                              "quality": meta.get("quality"),
                               "acc_pitch": acc_info or None}
         _win_toast("🎵 换声完成：" + model, f"耗时 {meta['sec']} 秒，已保存到 output/")
     except Exception as e:
@@ -4387,25 +4506,151 @@ def rvc_audio(rid: str, part: str = ""):
 _RVC_PREVIEW_LOCK = threading.Lock()  # 同一时刻只跑一个试听（CPU 推理也吃核）
 # 成品导出后保留的检查点个数（一对 G/D 约 1.2GB）：
 # 全删 = 断掉"换个点再听一次"的路，全留 = 200 轮训练吃掉几十 GB。
-_RVC_KEEP_CKPTS = 2
+_RVC_KEEP_CKPTS = 4
+# 每一对 G+D 本机实测 1.27GB，4 对约 5GB；E: 盘实测剩 382GB，换得起"早期档还在"。
 
 
 def _rvc_checkpoints(name: str) -> list[Path]:
-    """该训练现存可用的 G_* 检查点，按时间从新到旧。"""
+    """该训练现存可用的 G_* 检查点，按时间从新到旧。
+
+    glob 与 stat 之间文件可能消失（导出成品那一步正在剪旧档，页面同时在轮询进度）：
+    本机实测过这个竞态，list 里晚到的一步 stat 直接抛 FileNotFoundError，进度接口
+    整段 500。所以取 mtime 时要容错， vanished 的那一份直接跳过。
+    """
     logs = RVC_DIR / "logs" / name
     if not logs.is_dir():
         return []
-    return sorted(logs.glob("G_*.pth"), key=lambda p: p.stat().st_mtime, reverse=True)
+    out = []
+    for p in logs.glob("G_*.pth"):
+        try:
+            out.append((p.stat().st_mtime, p))
+        except OSError:
+            continue
+    return [p for _m, p in sorted(out, key=lambda x: x[0], reverse=True)]
+
+
+def _rvc_ck_step(p: Path) -> int:
+    tail = p.stem.rsplit("_", 1)[-1]
+    return int(tail) if tail.isdigit() else 0
+
+
+def _rvc_ck_epochs(name: str) -> dict[int, int]:
+    """步数 → 轮次。G_{step}.pth 的文件名是 global_step，用户看不懂也挑不了；
+    train.log 里每次存盘都写着 "Saving ... at epoch 50 to .../G_16000.pth"，
+    从这两列还原出轮次，卡片上就能直接说"第 50 轮"而不是"step 16000"。"""
+    p = RVC_DIR / "logs" / name / "train.log"
+    out: dict[int, int] = {}
+    if not p.is_file():
+        return out
+    try:
+        for m in re.finditer(r"at epoch (\d+) to .{0,200}?[/\\][GD]_(\d+)\.pth",
+                             p.read_text(encoding="utf-8", errors="replace")):
+            out[int(m.group(2))] = int(m.group(1))
+    except OSError:
+        return out
+    return out
+
+
+def _rvc_ck_scheme(name: str) -> tuple[str, int]:
+    """这个实验目录该用哪种存盘制式，返回 (制式名, train.py 的 -l 参数)。
+
+    一个目录只能用一种制式，混了会读错档：train.py 的自动续跑按文件名里的数字取最大
+    （train/utils.py:222 latest_checkpoint_path），而旧制式那个写死的 2333333 比任何真实
+    步数都大——一旦和新的 G_{step}.pth 并存，续跑永远退回旧的那一份，用户看到的
+    "已恢复到第 N 轮"其实是几步之前甚至几十轮之前的状态。
+
+    · fresh（-l 0，新制式）：每档独立文件，能逐档试听、能挑档定稿。
+    · legacy（-l 1，旧制式）：目录里只有 LA 那次留下的 G_2333333.pth。继续按老办法就地覆写，
+      代价是这个音色没有中间档可挑——想逐档试听就重跑（restart=yes 会把旧档归档、从零开始）。
+    """
+    logs = RVC_DIR / "logs" / name
+    cks = logs.glob("G_*.pth") if logs.is_dir() else []
+    steps = [_rvc_ck_step(p) for p in cks]
+    if not steps:
+        return "fresh", 0
+    if all(s == 2333333 for s in steps):
+        return "legacy", 1
+    return "fresh", 0
+
+
+def _rvc_archive_ckpts(name: str) -> list[str]:
+    """重跑前把本目录所有检查点移进 ckpt_archive/，让新一轮真的从零开始。
+
+    移出 glob 视线 ≠ 删除：训练进度归零、又能随时搬回来，比"覆盖同名成品"温和。
+    train.py 的自动续跑找不到检查点就按设计落回底模重练，正是"换个轮数重跑"要的语义。
+
+    train.log 与 tfevents 一起归档：进度、每轮耗时、心跳判活、loss 首尾全都从这两样读。
+    留着上一轮（100 轮）的日志，卡片会先显示"第 100 轮 / 共 60 轮"这种谎话，
+    而 _rvc_wait_step 的"最后一次推进距今多久"会被上一轮的时间戳顶着，判活判成死的。
+    """
+    logs = RVC_DIR / "logs" / name
+    if not logs.is_dir():
+        return []
+    arc = logs / "ckpt_archive"
+    arc.mkdir(parents=True, exist_ok=True)
+    moved: list[str] = []
+    for pat in ("G_*.pth", "D_*.pth", "train.log", "events.out.tfevents.*"):
+        for p in sorted(logs.glob(pat)):
+            try:
+                os.replace(p, arc / p.name)
+                moved.append(p.name)
+            except OSError:
+                pass    # 正被别的进程占着：留着，让 train.py 自己按名取用
+    return moved
+
+
+
+def _rvc_forget_prev_run(rid: str, job: dict) -> list[str]:
+    """重训开始前，把上一轮留在任务记录里的"结论"清掉，返回被清掉的项。
+
+    自检结论、检查点列表、损失首尾都是上一次（比如练满 100 轮那次）的：本轮还在练时卡片
+    继续挂着它们，用户就会拿昨天的数字验收今天的模型；10-03 实测下拉框写着已经归档走的
+    `G_2333333.pth`，点"试听这个点"必然 404。试听音频同理——它是上一个模型跑出来的，
+    留在原地就等于给本轮配了一段冒名的样片，所以整份挪进 before_rerun/ 而不是删。
+    本轮结束时这些字段会按新结果重写。
+    """
+    dropped = [k for k in ("self_check", "kept_ckpts", "loss",
+                           "preview_source", "preview_url", "ckpts") if job.pop(k, None) is not None]
+    pv = RVC_TRAIN_DIR / rid / "preview.wav"
+    try:
+        if pv.is_file():
+            bak = RVC_TRAIN_DIR / rid / "before_rerun"
+            bak.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(pv), str(bak / "prev_preview.wav"))
+            dropped.append("preview.wav")
+    except OSError:
+        pass
+    return dropped
 
 
 def _rvc_prune_checkpoints(name: str, keep: int = _RVC_KEEP_CKPTS) -> int:
-    """留下最近 keep 个检查点（及其配套 D_*，续跑要用），其余删掉，返回删除文件数。"""
-    keep_steps = {p.stem.split("_")[-1] for p in _rvc_checkpoints(name)[:keep]}
+    """留最终档 + 约 25%/50%/75% 各一档，其余删掉，返回删除文件数。
+
+    原先按"最近 N 档"留，在这台机器上被证明是错的：练过头的毛病要到训练中途才看得出来，
+    而最后几档彼此几乎一样。LA 音色（2026-10-02）练满 100 轮后高频被磨成噪声、
+    用户听着就是电音，想退到体检建议的 50~60 轮那一份——那份存档根本不存在。
+    所以按步数取分位，不按新旧取。
+
+    25% 那一档是 10-03 重训之后补的：同一份素材按 30/42/60 轮逐个自检实测，
+    谱平坦度 0.667→0.785→量不出唱帧，**越练越脏**，最优解在更早的那一侧。
+    只留 50% 以上，等于把唯一可能干净的那几档删了。"""
+    cks = _rvc_checkpoints(name)
+    if len(cks) <= keep:
+        return 0
+    steps = sorted(_rvc_ck_step(p) for p in cks)
+    top = steps[-1]
+    want = {top}
+    for q in (0.25, 0.5, 0.75):
+        pick = min(steps, key=lambda s: (abs(s - top * q), s))
+        want.add(pick)
+        if len(want) >= keep:
+            break
+    keep_steps = want
     logs = RVC_DIR / "logs" / name
     removed = 0
     if logs.is_dir():
         for p in logs.glob("[GD]_*.pth"):
-            if p.stem.split("_")[-1] in keep_steps:
+            if _rvc_ck_step(p) in keep_steps:
                 continue
             try:
                 p.unlink()
@@ -4415,8 +4660,15 @@ def _rvc_prune_checkpoints(name: str, keep: int = _RVC_KEEP_CKPTS) -> int:
     return removed
 
 
+
 def _rvc_loss_summary(name: str, window: int = 60) -> dict:
-    """从 logs/<name>/train.log 取损失曲线的首尾均值："训练完成"不等于"收敛了"。"""
+    """从 logs/<name>/train.log 取损失曲线的首尾水平："训练完成"不等于"收敛了"。
+
+    用**中位数**，而且丢掉第一个记录点。原来取均值，被两处极端值带走：
+    第 1 轮从底模冷启动时 loss_disc 记到 29.9 亿，以及长跑里偶发的单批尖峰。
+    LA 的卡片因此显示"loss_disc 从 50,409,154 降到 1,647,492"——看着像大幅进步，
+    其实 train.log 里首尾的中位数都是 5.5 上下，那条曲线什么都没说明（2026-10-03 复盘）。
+    """
     p = RVC_DIR / "logs" / name / "train.log"
     if not p.is_file():
         return {}
@@ -4438,15 +4690,27 @@ def _rvc_loss_summary(name: str, window: int = 60) -> dict:
     if not rows:
         return {}
 
-    def avg(part: list[dict]) -> dict:
-        keys = [k for k in ("loss_disc", "loss_gen", "loss_fm", "loss_mel", "loss_kl")
-                if any(k in r for r in part)]
-        return {k: round(sum(r.get(k, 0.0) for r in part if k in r)
-                         / max(1, sum(1 for r in part if k in r)), 3) for k in keys}
+    def med(part: list[dict]) -> dict:
+        out = {}
+        for k in ("loss_disc", "loss_gen", "loss_fm", "loss_mel", "loss_kl"):
+            vs = sorted(r[k] for r in part if k in r)
+            if vs:
+                out[k] = round(vs[len(vs) // 2] if len(vs) % 2
+                                 else (vs[len(vs) // 2 - 1] + vs[len(vs) // 2]) / 2.0, 3)
+        return out
 
+    body = rows[1:] if len(rows) > 2 else rows   # 第一轮冷启动不参与"首"这一头
+    # 记录点不够时把窗口收窄，别让 head 和 tail 取到同一段：LA 那次只有 51 个点、窗口 60，
+    # 卡片上写着"loss_gen 4.007→4.007"——那是同一个中位数被印了两遍，不构成任何趋势。
+    w = max(3, min(window, len(body) // 2)) if len(body) > 1 else window
+    same_window = len(body) <= 2 * w
     return {"points": len(rows),
-            "head": avg(rows[:window]),
-            "tail": avg(rows[-window:]),
+            "head": med(body[:w]),
+            "tail": med(body[-w:]),
+            "trend_ok": not same_window,
+            "note": ("中位数；已跳过第 1 轮的冷启动值（均值会被它和偶发单批尖峰带偏）"
+                     + ("；记录点太少，首尾取的是同一段，这里看不出收敛方向" if same_window else "")
+                     + f"（每段 {w} 个点）"),
             "epochs_logged": sum(1 for ln in lines if "轮次：" in ln)}
 
 
@@ -4561,7 +4825,9 @@ def _rvc_preview_source(rid: str, name: str = "") -> Path:
 
 
 def _rvc_ck_label(ckpt: Path) -> str:
-    return f"{ckpt.name}（step {ckpt.stem.split('_')[-1]}，非轮次）"
+    """检查点的人话标签：文件名里的数字是 global_step，用户要的是"第几轮"。"""
+    ep = _rvc_ck_epochs(ckpt.parent.name).get(_rvc_ck_step(ckpt))
+    return f"{ckpt.name}（第 {ep} 轮）" if ep else f"{ckpt.name}（step {_rvc_ck_step(ckpt)}，非轮次）"
 
 
 @router.post("/rvc/train/preview/{rid}")
@@ -4591,7 +4857,9 @@ def rvc_train_preview(rid: str, payload: dict = Body(default={})):
         pick = next((p for p in ckpts if p.name == want), None)
         if pick is None:
             raise HTTPException(status_code=404,
-                                detail=f"检查点 {want} 不存在（只保留最近 {_RVC_KEEP_CKPTS} 个，更早的已清理）")
+                                detail=f"检查点 {want} 不存在（本机留的是最终档 + 约 25%/50%/75% 的中段档"
+                                       f"共 {_RVC_KEEP_CKPTS} 档，更早的已清理："
+                                       + "、".join(_rvc_ck_label(p) for p in _rvc_checkpoints(name)) + "）")
         model_path = _rvc_small_model(
             pick, RVC_TRAIN_DIR / rid / f"preview_model_{pick.stem.split('_')[-1]}.pth")
         tag = _rvc_ck_label(pick)
@@ -4613,9 +4881,13 @@ def rvc_train_preview(rid: str, payload: dict = Body(default={})):
         _rvc_preview_infer(model_path, src, out, _rvc_index_for(name + ".pth"))
     finally:
         _RVC_PREVIEW_LOCK.release()
+    ep = _rvc_ck_epochs(name)
     return {"ok": True, "url": f"/api/rvc/train/preview/{rid}/audio", "source": tag,
             "model": model_path.name,
             "ckpts": [p.name for p in ckpts],
+            # 文件名是 global_step，用户要的是"第几轮"——下拉框没这层翻译就没法挑档
+            "ck_labels": {p.name: (f"第 {ep[_rvc_ck_step(p)]} 轮" if ep.get(_rvc_ck_step(p))
+                                   else p.name) for p in ckpts},
             "audio": src.name}
 
 
@@ -4634,19 +4906,27 @@ def rvc_train_promote(rid: str, payload: dict = Body(default={})):
     音色名不变 ⇒ 配套索引原样可用（索引由特征库生成，与用哪个检查点无关），
     换点定稿后不需要重训、也不需要改任何检索文件。"""
     ck = str(payload.get("ck") or "")
-    if not ck:
-        raise HTTPException(status_code=400,
-                            detail="必须指定要定稿的检查点 ck（例如 G_2333333.pth）")
     rid = os.path.basename(rid)
     job = _rvc_train_read(rid)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
     name = job.get("name", "")
+    if not ck:
+        # 报"例如 G_2333333.pth"是把旧制式的写死档名当例子（-l 0 之后本机已经没有这种文件），
+        # 用户照着抄一个不存在的名字回来；直接把他手上真正有的档位列出来。
+        avail = [p.name for p in _rvc_checkpoints(name)]
+        raise HTTPException(
+            status_code=400,
+            detail="必须指定要定稿的检查点 ck（本音色现有："
+                   + ("、".join(avail) if avail else "还没有任何检查点，请先完成一次训练") + "）")
     want = os.path.basename(ck or "")
-    pick = next((p for p in _rvc_checkpoints(name) if p.name == want), None)
+    have = _rvc_checkpoints(name)
+    pick = next((p for p in have if p.name == want), None)
     if pick is None:
-        raise HTTPException(status_code=404,
-                            detail=f"检查点 {want or '(空)'} 不存在（只保留最近 {_RVC_KEEP_CKPTS} 个）")
+        raise HTTPException(
+            status_code=404,
+            detail=f"检查点 {want or '(空)'} 不存在（本机现在留的是："
+                   + ("、".join(_rvc_ck_label(p) for p in have) if have else "一个都没有") + "）")
     step = want.split("_")[-1].split(".")[0]
     target = RVC_MODELS_DIR / f"{name}.pth"
     # 导出先进专用临时目录，真成品一个字节都不动（评审 v1.2.0 G2）：
@@ -4763,12 +5043,423 @@ def _rvc_train_write(rid: str, job: dict) -> None:
     os.replace(tmp, d / "job.json")
 
 
-def _rvc_run_step(cmd: list[str], job: dict, step: str) -> None:
+# --------------------------------------------------------------------------- #
+# 训练长跑的三道守卫：心跳判活、事故留痕、开训前让显存。
+# 全部来自 2026-10-01 的 LA 音色训练事故（复盘：docs/故障复盘-LA音色训练中断-20261001.md）：
+# 03:42:59 训练日志停在第 26 轮，03:43:34 Windows 记下一条 nvlddmkm 153 显卡驱动故障，
+# 进程既不退出也不报错，于是挂着"训练中"白占 GPU 闸门两小时半，直到 4 小时 55 分的
+# 一刀切超时才被动收掉；而续训把失败原因清空了，根因只能靠事件日志反推。
+# --------------------------------------------------------------------------- #
+_RVC_STALL_MIN_SEC = 600        # 判活下限：至少 10 分钟没动静才可能判死（防误杀慢机器）
+_RVC_STALL_FACTOR = 4.0         # 相对每轮耗时的倍数：一轮 2 分钟的卡，8 分钟没推进就是死了
+_RVC_SLOW_FACTOR = 2.0          # 实测比本机预估慢到这一倍 → 显存/算力被抢，留警告
+_RVC_TRAIN_RETRY_LIMIT = 3      # 训练中这一步最多跑几次（含首次）
+_RVC_RETRY_BACKOFF_SEC = 30     # 每次重试前的退避（×尝试次数），给驱动恢复的时间
+_RVC_YIELD_SETTLE_SEC = 3      # 卸载引擎后等几秒再读显存：句柄释放有延迟，立刻读会看到旧数字
+_RVC_POLL_SEC = 2               # 轮询粒度：暂停最坏晚几秒被察觉，可接受
+_RVC_HB_INTERVAL_SEC = 15     # 心跳检查间隔：每两秒轮询没必要每两秒读整本训练日志
+_RVC_GPU_SAMPLE_SEC = 60      # 训练期间每 60 秒扫一次显卡健康（一次 nvidia-smi 约 0.1 秒）
+_RVC_AUTORESUME_WINDOW_SEC = 1800   # 只接"半小时内还在推进"的中断任务，几天前的僵尸记录不许半夜复活
+_RVC_AUTORESUME_MAX = 2             # 同一任务最多自动接 2 次，防"重启→训练→崩→再重启"的死循环
+_ZIP_EOCD = b"PK\x05\x06"     # torch 存的 .pth 是 zip 容器，尾部必有这条目录记录
+_ES_CONTINUOUS = 0x80000000   # SetThreadExecutionState：只声明本线程期间别睡，不改电源计划
+_ES_SYSTEM_REQUIRED = 0x00000001
+
+
+class _RvcTrainStalled(RuntimeError):
+    """训练子进程还活着但不再产出——显卡驱动故障/卡死的典型形态，区别于正常退出。"""
+
+
+def _rvc_save_every(epochs: int) -> int:
+    """存盘间隔：一次偶发中断最多丢 10 轮，同时给"逐档试听"留出得挑的档。
+
+    原来是 `epochs // 4`（100 轮 = 25 存一次），LA 那次 03:43 断线只能退回第 25 轮。
+    现在每档都是独立文件（G_{step}.pth，不再是就地覆写的那一份），代价是真的磁盘：
+    一对约 1.2GB，60 轮存 6 档峰值约 7.8GB，导出成品后剪到 3 档。本机 E: 实测剩 382GB。
+    好处正是这多出来的几档——练过头的毛病要到中途那几档才听得出来。
+    """
+    return int(max(5, min(10, (epochs // 10) or 5)))
+
+
+def _rvc_keep_awake(on: bool) -> None:
+    """训练期间挡住系统睡眠。
+
+    "接电源也会睡"是长跑最冤的死法：机器一睡，训练进程被冻在原地，醒来就是这种半截任务。
+    这里只声明"本线程这段时间需要系统清醒"，**不改用户的电源计划**；线程结束或网关退出
+    自动失效，也不需要去写 powercfg 那种全局设置。
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetThreadExecutionState(
+            _ES_CONTINUOUS | (_ES_SYSTEM_REQUIRED if on else 0))
+    except Exception:
+        pass            # 挡不住睡眠也不许影响训练本身
+
+
+def _rvc_ckpt_broken(p: Path) -> bool:
+    """半截 .pth 判定：只看尾部 256KB 有没有 zip 的 EOCD 记录，不 load 进 torch。
+
+    taskkill /F 打断 torch.save 会留下"大小看着正常、内容没了尾"的文件，train.py 一
+    load 就抛。本机实测：完整文件 EOCD 距文件尾 22 字节，只拷前 1MB 的截断副本查不到。
+    读不动一律当没坏——取证工具不许变成新的失败源。
+    """
+    try:
+        size = p.stat().st_size
+        if size < 64:
+            return True
+        with open(p, "rb") as f:
+            f.seek(-min(size, 262144), 2)
+            return _ZIP_EOCD not in f.read()
+    except Exception:
+        return False
+
+
+def _rvc_ckpt_health(name: str) -> dict:
+    """续跑前给检查点体检，坏的就地隔离。
+
+    不查的后果很具体：坏检查点让每次重试都在 load 阶段当场崩、一轮都不推进，而
+    "无推进就不再重试"的守卫随即停手——看起来就像"自动续跑没用"。更阴的是 train.py
+    的回落路径（train.py:259 的 except）不报错，它静默改用 pretrained_v2 底模从头练：
+    任务显示"自动续跑第 2 次"，实际把前面几十轮全丢了。
+
+    查哪些文件：目录里所有 G_*.pth / D_*.pth。新制式（-l 0）的检查点叫 G_{步数}.pth
+    （本机 30 轮实测存出 G_60/G_80/G_120），写死的 G_2333333.pth 只在旧制式目录里才有；
+    而续跑取的是"文件名数字最大"的那一份（train/utils.py:222 latest_checkpoint_path）——
+    正好是保存被打断时最可能残缺的那一份。只盯 2333333 等于没查。
+    隔离后若还剩好的档位就接着从最高档练，一份都不剩才回落到底模。
+    """
+    out: dict = {}
+    d = RVC_DIR / "logs" / name
+    if not d.is_dir():
+        return out
+    for p in sorted(d.glob("[GD]_*.pth")):
+        if ".bad-" in p.name:
+            continue                    # 已隔离过的不再重复处理
+        if not _rvc_ckpt_broken(p):
+            out[p.name] = "ok"
+            continue
+        bad = p.with_name(f"{p.stem}.bad-{datetime.now():%Y%m%d_%H%M%S}.pth")
+        try:
+            p.rename(bad)
+            out[p.name] = f"半截检查点已隔离→{bad.name}"
+        except Exception as e:
+            out[p.name] = f"检查点损坏且搬不开：{str(e)[:80]}"
+    return out
+
+
+def _rvc_gpu_sample() -> dict | None:
+    """一次显卡快扫：利用率/显存/温度/功率/SM 时钟/降频原因。查不到返回 None。"""
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi",
+             "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,"
+             "power.draw,clocks.sm,clocks_event_reasons.active",
+             "--format=csv,noheader,nounits"],
+            text=True, timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).strip().splitlines()[0]
+    except Exception:
+        return None
+    keys = ("util_pct", "mem_used_mb", "mem_total_mb", "temp_c", "power_w", "sm_mhz",
+            "throttle")
+    s = {}
+    for k, v in zip(keys, [x.strip() for x in out.split(",")]):
+        try:
+            s[k] = round(float(v), 1) if k == "power_w" else int(float(v))
+        except ValueError:
+            s[k] = v          # nvidia-smi 个别字段会回 "[N/A]"，原样留着，不编数字
+    return s or None
+
+
+def _rvc_gpu_events(minutes: int = 5) -> list[dict]:
+    """查最近几分钟系统日志里的显卡驱动报错（nvlddmkm）。
+
+    LA 的根因就是靠这条定下来的，但当时得人去翻事件查看器。中断发生时顺手查一次，
+    把"同期有 N 条显卡驱动报错"写进失败原因与 job.attempts，页面上直接看得见。
+    查不到/查不动一律空列表——这是取证，不许变成新的失败源。"""
+    if os.name != "nt":
+        return []
+    ps = ("$ErrorActionPreference='SilentlyContinue';Get-WinEvent -FilterHashtable "
+          "@{LogName='System'; ProviderName='nvlddmkm'; StartTime=(Get-Date).AddMinutes(-%d)} | "
+          "ForEach-Object { '{0}|{1}' -f $_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss'), $_.Id }"
+          % minutes)
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                           capture_output=True, text=True, timeout=25,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception:
+        return []
+    evs = []
+    for line in (getattr(r, "stdout", "") or "").splitlines():
+        at, _, eid = line.partition("|")
+        if at.strip():
+            evs.append({"at": at.strip(), "id": eid.strip()})
+    return evs[:10]
+
+
+def _rvc_dur(sec: float) -> str:
+    """时长说人话：不足 90 秒就写秒，别把 40 秒写成"0 分钟"。"""
+    sec = max(0.0, float(sec))
+    return f"{sec:.0f} 秒" if sec < 90 else f"{sec / 60:.0f} 分钟"
+
+
+def _rvc_train_progress(name: str, since_wall: float) -> tuple[float, int]:
+    """(训练日志距今秒数, 日志里最后一轮)。
+
+    距今秒数取"日志 mtime"与"进程启动时刻"里更近的那个：新建音色时 train.log 还不
+    存在，只看 mtime 会把装 torch、载底模的几十秒算成卡死。
+    """
+    mtime, epoch = since_wall, 0
+    try:
+        log = RVC_DIR / "logs" / name / "train.log"
+        if log.is_file():
+            mtime = max(mtime, log.stat().st_mtime)
+            ms = _EPOCH_RE.findall(log.read_text(encoding="utf-8", errors="replace"))
+            if ms:
+                epoch = int(ms[-1])
+    except Exception:
+        pass
+    return time.time() - mtime, epoch
+
+
+def _rvc_kill_tree(pid: int) -> None:
+    """整棵树强杀。卡在 CUDA 调用里的进程 terminate()/kill() 都可能不返，
+    必须 taskkill /T 连子孙一起收（与暂停端点同一手法）。"""
+    try:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                       capture_output=True, timeout=20,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception:
+        pass
+
+
+def _rvc_record_failure(job: dict, step: str, reason: str, tail: str,
+                        exit_code: int | None = None,
+                        driver_events: list[dict] | None = None) -> None:
+    """把每一次中断落到 logs/<name>/train_error.log 并进 job['attempts']。
+
+    LA 那次查不到根因不是因为没发生，是因为应用自己把痕迹擦干净了：log_tail 被成功
+    那次覆写、error 被续训清空。留痕是排查的最低成本，且绝不允许反过来影响任务。"""
+    name = str(job.get("name") or "")
+    cur = _rvc_train_epoch(name, int(job.get("epochs") or 0))[0] if name else 0
+    stamp = datetime.now().isoformat(timespec="seconds")
+    entry = {"at": stamp, "step": step, "reason": reason[:300], "epoch": cur,
+             "exit": exit_code, "tail": tail[-400:]}
+    if driver_events:
+        entry["driver_events"] = driver_events
+    job["attempts"] = (job.get("attempts") or []) + [entry]
+    try:
+        _rvc_train_write(job["id"], job)
+    except Exception:
+        pass
+    if not name:
+        return
+    try:
+        d = RVC_DIR / "logs" / name
+        d.mkdir(parents=True, exist_ok=True)
+        with open(d / "train_error.log", "a", encoding="utf-8") as f:
+            f.write(f"\n[{stamp}] {step} 中断 · 停在第 {cur} 轮 · exit={exit_code}\n"
+                    f"  原因：{reason}\n")
+            if driver_events:
+                f.write("  同期显卡驱动报错：" + "，".join(
+                    f"{e.get('at')}（事件 {e.get('id')}）" for e in driver_events) + "\n")
+            f.write(f"  子进程输出尾巴：{tail[-1500:]}\n")
+    except Exception:
+        pass
+
+
+def _rvc_gpu_watch(name: str, job: dict, state: dict) -> dict | None:
+    """训练期间定期扫一次显卡，落 `logs/<name>/gpu_health.jsonl` 并汇总进 job["gpu_watch"]。
+
+    为什么要它：LA 那天"第一次比续跑慢 2.8 倍"这件事，我是靠两轮时间戳反推出来的，
+    而"是不是显存被占满、温度顶到哪、有没有降频"当时没有任何记录。采样一次约 0.1 秒，
+    每 60 秒一次，一整晚也就 60 行、每行约 200 字节——下次中断能不能一句话定性，
+    全看有没有这条时间线。
+    """
+    now = time.time()
+    if now - state.get("t", 0) < _RVC_GPU_SAMPLE_SEC:
+        return state.get("last")
+    state["t"] = now
+    s = _rvc_gpu_sample()
+    if not s:
+        state["miss"] = state.get("miss", 0) + 1
+        return state.get("last")
+    state["n"] = state.get("n", 0) + 1
+    state["last"] = s
+    row = {"at": datetime.now().isoformat(timespec="seconds"), **s}
+    try:
+        d = RVC_DIR / "logs" / name
+        d.mkdir(parents=True, exist_ok=True)
+        with open(d / "gpu_health.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+    def _num(key):
+        v = s.get(key)
+        return v if isinstance(v, (int, float)) else None
+
+    agg = job.get("gpu_watch") or {}
+    for key, field, pick in (("max_temp_c", "temp_c", max),
+                             ("max_mem_used_mb", "mem_used_mb", max),
+                             ("max_util_pct", "util_pct", max),
+                             ("min_sm_mhz", "sm_mhz", min)):
+        v, old = _num(field), agg.get(key)
+        if isinstance(v, (int, float)):
+            agg[key] = v if old is None else pick(old, v)
+    # clocks_event_reasons.active 是位掩码，1=GPU 空闲（显卡没事干时的正常状态，本机空载
+    # 实测就是 0x0000000000000001），把它算成"降频"会在每次开训/收尾都误报一次。
+    # 只有 2 以上那些位（2 主动降频 / 4 功率上限 / 8 硬件降速 / 32 墙 / 128 温度）才算数。
+    try:
+        reason_bits = int(str(s.get("throttle", "0")).strip(), 16) & ~1
+    except (TypeError, ValueError):
+        reason_bits = 0
+    if reason_bits:
+        agg["throttle_samples"] = agg.get("throttle_samples", 0) + 1
+    agg["samples"] = state["n"]
+    agg["last"] = s
+    used, total = _num("mem_used_mb"), _num("mem_total_mb")
+    if isinstance(used, (int, float)) and isinstance(total, (int, float)) and total:
+        agg["last_mem_pct"] = round(used / total * 100)
+    job["gpu_watch"] = agg
+    return s
+
+
+def _rvc_wait_step(proc, est_sec: int, step: str, name: str, stall_rate: float,
+                   est_rate: float, measured_ok: bool, job: dict) -> tuple[bytes, bytes, str | None]:
+    """等子进程结束并盯心跳。返回 (stdout, stderr, 中断原因)；原因非 None 表示是我们收的尸。
+
+    取代原来的 communicate(timeout=est_sec)：那一句只看得见"进程死了"和"总时长到点"，
+    对"进程活着但不再干活"完全无感——而这正是显卡驱动故障打在训练上的形态。
+    管道必须由线程持续抽干：训练每轮往 stdout 写不少行，64KB 缓冲区一塞满，子进程
+    就卡在 write 上，那时"卡死"是我们自己造出来的。
+    """
+    out_buf, err_buf = bytearray(), bytearray()
+
+    def _drain(stream, buf):
+        try:
+            for chunk in iter(lambda: stream.read(65536), b""):
+                buf.extend(chunk)
+        except Exception:
+            pass
+
+    threads = [threading.Thread(target=_drain, args=(proc.stdout, out_buf), daemon=True),
+               threading.Thread(target=_drain, args=(proc.stderr, err_buf), daemon=True)]
+    for t in threads:
+        t.start()
+
+    _wall = time.time()
+    _t0 = time.perf_counter()
+    limit = max(_RVC_STALL_MIN_SEC, _RVC_STALL_FACTOR * stall_rate) if name else None
+    stall = None
+    seen_epoch, warned = 0, not (name and measured_ok and est_rate > 0)
+    gpu_state: dict = {}   # 本次等待的采样状态（上次采样时刻/累计次数/最近一次读数）
+
+    def _kill_and_reap():
+        """杀完必须 wait 收尸：不 reap 的话 returncode 一直是 None，
+        上层"非零退出"的判断就无从谈起，句柄还会留成僵尸。"""
+        _rvc_kill_tree(proc.pid)
+        if proc.poll() is None:
+            # taskkill 不生效（不在 Windows、被安全软件拦、句柄已丢）时退回直接 kill，
+            # 绝不允许"以为杀了其实没杀"——僵尸训练进程会继续钉着 6GB 显存
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=30)
+        except Exception:
+            pass
+
+    tick = 0
+    hb_every = max(1, round(_RVC_HB_INTERVAL_SEC / _RVC_POLL_SEC))
+    while True:
+        if proc.poll() is not None:
+            break
+        if time.perf_counter() - _t0 > est_sec:
+            _kill_and_reap()
+            stall = f"步骤 {step} 超时（超过 {est_sec // 60} 分钟）：{step} 异常"
+            break
+        if limit and tick % hb_every == 0:
+            tick = 0
+            age, cur = _rvc_train_progress(name, _wall)
+            if age > limit:
+                _kill_and_reap()
+                stall = (f"训练在第 {cur} 轮后停止产出（{_rvc_dur(age)}没有新轮次，"
+                         f"判活阈值 {_rvc_dur(limit)}）：进程卡死（本机这种形态多由"
+                         f"显卡驱动故障引发）")
+                break
+            sample = _rvc_gpu_watch(name, job, gpu_state) if name else None
+            if not warned and cur > seen_epoch:
+                # 只在轮次真正推进时算一次，而且只信本机实测过的预估：CPU 首跑的
+                # 240 秒/轮是保守兜底值，拿它当基准会把正常任务误报成"慢 5 倍"
+                seen_epoch = cur
+                meas = _rvc_train_per_epoch_sec(name) or 0.0
+                if meas > _RVC_SLOW_FACTOR * est_rate:
+                    warned = True
+                    hint = ""
+                    if isinstance(sample, dict):
+                        hint = (f"；采样时显存已用 {sample.get('mem_used_mb')}/"
+                                f"{sample.get('mem_total_mb')}MB、核心 "
+                                f"{sample.get('temp_c')}℃、SM {sample.get('sm_mhz')}MHz")
+                    job["pace_warn"] = {
+                        "epoch_sec": round(meas, 1), "expect_sec": round(est_rate, 1),
+                        "vram_at_warn": sample,
+                        "at": datetime.now().isoformat(timespec="seconds"),
+                        "note": f"实测每轮 {meas:.0f} 秒，是本机预估 {est_rate:.0f} 秒的 "
+                                f"{meas / est_rate:.1f} 倍：显存大概率被别的东西占着，"
+                                f"CUDA 溢出到内存既拖速又最容易触发驱动故障{hint}"}
+                    _rvc_train_write(job["id"], job)
+        tick += 1
+        time.sleep(_RVC_POLL_SEC)
+
+    for t in threads:
+        t.join(timeout=_RVC_POLL_SEC * 5)
+    for s in (proc.stdout, proc.stderr):
+        try:
+            s.close()
+        except Exception:
+            pass
+    return bytes(out_buf), bytes(err_buf), stall
+
+
+def _rvc_gpu_yield_before_train(bs: int) -> tuple[int, dict | None]:
+    """开训前把显存腾出来，必要时降一档 batch。返回 (可用的 batch_size, 让路记录)。
+
+    证据：同一台机器、同一份素材、同一套参数，LA 第一次 5:38/轮、续跑 1:59/轮，差
+    2.8 倍——数据和代码都没变，变的只有显卡上有没有别的东西。_GPU_SEM 闸门只挡得住
+    "新任务插队"，挡不住已经常驻在显存里的引擎，所以这里主动让一次路。
+    引擎侧 cpp/server.json 配了 lazy_load，杀掉之后下次生成自动重载，不伤功能。
+    """
+    if backend_mode() != "cuda":
+        return bs, None
+    total, free0 = _gpu_total_mb(), _gpu_free_mb()
+    if not total or not free0:
+        return bs, None            # 查不到就不拦：绝不因为量不到就把训练判死
+    need = int(total * 0.75)       # 整卡 75% 空着才算"这张卡基本归训练"
+    info = {"total_mb": total, "free_before": free0, "need_mb": need}
+    if free0 >= need:
+        info["action"] = "空闲充足，无需让路"
+        return bs, info
+    _kill_audiocpp_now()           # 只杀推理引擎，网关与训练都不碰
+    time.sleep(_RVC_YIELD_SETTLE_SEC)
+    free1 = _gpu_free_mb() or free0
+    info.update(action="已卸载生成引擎让出显存", killed_engine=True, free_after=free1)
+    if free1 < need and bs > 1:
+        bs -= 1
+        info.update(batch_dropped_to=bs,
+                    note=f"让路后仍只空闲 {free1}MB（整卡 {total}MB），batch 降到 {bs}")
+    return bs, info
+
+
+def _rvc_run_step(cmd: list[str], job: dict, step: str, label: str | None = None) -> None:
     """执行一个训练流水线步骤；失败抛异常，日志写进 job.log_tail。"""
     # 关键：这两个是模块级变量，函数内有赋值必须声明 global，
     # 否则 Python 按局部变量处理——暂停标志永不生效、句柄永不更新（已踩坑）
     global _RVC_TRAIN_PROC, _RVC_TRAIN_PAUSE_REQ
-    job["step"] = step
+    job["step"] = label or step
     job["status"] = "running"
     _rvc_train_write(job["id"], job)
     env = {**os.environ,
@@ -4785,8 +5476,16 @@ def _rvc_run_step(cmd: list[str], job: dict, step: str) -> None:
     # _rvc_train_pace() 从已成功任务里取"每切片每轮秒数"，没有实测记录才回落 240 秒/轮
     # （同一份素材，CPU 与 GPU 差一个量级，所以首次训练偏保守是故意的：宁多等不误杀）。
     epochs = int(job.get("epochs") or 200)
+    hb_name, stall_rate, est_rate, measured_ok = "", 240.0, 0.0, False
     if step == "训练中":
         rate, job["epoch_est_note"] = _rvc_epoch_rate(job)
+        est_rate = rate
+        # 慢速警告只在预估来自本机实测时才做：CPU 首跑的 240 秒/轮是保守兜底值，
+        # 拿它当基准会把正常任务误报成"慢五倍"
+        measured_ok = str(job.get("epoch_est_note") or "").startswith("实测")
+        hb_name = str(job.get("name") or "")
+        # 判活阈值取"预估与本机实测里更慢的那个"：健康但慢的机器不该被当成卡死误杀
+        stall_rate = max(rate, _rvc_train_per_epoch_sec(hb_name) or 0.0)
         job["epoch_est_sec"] = round(rate, 1)
         est_sec = int(epochs * rate) + 3600  # +1 小时：加载底模、断点续训、落盘余量
     else:
@@ -4807,14 +5506,18 @@ def _rvc_run_step(cmd: list[str], job: dict, step: str) -> None:
                 _proc.terminate()
             except Exception:
                 pass
+    _t0 = time.perf_counter()
+    if hb_name:
+        # 只在训练这一步声明"别睡"：长跑几小时，机器一睡进程就被冻在原地
+        _rvc_keep_awake(True)
     try:
-        _t0 = time.perf_counter()
-        proc_out, proc_err = _proc.communicate(timeout=est_sec)
-    except subprocess.TimeoutExpired:
-        _proc.kill()
-        proc_out, proc_err = _proc.communicate()
-        raise RuntimeError(f"步骤 {step} 超时（超过 {est_sec // 60} 分钟）：{step} 异常")
+        # 带心跳的等待：进程死了、总时长到点、或"活着但不再产出"三种情况都会回来，
+        # 后两种给出 stall 文案（LA 事故里第三种等了一刀切超时两小时半才发现）
+        proc_out, proc_err, stall = _rvc_wait_step(
+            _proc, est_sec, step, hb_name, stall_rate, est_rate, measured_ok, job)
     finally:
+        if hb_name:
+            _rvc_keep_awake(False)
         with RVC_TRAIN_LOCK:
             _RVC_TRAIN_PROC = None
     step_sec = round(time.perf_counter() - _t0, 1)
@@ -4829,8 +5532,71 @@ def _rvc_run_step(cmd: list[str], job: dict, step: str) -> None:
     if _RVC_TRAIN_PAUSE_REQ or _pause_pending:
         # 用户主动暂停：子进程被 terminate 退出，属预期，抛专用信号让 worker 走 paused 收尾
         raise _RvcTrainPaused()
+    evs = _rvc_gpu_events() if hb_name else []
+    evtail = f"，同期系统日志 {len(evs)} 条显卡驱动报错（最近 {evs[0]['at']}）" if evs else ""
+    if stall:
+        reason = stall + evtail
+        _rvc_record_failure(job, step, reason, tail, _proc.returncode,
+                            driver_events=evs)
+        raise _RvcTrainStalled(reason)
     if _proc.returncode != 0:
-        raise RuntimeError(f"步骤 {step} 失败（exit {_proc.returncode}）：{tail[-300:]}")
+        reason = f"子进程非零退出（exit {_proc.returncode}）" + evtail
+        _rvc_record_failure(job, step, reason, tail, _proc.returncode,
+                            driver_events=evs)
+        raise RuntimeError(f"步骤 {step} 失败（exit {_proc.returncode}）{evtail}：{tail[-300:]}")
+
+
+def _rvc_run_train_step(cmd: list[str], job: dict, name: str) -> None:
+    """训练这一步自己重试，不再把一整晚交给用户去点"续训"。
+
+    驱动故障是这台机器的底色（30 天 40 条 nvlddmkm 153），偶发一次不该等于任务作废：
+    train.py 自己会按文件名里的步数取最大那份接着练（train/utils.py:222），重启子进程
+    就是续跑，所以重试的代价只有"退回最近一次存盘"那几轮。
+
+    两种情况不重试：用户主动暂停（原样抛给 worker 走 paused 收尾）；以及重试一次都没
+    推进（停在同一轮）——那不是偶发故障，多半是底模/显存/素材本身的问题，继续重试
+    只会白等三小时，直接把可读的原因交回用户。
+    """
+    limit = _RVC_TRAIN_RETRY_LIMIT
+    for attempt in range(1, limit + 1):
+        if attempt > 1:
+            # 上一刀可能正落在 torch.save 中间：半截检查点会让下次重试在 load 阶段当场崩、
+            # 一轮都不推进，随后被"无推进"守卫停掉——看起来就像"自动续跑没用"
+            heal = _rvc_ckpt_health(name)
+            if any(v != "ok" for v in heal.values()):
+                job["ckpt_heal"] = {**(job.get("ckpt_heal") or {}), f"attempt{attempt}": heal}
+                _rvc_train_write(job["id"], job)
+        before = _rvc_train_epoch(name, int(job.get("epochs") or 0))[0]
+        # 有没有检查点决定续跑是从第 N 轮接上、还是从底模重来——文案不许说反话
+        whence = f"接第 {before} 轮" if _rvc_checkpoints(name) else "从底模重来"
+        label = None if attempt == 1 else f"训练中（自动续跑第 {attempt} 次，{whence}）"
+        _t = time.perf_counter()
+        try:
+            _rvc_run_step(cmd, job, "训练中", label=label)
+            if attempt > 1:
+                job["recovered_after"] = {"attempt": attempt, "from_epoch": before}
+                _rvc_train_write(job["id"], job)
+            return
+        except _RvcTrainPaused:
+            raise
+        except Exception as e:
+            after = _rvc_train_epoch(name, int(job.get("epochs") or 0))[0]
+            ran = time.perf_counter() - _t
+            if attempt >= limit:
+                raise RuntimeError(f"{e}（已自动重试 {limit - 1} 次，仍中断）") from e
+            # "跑起来了却没推进"和"一启动就死"是两种病：前者多半是偶发故障，值得再来；
+            # 后者（底模坏了/显存根本不够/素材有问题）重试只会白等三小时，直接把原因交回去
+            graced = max(120.0, 2 * _rvc_epoch_rate(job)[0])
+            if after <= before and ran < graced:
+                raise RuntimeError(
+                    f"{e}；重试 {attempt} 次都没推进（仍停在第 {after} 轮、每次只活了 "
+                    f"{ran:.0f} 秒），不像偶发故障，已停止自动续跑——"
+                    f"请先查显卡驱动报错与底模是否完整") from e
+            wait = _RVC_RETRY_BACKOFF_SEC * attempt
+            _win_toast("⚠️ 音色训练中断，自动续跑",
+                       f"第 {attempt} 次停在第 {after} 轮：{str(e)[:90]}；"
+                       f"{wait} 秒后{('从检查点接第 ' + str(after) + ' 轮') if _rvc_checkpoints(name) else '从底模重来'}")
+            time.sleep(wait)
 
 
 def _rvc_latest_export(name: str) -> Path | None:
@@ -5083,7 +5849,7 @@ def _rvc_clean_dataset(train_dir: Path, out_dir: Path, tier: str,
 
 def _rvc_train_worker(rid: str, name: str, epochs: int,
                       separate_vocal: bool = False, resume: bool = False,
-                      clean_tier: str = "off") -> None:
+                      clean_tier: str = "off", restart: bool = False) -> None:
     job = _rvc_train_read(rid)
     started = time.time()
     exp_logs = RVC_DIR / "logs" / name
@@ -5220,23 +5986,75 @@ def _rvc_train_worker(rid: str, name: str, epochs: int,
         #    batch_size 按显存自适应：写死 4 时 6GB 卡常年顶满（别人占一点就 OOM），
         #    16GB 机器只用四分之一、白等几倍时间
         bs, bs_note = _rvc_train_batch_size()
+        # 开训前让一次显存：_GPU_SEM 只挡得住"新任务插队"，挡不住已经常驻在显存里的
+        # 生成引擎。LA 事故证明"卡被别人占着一半"这种状态不是慢一点而已——它同时是
+        # 驱动故障（nvlddmkm 153）的高发区，所以这里主动腾地方，量到的数字如实进任务。
+        bs, yield_info = _rvc_gpu_yield_before_train(bs)
         job["batch_size"] = bs
+        if yield_info and yield_info.get("note"):
+            bs_note = f"{bs_note}；{yield_info['note']}"
         job["batch_note"] = bs_note
+        job["gpu_yield"] = yield_info
         _rvc_train_write(rid, job)
-        _rvc_run_step([str(RVC_PY), str(RVC_DIR / "train" / "train.py"),
-                       "-e", name, "-sr", "40k", "-f0", "1", "-bs", str(bs),
-                       "-te", str(epochs), "-se", str(max(5, epochs // 4)),
-                       "-pg", "assets/pretrained_v2/f0G40k.pth", "-pd", "assets/pretrained_v2/f0D40k.pth",
-                       "-l", "1", "-c", "0", "-sw", "0", "-v", "v2"], job, "训练中")
+        # 存盘制式：一个目录只用一种，混了自动续跑会读错档（见 _rvc_ck_scheme）。
+        # 重跑（换了轮数重来）先把旧档归档——不然 train.py 会"接着"上一轮练满的模型跑，
+        # 用户以为在练 60 轮，实际是在 100 轮的模型上又走一遍。
+        if restart:
+            archived = _rvc_archive_ckpts(name)
+            if archived:
+                job["ckpts_archived"] = archived
+            # 上一轮的自检结论/检查点/损失/试听样片不属于本轮：本轮结束时会重写
+            forgotten = _rvc_forget_prev_run(rid, job)
+            if forgotten:
+                job["prev_run_forgotten"] = forgotten
+            _rvc_train_write(rid, job)
+        scheme, if_latest = _rvc_ck_scheme(name)
+        job["ck_scheme"] = scheme
+        _rvc_train_write(rid, job)
+        _rvc_run_train_step([str(RVC_PY), str(RVC_DIR / "train" / "train.py"),
+                             "-e", name, "-sr", "40k", "-f0", "1", "-bs", str(bs),
+                             "-te", str(epochs), "-se", str(_rvc_save_every(epochs)),
+                             "-pg", "assets/pretrained_v2/f0G40k.pth", "-pd", "assets/pretrained_v2/f0D40k.pth",
+                             # -l 0 = 每档存成独立的 G_{step}.pth。写 -l 1 时 100 轮只留一份
+                             # 就地覆写的存档，"换个轮次再听一次"根本没得听（LA 事故）。
+                             "-l", str(if_latest), "-c", "0", "-sw", "0", "-v", "v2"], job, name)
         # 5) 音色索引
+        # train_index.py 同名就地重写索引，成品 pth 有 before_rerun 备份、索引没有的话，
+        # "退回上一版音色"就只剩模型不带检索库——新模型不如上一版时等于没备份（10-03 LA 重训）
+        bak = RVC_TRAIN_DIR / rid / "before_rerun"
+        kept: list[str] = []
+        for p in sorted((RVC_DIR / "logs" / name).glob("*.index")):
+            try:
+                bak.mkdir(parents=True, exist_ok=True)
+                if not (bak / p.name).is_file():
+                    shutil.copy2(str(p), str(bak / p.name))
+                kept.append(p.name)
+            except OSError:
+                pass
+        if kept:
+            job["index_backup"] = kept
+            _rvc_train_write(rid, job)
         _rvc_run_step([str(RVC_PY), str(RVC_DIR / "train" / "train_index.py"),
                        name, "v2", str(RVC_DIR / "assets" / "indices"), str(n_p)], job, "音色索引")
-        # 5.5) 只导出最终成品：从最新检查点 G_2333333.pth 提取推理用小模型
+        # 5.5) 导出最终成品：取本轮最新的那个检查点（文件名是步数，不再是写死的名字）
         job["step"] = "导出成品"
         _rvc_train_write(rid, job)
-        final_ckpt = exp_logs / "G_2333333.pth"
-        if not final_ckpt.is_file():
-            raise RuntimeError("训练完成但未找到最终检查点 G_2333333.pth")
+        cks = _rvc_checkpoints(name)
+        if not cks:
+            raise RuntimeError(f"训练完成但未找到任何检查点（{exp_logs} 下没有 G_*.pth）")
+        final_ckpt = cks[0]
+        # 覆盖同名成品之前，先把上一版存进任务目录。接口本来就警告"重跑会覆盖现有成品"，
+        # 那就把这次"覆盖"做成可回退——新模型不如上一版时，用户不用重新练 2.5 小时找回来。
+        prev = RVC_MODELS_DIR / f"{name}.pth"
+        if prev.is_file():
+            try:
+                bak = RVC_TRAIN_DIR / rid / "before_rerun"
+                bak.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(prev), str(bak / prev.name))
+                job["model_backup"] = (bak / prev.name).name
+            except OSError as be:
+                job["model_backup"] = f"备份失败：{str(be)[:120]}"
+            _rvc_train_write(rid, job)
         # 参数一律走 sys.argv：以前音色名是 %-插值进 python -c 的源码字符串里的，
         # 名字里带一个单引号就能从 r'...' 里跳出来，在网关进程里执行任意 Python
         # （配合零鉴权的 POST /api/train，外部网页即可打本机）。
@@ -5279,8 +6097,23 @@ def _rvc_train_worker(rid: str, name: str, epochs: int,
             out = RVC_TRAIN_DIR / rid / "preview.wav"
             _rvc_preview_infer(exported, src, out, idx_files[0] if idx_files else None)
             job["preview_url"] = f"/api/rvc/train/preview/{rid}/audio"
-            job["self_check"] = {"ok": True, "source": src.name,
-                                 "indexed": bool(idx_files)}
+            # 自检不能只验"能不能出声"：LA 那次推理完全成功、听着却全是电音，
+            # 卡片上照样写着"自检通过"。现在顺带量一次高频纹理——用自己的素材当输入，
+            # 输出比输入脏多少就是模型自己加了多少毛刺（跨模型可比：同一套推理参数）。
+            shift = _rvc_roughness_shift(_rvc_roughness(src), _rvc_roughness(out))
+            sc = {"ok": True, "source": src.name, "indexed": bool(idx_files)}
+            if shift:
+                sc["roughness"] = shift
+                if shift.get("unmeasurable"):
+                    sc["warn"] = (f"自检产物量不出唱帧（{shift['why_out']}）：素材本身测到 "
+                                  f"{shift['in']} 的谱平坦度，输出却连稳定基频都没有——整段糊掉/削顶，"
+                                  f"这一档不能用；逐档试听换到更早的那一档，或降轮数重训")
+                elif shift["worse"]:
+                    sc["warn"] = (f"自检听着比素材脏：8–16kHz 谱平坦度 "
+                                  f"{shift['in']}→{shift['out']}（{shift['ratio']} 倍）。"
+                                  f"练过头或素材带噪都会这样——逐档试听退到中途那一档定稿，"
+                                  f"或降轮数重训")
+            job["self_check"] = sc
         except Exception as pe:
             job["self_check"] = {"ok": False, "error": str(pe)[:200]}
         job.update(status="done", step="完成", sec=round(time.time() - started, 1))
@@ -5326,6 +6159,50 @@ def _rvc_train_worker(rid: str, name: str, epochs: int,
 _RVC_AUDIO_EXTS = (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".wma")
 _RVC_SCAN_MAX_SEC = 600     # 单文件只分析前 10 分钟：更长的按抽样说话，别把网关内存吃爆
 _RVC_SILENCE_DB = -45.0     # 帧 RMS 低于此视为静音（干声口径）
+
+
+def _rvc_convert_to_wav(src_path: Path, dst_path: Path | None = None) -> Path:
+    """把非 wav 音频转成 40kHz 单声道 wav（RVC 训练的标准口径）。
+
+    m4a/aac/ogg/opus 等格式在 RVC 预处理链路上可能不被某些脚本直接支持，
+    提前统一转成 wav 能避免"没有可用样本"这类难以排查的失败。
+    转换用 FFmpeg（项目已依赖），失败时抛异常让上游报错。"""
+    import subprocess
+
+    if dst_path is None:
+        dst_path = src_path.with_suffix(".wav")
+
+    # 已经是 wav 就直接返回
+    if src_path.suffix.lower() == ".wav" and src_path.resolve() == dst_path.resolve():
+        return src_path
+
+    cmd = [
+        "ffmpeg", "-y", "-nostdin",
+        "-i", str(src_path),
+        "-ar", "40000",   # RVC 预处理的目标采样率
+        "-ac", "1",       # 单声道（RVC 训练标准）
+        "-sample_fmt", "s16",
+        str(dst_path),
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, timeout=300,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        if result.returncode != 0:
+            stderr_tail = result.stderr[-500:].decode("utf-8", errors="replace")
+            raise RuntimeError(f"FFmpeg 转换失败：{stderr_tail}")
+
+        # 自检：产物必须存在且非空
+        if not dst_path.is_file() or dst_path.stat().st_size < 1024:
+            raise RuntimeError(f"FFmpeg 转换产物不可信（{dst_path.name} 仅 {dst_path.stat().st_size} B）")
+
+        return dst_path
+    except FileNotFoundError:
+        raise RuntimeError("系统未找到 ffmpeg，请先安装 FFmpeg 或检查 PATH")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"FFmpeg 转换超时（5 分钟），文件可能损坏：{src_path.name}")
 
 
 def _rvc_normalize_slices(exp_logs: Path) -> dict:
@@ -5577,7 +6454,9 @@ def _rvc_dataset_scan(ds: Path) -> dict:
 
 @router.post("/rvc/train/check")
 async def rvc_train_check(files: list[UploadFile]):
-    """上传素材先体检（不启动训练）：报告落盘，确认后用返回的 id 直接开练，不必重传。"""
+    """上传素材先体检（不启动训练）：报告落盘，确认后用返回的 id 直接开练，不必重传。
+
+    支持 m4a/aac/ogg/opus 等格式，上传后自动转成 40kHz 单声道 wav（RVC 标准口径）。"""
     if not files:
         raise HTTPException(status_code=400, detail="需要至少一个音频文件")
     if not RVC_PY.is_file():
@@ -5586,13 +6465,27 @@ async def rvc_train_check(files: list[UploadFile]):
     ds = RVC_TRAIN_DIR / rid / "dataset"
     ds.mkdir(parents=True, exist_ok=True)
     budget = {"used": 0}
+    converted_count = 0
     for i, f in enumerate(files):
         ext = Path(f.filename or "s.wav").suffix.lower() or ".wav"
         if ext not in _RVC_AUDIO_EXTS:
             ext = ".wav"
-        await _stream_upload_to(f, ds / f"sample_{i:03d}{ext}", 200 * 1024 * 1024,
+        raw_path = ds / f"sample_{i:03d}{ext}"
+        await _stream_upload_to(f, raw_path, 200 * 1024 * 1024,
                                 f"第 {i + 1} 个样本", budget=budget)
+        # 非 wav 格式统一转成 40kHz 单声道 wav（RVC 训练标准口径）
+        if ext != ".wav":
+            try:
+                wav_path = ds / f"sample_{i:03d}.wav"
+                _rvc_convert_to_wav(raw_path, wav_path)
+                raw_path.unlink(missing_ok=True)  # 删除原始格式，只保留 wav
+                converted_count += 1
+            except Exception as e:
+                # 转换失败时保留原文件，让体检环节报错提示用户
+                pass
     report = _rvc_dataset_scan(ds)
+    if converted_count > 0:
+        report["converted_from"] = f"{converted_count} 个非 wav 文件已转成 wav"
     job = {"id": rid, "name": "", "status": "checked", "step": "体检完成（未开始训练）",
            "ts": datetime.now().isoformat(timespec="seconds"),
            "samples": report["files"], "bytes": budget["used"], "check": report}
@@ -5657,15 +6550,28 @@ async def rvc_train(
         # 在这里等于没闸：文件数不限就能把 runtime/ 撑到爆，而炸点在后面的 F0/特征提取
         # 阶段，报出来是一串流水线错误，看不出根因是磁盘没了。
         budget = {"used": 0}
+        converted_count = 0
         for i, f in enumerate(files):
             ext = Path(f.filename or "s.wav").suffix.lower() or ".wav"
             if ext not in _RVC_AUDIO_EXTS:
                 ext = ".wav"
-            p = ds / f"sample_{i:03d}{ext}"
-            await _stream_upload_to(f, p, 200 * 1024 * 1024, f"第 {i+1} 个样本",
+            raw_path = ds / f"sample_{i:03d}{ext}"
+            await _stream_upload_to(f, raw_path, 200 * 1024 * 1024, f"第 {i+1} 个样本",
                                     budget=budget)
+            # 非 wav 格式统一转成 40kHz 单声道 wav（RVC 训练标准口径）
+            if ext != ".wav":
+                try:
+                    wav_path = ds / f"sample_{i:03d}.wav"
+                    _rvc_convert_to_wav(raw_path, wav_path)
+                    raw_path.unlink(missing_ok=True)  # 删除原始格式，只保留 wav
+                    converted_count += 1
+                except Exception as e:
+                    # 转换失败时保留原文件，让训练环节报错提示用户
+                    pass
         n_samples = len(files)
         total = budget["used"]
+        if converted_count > 0:
+            job.setdefault("converted_from", f"{converted_count} 个非 wav 文件已转成 wav")
     if total < 300_000:
         raise HTTPException(status_code=400, detail="样本太少（建议 3-10 分钟干净干声）")
     prev = _rvc_train_read(rid) if dataset_id else {}
@@ -5698,7 +6604,7 @@ def rvc_train_status(rid: str):
     job = _rvc_train_read(rid)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
-    if job.get("status") == "running" and job.get("step") == "训练中":
+    if job.get("status") == "running" and str(job.get("step") or "").startswith("训练中"):
         cur, total = _rvc_train_epoch(job.get("name", ""), int(job.get("epochs") or 0))
         if cur:
             job["epoch"] = cur
@@ -5729,7 +6635,7 @@ def rvc_train_active():
             st = job.get("status")
             if st in ("running", "pending", "paused"):
                 # paused 也须回显：暂停任务需在进度列表显示「▶ 继续」，否则重启后找不到入口续跑
-                if st == "running" and job.get("step") == "训练中":
+                if st == "running" and str(job.get("step") or "").startswith("训练中"):
                     cur, total = _rvc_train_epoch(job.get("name", ""), int(job.get("epochs") or 0))
                     if cur:
                         job["epoch"] = cur
@@ -5737,6 +6643,10 @@ def rvc_train_active():
                     pes = _rvc_train_per_epoch_sec(job.get("name", ""))
                     if pes:
                         job["per_epoch_sec"] = pes
+                out.append(job)
+            elif st == "checked":
+                # 只体检、从没开练的素材以前不进列表：用户在页面上看不见，也就没有
+                # 删除的入口，几十 MB 到几 GB 的上传就这么永久留在 trains/ 下（10-03 复盘）
                 out.append(job)
             elif st in ("done", "error"):
                 # 落盘时间兜底：job.json 的 mtime 在 24h 内才回显，避免列表无限膨胀
@@ -5750,11 +6660,28 @@ def rvc_train_active():
 
 
 @router.post("/rvc/train/resume/{rid}")
-def rvc_train_resume(rid: str, confirm: str = Form("no")):
+def rvc_train_resume(rid: str, confirm: str = Form("no"),
+                     epochs: int = Form(0), restart: str = Form("no")):
     """续跑被中断的音色制作任务：复用已上传样本与已分离产物，从断点继续。
 
-    confirm=yes 才允许重跑 done 任务——重跑会覆盖同名成品 pth（裁定 F-1）。"""
+    confirm=yes 才允许重跑 done 任务——重跑会覆盖同名成品 pth（裁定 F-1）。
+    epochs>0 改本轮轮数预算（不传就沿用任务里那份）：LA 的复盘说明"练过头"是真实
+    存在的病，可现在想换 60 轮重跑就得重新上传 42 分钟素材，等于没有这条路。
+    restart=yes 是"换个轮数从头重训"：旧检查点整体归档到 logs/<name>/ckpt_archive/
+    （不删），成品覆盖前另存一份到任务目录。因为要毁掉本轮已有进度，必须同时带
+    confirm=yes；不带 restart 的续跑照旧从断点接上，epochs 只允许往上调。
+    """
     global _RVC_TRAIN_WORKER, _RVC_TRAIN_PAUSE_REQ
+
+    def _d(v, default):
+        """测试会把这个端点当普通函数直接调用（不起 HTTP），那时收到的不是值而是
+        Form(...) 默认对象本身——不兜住就 int(Form) 当场 TypeError。
+        注意 fastapi.Form 是**函数**不是类，判类型要用 fastapi.params.Form。"""
+        from fastapi.params import Form as _FormMarker
+        return default if isinstance(v, _FormMarker) else v
+
+    confirm, restart = str(_d(confirm, "no")), str(_d(restart, "no"))
+    epochs = int(_d(epochs, 0) or 0)
     rid = os.path.basename(rid)
     job = _rvc_train_read(rid)
     if not job:
@@ -5762,6 +6689,20 @@ def rvc_train_resume(rid: str, confirm: str = Form("no")):
     ds = RVC_TRAIN_DIR / rid / "dataset"
     if not ds.is_dir() or not any(ds.iterdir()):
         raise HTTPException(status_code=404, detail="原始样本已丢失，无法续跑（请重新提交）")
+    retrain = restart == "yes"
+    if retrain and confirm != "yes":
+        raise HTTPException(status_code=409,
+                            detail="从头重训会归档本轮已有检查点并覆盖同名成品，"
+                                   "需同时传 restart=yes 与 confirm=yes")
+    old_epochs = int(job.get("epochs") or 200)
+    new_epochs = int(epochs) if epochs else old_epochs
+    if not 1 <= new_epochs <= 1200:
+        raise HTTPException(status_code=400, detail="训练轮数须在 1-1200 之间")
+    if not retrain and new_epochs < old_epochs:
+        raise HTTPException(
+            status_code=400,
+            detail=f"续跑只能把轮数往上调（已按 {old_epochs} 轮的预算在练，收到 {new_epochs}）；"
+                   f"想少练几轮重训，请带 restart=yes——旧检查点会归档、成品会先备份")
     # 检查+置 pending 必须原子完成（裁定 C-2）：否则两个并发 resume 都能通过检查，
     # 双 worker 对同一 rid 双写；done 任务重跑会覆盖同名成品，需显式确认
     if job.get("status") == "done" and confirm != "yes":
@@ -5774,7 +6715,22 @@ def rvc_train_resume(rid: str, confirm: str = Form("no")):
         if busy:
             raise HTTPException(status_code=409, detail="已有音色制作任务在进行中，请等待完成后再续跑")
         job["status"] = "pending"
-        job["step"] = "排队中（续跑）"
+        job["step"] = "排队中（重训）" if retrain else "排队中（续跑）"
+        if new_epochs != old_epochs:
+            job["epochs"] = new_epochs
+            job["epochs_changed"] = {"from": old_epochs, "to": new_epochs,
+                                     "restart": retrain}
+        job["restart"] = bool(retrain)
+        # 中断很可能正好落在存盘那一下（每次存盘约 1 秒的窗口）：先体检，坏检查点就地
+        # 隔离，否则续跑会在 load 阶段当场崩，用户只会看到"续训没用"
+        heal = _rvc_ckpt_health(str(job.get("name") or ""))
+        if any(v != "ok" for v in heal.values()):
+            job["ckpt_heal"] = {**(job.get("ckpt_heal") or {}), "resume": heal}
+        # 续训不该把上一次的死因抹掉。LA 事故的原因就是这么丢的：error 被清空、
+        # log_tail 被成功那次覆写，应用自己的记录里一点痕迹都不剩，只能去翻 Windows
+        # 事件日志和文件出生时间反推。error 照常清掉，但先归档进 last_error。
+        if job.get("error"):
+            job["last_error"] = job["error"]
         job["error"] = None
         # 暂停标志属于上一次运行：受理续跑时必须复位，否则新 worker 第一步
         # 读到陈旧 True 会立即自终止——任务"秒回暂停"（隐患，已踩坑）
@@ -5788,7 +6744,7 @@ def rvc_train_resume(rid: str, confirm: str = Form("no")):
     clean_flag = str(job.get("clean_tier") or "off")
     _RVC_TRAIN_WORKER = threading.Thread(
         target=_rvc_train_worker, args=(rid, job["name"], int(job.get("epochs") or 200),
-                                        sep_flag, True, clean_flag),
+                                        sep_flag, True, clean_flag, bool(retrain)),
         daemon=True)
     _RVC_TRAIN_WORKER.start()
     return {"ok": True, "id": rid, "job": job}
@@ -6097,6 +7053,102 @@ app.include_router(_ai_router)
 # 免得历史页/进行中区永远挂着假任务（生成任务在 /generate/current 有懒清理，
 # 这里是启动时的一次性兜底，覆盖换声/训练等所有 kind）。
 # --------------------------------------------------------------------------- #
+def _rvc_train_procs(name: str) -> list[tuple[int, bool]] | None:
+    """这个音色的训练/预处理子进程：[(PID, 父进程是否还活着)]；查不动返回 None。
+
+    网关被杀时 `subprocess.Popen` 起来的训练子进程不一定跟着死（本机 02:51 那次就是：
+    网关 02:49 没了，preprocess 子进程 02:51 还在往日志里写）。这种"爹没了的孩子"最危险：
+    它的 stdout/stderr 管道属于已死的网关，缓冲区塞满就永久卡在 write 上，同时还占着
+    5.9GB 显存——既没人收尸也没人推进。查询本身不许把启动带崩。
+    """
+    if os.name != "nt" or not name:
+        return None
+    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^python(w)?\\.exe$' "
+          "-and $_.CommandLine -match 'train' -and $_.CommandLine -match '%s' } | "
+          "ForEach-Object { $a = if (Get-Process -Id $_.ParentProcessId -ErrorAction "
+          "SilentlyContinue) { 'Y' } else { 'N' }; '{0} {1} {2}' -f $_.ProcessId, "
+          "$_.ParentProcessId, $a }" % re.escape(str(name)))
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                           capture_output=True, text=True, timeout=25,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None          # 查询本身失败：不知道就当不知道，不许把判断建立在猜上
+    out = []
+    for line in (r.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0].isdigit():
+            out.append((int(parts[0]), parts[2] == "Y"))
+    return out               # 空列表 = 真没有（PowerShell 无匹配时输出为空、退出码 0）
+
+
+def _rvc_train_procs_alive(name: str) -> bool | None:
+    """有没有训练子进程还在跑（父进程也活着的那种才算"别人在用"）。查不动返回 None。"""
+    procs = _rvc_train_procs(name)
+    return None if procs is None else bool(procs)
+
+
+def _rvc_reap_orphan_trainers(name: str) -> list[int]:
+    """收掉"网关已经没了、自己还挂着"的训练子进程。返回杀掉的 PID。
+
+    父进程还活着的一律不动——那说明另一个网关实例正在管这个任务，本机乱杀就是打断别人。
+    """
+    procs = _rvc_train_procs(name)
+    if not procs:
+        return []
+    killed = []
+    for pid, parent_alive in procs:
+        if parent_alive:
+            continue
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                           capture_output=True, timeout=20,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            killed.append(pid)
+        except Exception:
+            pass
+    if killed:
+        time.sleep(2)        # 进程拆除与显存释放有延迟，立刻再查会看到旧数字
+    return killed
+
+
+def _rvc_autoresume_gate(job: dict, jp: Path) -> str | None:
+    """网关重启把长跑 worker 一起带走了——能不能自动接上，返回 None 表示可以。
+
+    为什么要有这一步：10-03 凌晨本机一小时内两次「LA 重训提交 → 网关重启 → 任务停在
+    预处理/训练中」。中断的来源里，显卡驱动故障我们只能事后接上，唯一还能提前防住的
+    就是"服务重启"这一类；而批量队列早就有重启自恢复（这个函数的第 3 段），训练没做，
+    等于同一台机器上两种截然不同的待遇。
+
+    几道限制，都是为了不许变成新的事故：
+    ① 只接 30 分钟内还在推进的：几天前的僵尸记录不许在半夜复活再烧几小时 GPU；
+    ② 同一任务最多自动接 2 次：真崩在硬件上时，"重启→训练→崩→重启"是死循环；
+    ③ 先收掉父进程已死的孤儿训练进程（它们卡在自己的管道上、还占着显存），
+       但父进程活着的一个都不许碰——那是另一个网关实例正在跑的任务，双训练会把
+       同一个实验目录的检查点写成花。
+    """
+    try:
+        age = time.time() - jp.stat().st_mtime
+    except OSError:
+        return "记录文件读不到"
+    if age > _RVC_AUTORESUME_WINDOW_SEC:
+        return f"中断已 {int(age // 60)} 分钟（超过 {_RVC_AUTORESUME_WINDOW_SEC // 60} 分钟的窗口）"
+    if int(job.get("auto_resume_count") or 0) >= _RVC_AUTORESUME_MAX:
+        return f"已自动接过 {job.get('auto_resume_count')} 次，不再自动接（请人工确认死因）"
+    step = str(job.get("step") or "")
+    if step.startswith(("已暂停", "暂停")):
+        return "用户主动暂停，重启不许替用户决定继续"
+    name = str(job.get("name") or "")
+    reaped = _rvc_reap_orphan_trainers(name)
+    if reaped:
+        job["orphan_reaped"] = reaped      # 留痕：这次启动替它收了几个孤儿进程
+    if _rvc_train_procs_alive(name) is True:
+        return "上一轮的训练子进程还活着（父进程健在，多半是另一个网关实例在管），避免同目录双训练"
+    return None
+
+
 def _orphan_cleanup_on_startup() -> None:
     # 1) output/ 元数据（生成/批量/换声/训练的归档记录）
     if OUTPUT_DIR.is_dir():
@@ -6114,6 +7166,7 @@ def _orphan_cleanup_on_startup() -> None:
                 except Exception:
                     pass
     # 2) 音色训练 job.json（训练 worker 随进程终止，日志停在最后一轮）
+    resumable: list[tuple[float, str]] = []
     if RVC_TRAIN_DIR.is_dir():
         for d in RVC_TRAIN_DIR.iterdir():
             jp = d / "job.json"
@@ -6124,10 +7177,26 @@ def _orphan_cleanup_on_startup() -> None:
             except Exception:
                 continue
             if job.get("status") in ("running", "pending"):
+                step_was = str(job.get("step") or "")
+                gate = _rvc_autoresume_gate(job, jp)
+                try:
+                    mtime = jp.stat().st_mtime
+                except OSError:
+                    mtime = 0.0
                 job["status"] = "error"
                 job["error"] = "服务重启，任务中断"
-                if job.get("step") == "训练中":
+                if step_was.startswith("训练中"):
                     job["step"] = "已中断"
+                if gate is None:
+                    job["auto_resume"] = {"scheduled": datetime.now().isoformat(timespec="seconds"),
+                                          "from_step": step_was}
+                    resumable.append((mtime, d.name))
+                else:
+                    # 不接也要写下为什么不接：用户只看到"任务中断"却没人解释为什么没自己接上，
+                    # 比不接更难排查
+                    job["auto_resume"] = {"skipped": gate,
+                                          "at": datetime.now().isoformat(timespec="seconds"),
+                                          "from_step": step_was}
                 try:
                     jp.write_text(json.dumps(job, ensure_ascii=False, indent=2),
                                   encoding="utf-8")
@@ -6152,6 +7221,31 @@ def _orphan_cleanup_on_startup() -> None:
             _batch_ensure_worker()
     except Exception:
         pass  # 队列文件损坏时不应阻断启动；前端可手动重试
+    # 4) 音色训练自恢复：上面判为"服务重启，任务中断"且过了三道闸门的任务，这里接回
+    # 来继续跑。走的是用户点「↻ 续跑」的同一条路（rvc_train_resume）——检查点体检、
+    # 死因归档进 last_error、暂停标志复位，一处逻辑不分两条。只接最近的那个：GPU 只有一
+    # 张卡，多接等于排队时互相抢闸门。
+    for _mtime, rid in sorted(resumable, reverse=True)[:1]:
+        try:
+            j = rvc_train_resume(rid)
+            rec = _rvc_train_read(rid)
+            rec["auto_resume"] = {**(rec.get("auto_resume") or {}),
+                                  "resumed_at": datetime.now().isoformat(timespec="seconds")}
+            rec["auto_resume_count"] = int(rec.get("auto_resume_count") or 0) + 1
+            _rvc_train_write(rid, rec)
+            print(f"[启动自恢复] 音色训练 {rec.get('name')}（{rid}）已自动接上重启前的进度",
+                  flush=True)
+            try:
+                _win_toast("↻ 训练已自动接上",
+                           f"{rec.get('name')}：网关重启打断了它，现在从断点继续（{rec.get('epochs')} 轮）")
+            except Exception:
+                pass
+        except Exception as e:
+            rec = _rvc_train_read(rid)
+            rec["auto_resume"] = {**(rec.get("auto_resume") or {}),
+                                  "failed": str(e)[:160]}
+            _rvc_train_write(rid, rec)
+            print(f"[启动自恢复] 音色训练 {rid} 接不上：{str(e)[:160]}", flush=True)
 
 
 # 孤儿清理仅在真实启动服务时执行；模块导入（如 dsh 桥子进程 import app）不得触发，

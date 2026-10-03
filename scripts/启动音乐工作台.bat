@@ -17,9 +17,15 @@ for /f "usebackq tokens=*" %%p in (`powershell -NoProfile -Command "try{$j=Get-C
 
 set GATEWAY_UP=0
 set DSH_UP=0
-rem findstr /R ":PORT " 行尾精确匹配，避免 :7863 误命中 :78630/:17863
-netstat -ano | findstr /R /C:":%GATEWAY_PORT% .*LISTENING" >nul && set GATEWAY_UP=1
-netstat -ano | findstr /R /C:":%DSH_PORT% .*LISTENING" >nul && set DSH_UP=1
+rem 存活判断只认"自家绑定"的监听地址。开过局域网后 3081 上会长期挂着一条 netsh portproxy
+rem 监听（192.168.1.6:3081 → 127.0.0.1:3081，宿主是 svchost/iphlpsvc），跟真服务同一个端口号。
+rem 旧写法 ":PORT .*LISTENING" 不区分本地地址：真服务没起来时也会被它判成"已在运行" →
+rem 跳过 [3/3] 启动 → 没人去拉真服务，只剩本脚本拿日志里的旧 token 去 curl 127.0.0.1:PORT，
+rem 连接被拒 → HTTP 000 刷屏。2026-09-30 23:41 实测：用户连看 6 行"门票未生效（HTTP 000）"，
+rem 工作台其实是 36 秒后被看门狗救活的。watchdog.py 里同一个坑早就收口过
+rem （_OWN_BIND_PREFIXES），这里补上同一份口径；端口后留空格避免 :3081 误命中 :30810。
+netstat -ano -p tcp | findstr /R /C:"127.0.0.1:%GATEWAY_PORT% .*LISTENING" /C:"0.0.0.0:%GATEWAY_PORT% .*LISTENING" /C:"\[::1\]:%GATEWAY_PORT% .*LISTENING" /C:"\[::\]:%GATEWAY_PORT% .*LISTENING" >nul && set GATEWAY_UP=1
+netstat -ano -p tcp | findstr /R /C:"127.0.0.1:%DSH_PORT% .*LISTENING" /C:"0.0.0.0:%DSH_PORT% .*LISTENING" /C:"\[::1\]:%DSH_PORT% .*LISTENING" /C:"\[::\]:%DSH_PORT% .*LISTENING" >nul && set DSH_UP=1
 
 set GRADIO_TEMP_DIR=%cd%\tmp\
 set PYTHON_PATH=%cd%\py312\
@@ -88,11 +94,22 @@ goto dsh2
 :dsh
 echo [2/3] 看门狗已在运行，跳过
 :dsh2
-if "%DSH_UP%"=="1" goto wait
+if not "%DSH_UP%"=="1" goto dshstart
+rem 端口上"有人"不等于服务活着：假死的 dsh 一样占着端口却不回话。补一次真实 HTTP 探活——
+rem curl 只要完成一次传输就返回 0（401/403/200 都说明服务在），只有压根连不上才非 0，
+rem 那种情况按"没起来"处理，交给下面正常启动一次，别再让旧 token 干等 24 轮。
+"%SystemRoot%\System32\curl.exe" -s --noproxy "*" -m 5 -o nul "http://127.0.0.1:%DSH_PORT%/" >nul 2>&1
+if not errorlevel 1 goto wait
+echo     端口 :%DSH_PORT% 有监听但不回话（假死/占位进程），按未启动处理
+:dshstart
 echo [3/3] 启动 dsh AI 工作台 :%DSH_PORT% ...
 rem 启动参数集中在 scripts\启动dsh工作台.bat（看门狗重启 3081 时复用同一份）
 call "%~dp0启动dsh工作台.bat"
 
+rem 这两个计数在 :ready 里也会各置一次；提前到这里是因为 :notready → dshwait 那条路
+rem 绕过了 :ready，届时 DSH_TRIES/DSH_VT 尚未定义，if 判断会展开成语法错误。
+set /a DSH_TRIES=0
+set /a DSH_VT=0
 :wait
 set /a TRIES=0
 :waitloop
@@ -142,7 +159,12 @@ if "%DSH_CODE%"=="303" goto open
 if "%DSH_CODE%"=="200" goto open
 set /a DSH_VT+=1
 if %DSH_VT% geq 24 goto open
-echo     门票未生效（HTTP %DSH_CODE%），等工作台自愈换票... %DSH_VT%/24
+if "%DSH_CODE%"=="000" (
+    echo     工作台 :%DSH_PORT% 连不上（HTTP 000 = 请求压根没发出去），服务还没起来
+) else (
+    echo     门票未生效（HTTP %DSH_CODE%），等工作台自愈换票...
+)
+echo     等待第 %DSH_VT%/24 轮；看门狗约 30 秒内会自愈拉起，急用可再双击一次本脚本
 ping -n 4 127.0.0.1 >nul
 call :read_dsh_url
 if defined DSH_URL goto dshverify

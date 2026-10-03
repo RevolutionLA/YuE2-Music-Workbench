@@ -50,6 +50,18 @@ CHECK_INTERVAL = 10     # 每轮探测间隔（秒）
 HEALTH_TIMEOUT = 15     # 单次探测超时（秒）
 FAIL_THRESHOLD = 5      # 连续失败多少次判定假死
 DEEP_PROBE_TIMEOUT = 90  # 达到阈值后、击杀前的最后一次确认超时；答了就是"慢"不是"死"
+# 长任务免死窗口（秒）：探测和深探都失败时，只要这些文件还在被写，就说明
+# 网关底下那个子任务**仍在推进**，此刻整机（GIL + 显存换入 + 磁盘）是被占满的，
+# /api/health 排不上队不等于进程死了。2026-10-03 实测：音色重训提交后
+# 02:31、02:33、02:38 三次"判定假死→击杀"，每次都把刚起步的训练连带砍掉，
+# 用户在页面上只看到"服务重启，任务中断"——深探 90 秒也救不回来，因为回不了话。
+# 真正的停摆自有训练/批量内部的产出判活负责（_rvc_wait_step：看日志最后一次推进
+# 距今多久），不需要看门狗替它下结论。
+LONG_JOB_WINDOW = 360
+LONG_JOB_GLOBS = ("rvc/trains/*/job.json",          # 训练：每一步都原子重写
+                  "rvc/logs/*/train.log",            # 训练：每 200 步追加
+                  "rvc/jobs/*/converted.wav",        # 换声：算完即落盘
+                  "data/batch_state.json")           # 批量：每条完成都落盘
 RESTART_COOLDOWN = 30   # 重启后的最短稳定观察期（秒），期间不计失败
 # 启动即死熔断（评审 P1-3）：配置错误（如开了 YUE2_ALLOW_LAN 却没给 hosts）会让
 # python -s app.py 在绑定端口之前就抛 RuntimeError。常规"连败→深探→击杀→重启"约
@@ -60,6 +72,29 @@ EARLY_DEATH_LIMIT = 3
 # 工作台是唯一 UI 入口：网关健康但 3081 从未出现过时主动拉起一次。
 # 只尝试一次，失败即放弃（避免把用户的"故意不开工作台"理解成故障并反复刷进程）。
 DSH_AUTOSTART = True
+
+
+def long_job_age() -> tuple[float | None, str]:
+    """本机最近一次"长任务还在推进"的证据：返回 (多少秒前动过, 是哪个文件)。
+
+    只看文件 mtime，不发任何请求——要判的就是"请求排不上队"这种时候。
+    没有可读的文件返回 (None, "")，调用方按"没有证据"处理，照常击杀。
+    """
+    best: float | None = None
+    which = ""
+    base = ROOT / "runtime"
+    for pat in LONG_JOB_GLOBS:
+        try:
+            for p in base.glob(pat):
+                try:
+                    age = time.time() - p.stat().st_mtime
+                except OSError:
+                    continue
+                if best is None or age < best:
+                    best, which = age, pat.split("/")[1] + "/" + p.name
+        except Exception:
+            continue
+    return best, which
 
 
 def probe(url: str, timeout: float | None = None) -> bool:
@@ -105,6 +140,28 @@ def find_listener_pid(port: int) -> int | None:
     except Exception:
         pass
     return None
+
+
+def long_job_pardon(port: int, fails: int) -> str | None:
+    """判定假死之后、动手击杀之前的免死判断，只返回理由文本（None = 不免死）。
+
+    免死只针对「进程还活着但不回话」那一种：端口上仍有监听者 + 本机长任务刚刚还在推进。
+    端口无人监听时哪怕长任务在推进也照常拉起——那是进程真没了（被别的会话重启、或启动即死），
+    再"免死"下去就是把已死的网关供起来，训练任务也会跟着一起没人管。
+    """
+    if port != GW_PORT:
+        return None
+    age, which = long_job_age()
+    if age is None or age > LONG_JOB_WINDOW:
+        return None
+    listener = find_listener_pid(port)
+    if not listener:
+        log(f"网关 :{port} 无人监听（长任务 {int(age)} 秒前还在推进也不当免死理由）——"
+            f"进程确实不在了，照常拉起")
+        return None
+    return (f"连续 {fails} 次短探 + {DEEP_PROBE_TIMEOUT}s 深探都没回话，但 :{port} 仍有进程 {listener} 在监听、"
+            f"本机长任务 {int(age)} 秒前还在推进（{which}）——判为整机被占满而非假死，本轮不击杀"
+            f"（真停摆由任务自己的产出判活负责，误杀一次要重练几小时）")
 
 
 SPAWN_LOG_DIR = ROOT / "runtime" / "data" / "logs"
@@ -357,6 +414,11 @@ def main() -> None:
                 log(f"{svc['name']} 连续 {svc['fails']} 次短探失败，但 {DEEP_PROBE_TIMEOUT}s 深探回了话 —— "
                     f"判为高负载慢响应而非假死，本轮不击杀，失败计数清零")
                 svc["fails"] = 0
+                continue
+
+            pardon = long_job_pardon(svc["port"], svc["fails"])
+            if pardon:
+                log(f"{svc['name']} {pardon}")
                 continue
 
             log(f"判定 {svc['name']} 假死（{DEEP_PROBE_TIMEOUT}s 深探也无响应），执行重启…")

@@ -1302,7 +1302,7 @@ We will sing beyond the night</textarea>
         </details>
         <details>
           <summary>训练完怎么验收（听什么算合格）</summary>
-          <div class="hint-xs" style="margin-top:8px;">🎓 训练完成后怎么验收：到换声页用新音色换一段 30 秒的清唱或歌曲（先勾人声分离）试听——音色像、咬字清即合格；如果发虚发闷→素材太少或轮数不够，加轮数重训；如果有电音（尤其高音处）→素材里高音段太少，换声时勾「分离后再去和声」并把「音色检索强度」降到 0.6、protect 降到 0.15。</div>
+          <div class="hint-xs" style="margin-top:8px;">🎓 训练完成后怎么验收：先看卡片上的自检数字（有没有出声 + 高频噪声化），再到换声页用新音色换一段 30 秒的清唱试听。发虚发闷→素材太少或轮数不够；<b>有电音/发沙要先分清是谁的账</b>：把同一段的「原唱人声」也听一遍——原唱就电音，那是源音频的问题（YuE2 生成的歌尤其如此），换声换不掉；原唱干净、换声后才脏，是这个音色练过头或素材带噪，用「↻ 重训」填 50~60 轮重来（旧检查点会归档、旧成品先备份），或在卡片上逐档试听挑一档定稿。实测：把「音色检索强度」和 protect 调低对这种高频噪声化<b>没有效果</b>，别在它上面耗时间。</div>
         </details>
       </div>
     </div>
@@ -4587,6 +4587,11 @@ function renderRvcList() {
     const hasFull = !!(j.assets && j.assets.full_song);
     const gateTxt = j.gate && j.gate.gate_closed_ratio != null
       ? ` · 🔇 静音门已压 ${Math.round(j.gate.gate_closed_ratio * 100)}% 无人声段` : "";
+    // 听感体检：以前这个数只落进 output/*.json，页面上一个字都不显示，
+    // 于是"电音是谁的账"只能靠猜。tip 第一句就是结论，整段进悬停。
+    const q = j.quality || {};
+    const qTip = (q.tips || [])[0] || "";
+    const qBad = !!(q.roughness && q.roughness.worse);
     d.innerHTML = `
       <div class="h-body">
         <div class="h-title">${escapeHtml(rvcTitle)} · ${st}${j.sec ? " · " + j.sec + "s" : ""}</div>
@@ -4595,6 +4600,7 @@ function renderRvcList() {
         ${j.status === "done" && j.src_f0 && !j.src_f0.error ? `<div class="h-sub" title="分离后真实人声实测（比换声前整曲探针可信）${j.pitch_advice? ' · 建议变调 '+(j.pitch_advice.suggested_pitch>0?'+':'')+j.pitch_advice.suggested_pitch+' 半音':''}">🎼 源音域 ≈ 中位 ${j.src_f0.median_hz}Hz</div>` : ""}
         ${j.status === "done" && j.pitch_note ? `<div class="h-sub" title="${escapeHtml(j.pitch_note)}">🎼 ${escapeHtml(j.pitch_note)}</div>` : ""}
         ${j.status === "done" && j.acc_pitch && j.acc_pitch.note ? `<div class="h-sub" title="人声变的是音区（含整八度），伴奏只跟非八度那部分——整八度不换调，挪伴奏只会把底鼓贝斯推坏">${escapeHtml(j.acc_pitch.applied ? "🎹 " : "⚠️ ")}${escapeHtml(j.acc_pitch.note)}</div>` : ""}
+        ${j.status === "done" && qTip ? `<div class="h-sub" style="${qBad ? "color:var(--err,#c0392b);" : ""}" title="${escapeHtml((q.tips || []).join("\n"))}">🩺 ${escapeHtml(qTip)}</div>` : ""}
         ${j.status === "error" ? `<div class="h-sub truncate" title="${escapeHtml(j.error || "")}">${escapeHtml((j.error || "").slice(0, 80))}</div>` : ""}
         ${j.status === "pending" ? `<div class="h-sub">${j.step && j.step !== "排队中" ? escapeHtml(j.step) + "，等到空闲就自动开跑" : "换声一次只跑一个（分离和推理都吃满显存），排队是正常状态"}</div>` : ""}
       </div>
@@ -5265,10 +5271,11 @@ function renderRvcTrainList() {
     d.className = "hist-item";
     const st = j.status === "done" ? "✓ 完成" : j.status === "error" ? "✕ 失败"
       : j.status === "lost" ? "⚠ 状态丢失（服务重启过，成品见音色列表）"
+      : j.status === "checked" ? "📥 素材已体检·未开练"
       : j.status === "pending" ? "⏳ 排队" : "🎵 " + (j.step || "进行中");
     // 训练轮次：进行中且拿到轮次数据时，显示百分比 + 进度条 + 预计剩余时间
     const total = j.epochs_total || j.epochs || 0;
-    const inTrain = j.status === "running" && j.step === "训练中" && j.epoch && total > 0;
+    const inTrain = j.status === "running" && (j.step || "").indexOf("训练中") === 0 && j.epoch && total > 0;
     const pct = inTrain ? Math.min(100, Math.round(j.epoch / total * 100)) : null;
     let eta = "";
     // 优先用服务端从训练日志稳健解析的每轮耗时（剔除偶发卡顿轮）；
@@ -5284,26 +5291,51 @@ function renderRvcTrainList() {
       const lines = String(j.log_tail).split(/[\r\n]+/).filter(s => s.trim());
       liveLog = (lines[lines.length - 1] || "").trim();
     }
-    // 检查点：训练完成后服务端只保留最近 2 个（kept_ckpts）；训练中则以最近一次
-    // 试听返回的列表为准。有得选才显示选择器，不然凭空多一排死按钮。
+    // 检查点：训练完成后服务端留最终档 + 中段两档（约 50%/75% 处，共 kept 个）；
+    // 训练中则以最近一次试听返回的列表为准。有得选才显示选择器，不然凭空多一排死按钮。
     const cks = (j.ckpts && j.ckpts.length ? j.ckpts : (j.kept_ckpts || [])).filter(Boolean);
     const loss = j.loss && j.loss.head && j.loss.tail
       ? `损失 g ${(j.loss.head.loss_gen ?? "?")}→${(j.loss.tail.loss_gen ?? "?")} · d ${(j.loss.head.loss_disc ?? "?")}→${(j.loss.tail.loss_disc ?? "?")}`
       : "";
+    // 自检不光"有没有出声"，还量了高频纹理：练过头的音色是出声了、但 8–16k 被磨成宽带噪声
+    const rg = j.self_check && j.self_check.roughness;
+    const rgText = rg ? (rg.out === null
+      ? `高频噪声化 ${rg.in}→量不出（产物连基频都没有）`
+      : `高频噪声化 ${rg.in}→${rg.out}（${rg.ratio} 倍）`) : "";
     const sc = j.self_check
-      ? (j.self_check.ok ? "自检片段已生成" : "自检片段失败：" + (j.self_check.error || ""))
+      ? (j.self_check.ok
+          ? "自检片段已生成" + (rgText ? ` · ${rgText}` : "")
+          : "自检片段失败：" + (j.self_check.error || ""))
       : "";
+    const scWarn = (j.self_check && j.self_check.warn) || "";
     // 净化留痕（评审 A1）：跑了哪两个模型、几个文件、有没有回退——原始与净化后
     // 两个目录都写进悬停提示，A/B 对比不用猜路径
     const cleanInfo = j.clean
       ? `🧹 已净化（${j.clean.label}档：去混响 → 降噪）· ${j.clean.files} 个文件 · 完整净化 ${j.clean.fully_cleaned}${j.clean.carried ? " · " + j.clean.carried + " 次回退用净化前版本" : ""}${j.clean.sec ? " · " + (j.clean.sec > 90 ? Math.round(j.clean.sec / 60) + "分" : j.clean.sec + "s") : ""}`
       : "";
+    // 长跑守卫留痕（v1.6.0）：中断过几次、有没有自己续跑回来、开训前让没让显存、
+    // 当时显卡是什么状态。这些数字以前只在服务端的 job.json 里，页面上看不见，
+    // 于是"练了一晚断了"这种事只能事后翻日志——现在当场就说清。
+    const gw = j.gpu_watch || {};
+    const gBits = [];
+    if (j.gpu_yield && j.gpu_yield.action) gBits.push("开训前" + j.gpu_yield.action);
+    if ((j.attempts || []).length) gBits.push("中断 " + j.attempts.length + " 次");
+    if (j.recovered_after) gBits.push("第 " + j.recovered_after.attempt + " 次续跑成功");
+    if (j.pace_warn && j.pace_warn.expect_sec) gBits.push("曾慢 " + (j.pace_warn.epoch_sec / j.pace_warn.expect_sec).toFixed(1) + " 倍");
+    if (gw.max_mem_used_mb) gBits.push("显存峰值 " + gw.max_mem_used_mb + "MB");
+    if (gw.max_temp_c) gBits.push("核心峰值 " + gw.max_temp_c + "℃");
+    if (gw.throttle_samples) gBits.push("降频采样 " + gw.throttle_samples + " 次");
+    const guardInfo = gBits.join(" · ");
+    const guardTitle = (j.attempts || []).map(a =>
+      `${a.at} 停在第 ${a.epoch} 轮：${a.reason}`).join("\n");
     d.innerHTML = `
       <div class="h-body">
         <div class="h-title">${escapeHtml(j.name || "")} · ${st}${inTrain ? `（${j.epoch}/${total} · ${pct}%）` : ""}${j.sec && j.status !== "running" ? " · " + (j.sec > 90 ? Math.round(j.sec / 60) + "分" : j.sec + "s") : ""}</div>
         <div class="h-sub truncate">${escapeHtml(`${j.samples || "?"} 个样本 · ${j.epochs || "?"} 轮`)}${j.batch_note ? " · " + escapeHtml(j.batch_note) : ""}${j.model ? " · 产出 " + escapeHtml(j.model) : ""}${j.promoted_ckpt ? " · 定稿 " + escapeHtml(j.promoted_ckpt) : ""}${eta}</div>
         ${loss || sc ? `<div class="h-sub truncate" title="${escapeHtml([loss, sc].filter(Boolean).join(" · "))}">${escapeHtml([loss, sc].filter(Boolean).join(" · "))}</div>` : ""}
+        ${scWarn ? `<div class="h-sub" style="color:var(--warn,#c60);">⚠ ${escapeHtml(scWarn)}</div>` : ""}
         ${cleanInfo ? `<div class="h-sub truncate" title="原始素材：${escapeHtml(j.clean.before || "")}｜净化后：${escapeHtml(j.clean.after || "")}｜模型：${escapeHtml(j.clean.dereverb || "")} + ${escapeHtml(j.clean.denoise || "")}">${escapeHtml(cleanInfo)}</div>` : ""}
+        ${guardInfo ? `<div class="h-sub truncate" title="${escapeHtml(guardTitle || guardInfo)}">🛡 ${escapeHtml(guardInfo)}</div>` : ""}
         <div class="h-sub">${idTag(j.id)}</div>
         ${pct !== null ? `<div class="progress show" style="margin-top:6px;"><div style="width:${pct}%;"></div></div>` : ""}
         ${j.status === "error" ? `<div class="h-sub truncate" title="${escapeHtml(j.error || "")}">${escapeHtml((j.error || "").slice(0, 100))}</div>` : ""}
@@ -5311,12 +5343,15 @@ function renderRvcTrainList() {
       </div>
       ${j.status === "done" ? '<button class="ghost" data-use>去使用</button>' : ''}
       ${j.status === "error" ? '<button class="ghost" data-resume>↻ 续跑</button>' : ''}
+      ${j.status === "done" ? '<button class="ghost" data-resume title="从断点继续；填别的轮数=归档旧检查点从头重训">↻ 重训</button>' : ''}
       ${j.status === "paused" ? '<button class="ghost" data-resume>▶ 继续</button>' : ''}
       ${j.status === "running" ? '<button class="ghost" data-pause>⏸ 暂停</button>' : ''}
+      ${["done", "error", "paused", "checked", "lost"].indexOf(j.status) >= 0
+        ? '<button class="ghost" data-deltask title="只删这个任务目录（上传的素材、试听、重训备份），已练好的音色与索引不动；要删音色请到音色管理">🗑 删任务</button>' : ''}
       ${(j.status === "running" || j.status === "done") ? '<button class="ghost" data-preview>🎧 试听</button>' : ''}
       ${j.preview_url ? `<audio controls preload="none" src="${j.preview_url}" style="width:100%;margin-top:6px;height:32px;"></audio>` : ''}
       ${cks.length ? `<div style="width:100%;display:flex;gap:6px;align-items:center;margin-top:6px;">
-        <select class="rvc-ck" style="flex:1;min-width:0;">${cks.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("")}</select>
+        <select class="rvc-ck" style="flex:1;min-width:0;">${cks.map(c => `<option value="${escapeHtml(c)}">${escapeHtml((j.ck_labels && j.ck_labels[c]) || c)}</option>`).join("")}</select>
         <button class="ghost" data-ckplay>试听这个点</button>
         <button class="ghost" data-ckpromote title="把这个检查点导出为最终成品（音色名不变，索引照用）">📌 定稿</button>
       </div>
@@ -5328,14 +5363,30 @@ function renderRvcTrainList() {
       try {
         // done 任务重跑会覆盖同名成品，服务端要求显式 confirm=yes（裁定 F-1）
         const isDone = j.status === "done";
-        if (isDone && !window.confirm("该任务已完成。重跑会用新结果覆盖现有成品音色，确定继续？")) {
-          rb.disabled = false;
-          return;
+        let body = "";
+        if (isDone) {
+          if (!window.confirm("该任务已完成。重跑会用新结果覆盖现有成品音色（旧成品会先在任务目录里存一份），确定继续？")) {
+            rb.disabled = false;
+            return;
+          }
+          // 换个轮数重训：练过头（成品发沙/电音）时的退路。以前只能删了重传素材，
+          // 等于没有这条路——42 分钟的干声谁也不想再传一遍。
+          const ans = window.prompt(
+            `重训轮数：留空=沿用 ${j.epochs || "?"} 轮从断点继续；` +
+            `填别的数字=归档旧检查点、从底模重新练满这个轮数。`, "");
+          body = "confirm=yes";
+          const n = parseInt(ans, 10);
+          if (ans !== "" && (!n || n < 1 || n > 1200)) {
+            toast("轮数须在 1-1200 之间", "err");
+            rb.disabled = false;
+            return;
+          }
+          if (n && n !== Number(j.epochs)) body += `&epochs=${n}&restart=yes`;
         }
         const r = await fetchT("/api/rvc/train/resume/" + j.id, {
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: isDone ? "confirm=yes" : "",
+          body,
         });
         const x = await r.json();
         if (!r.ok) throw new Error(x.detail || "续跑失败");
@@ -5343,7 +5394,9 @@ function renderRvcTrainList() {
         if (i >= 0) rvcTrainJobs[i] = { ...rvcTrainJobs[i], ...x.job };
         renderRvcTrainList();
         pollRvcTrain(j.id);
-        toast("任务已从断点续跑（已完成的分离产物会复用）", "ok");
+        toast(body.includes("restart=yes")
+          ? `已按 ${x.job.epochs} 轮从头重训（旧检查点已归档，旧成品已备份）`
+          : "任务已从断点续跑（已完成的分离产物会复用）", "ok");
       } catch (err) {
         rb.disabled = false;
         toast("续跑失败：" + err.message, "err");
@@ -5366,6 +5419,29 @@ function renderRvcTrainList() {
         toast("暂停失败：" + err.message, "err");
       }
     };
+    const db = d.querySelector("[data-deltask]");
+    if (db) db.onclick = async (e) => {
+      e.stopPropagation();
+      // 体检过却从没开练的素材以前在页面上根本没有条目，也就无从删除，上传的几个 GB
+      // 就一直留在 trains/ 下；这里给出唯一的清理入口。音色与索引不在本目录，删不到。
+      if (!window.confirm(j.status === "checked"
+        ? "这会连同你上传的素材一起删掉（这个任务还没练出音色）。确定删除？"
+        : "删除任务目录会带走上传的素材、试听与重训备份；已练好的音色和检索库不受影响。确定删除？")) return;
+      db.disabled = true;
+      try {
+        const r = await fetchT("/api/rvc/train/" + j.id, { method: "DELETE" }, 60000);
+        const x = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(x.detail || "删除失败");
+        const i = rvcTrainJobs.findIndex(t => t.id === j.id);
+        if (i >= 0) rvcTrainJobs.splice(i, 1);
+        _lastTrainKey = "";
+        renderRvcTrainList();
+        toast("任务目录已删除（音色与索引保留）", "ok");
+      } catch (err) {
+        db.disabled = false;
+        toast("删除失败：" + err.message, "err");
+      }
+    };
     const pb = d.querySelector("[data-preview]");
     if (pb) pb.onclick = async (e) => {
       e.stopPropagation();
@@ -5378,7 +5454,7 @@ function renderRvcTrainList() {
         if (!r.ok) throw new Error(x.detail || "试听失败");
         const i = rvcTrainJobs.findIndex(t => t.id === j.id);
         if (i >= 0) rvcTrainJobs[i] = { ...rvcTrainJobs[i], preview_url: x.url,
-          preview_source: x.source, ckpts: x.ckpts || [] };
+          preview_source: x.source, ckpts: x.ckpts || [], ck_labels: x.ck_labels || {} };
         renderRvcTrainList();
         toast("试听已生成（" + x.source + "），播放器在任务卡片下方", "ok");
       } catch (err) {
@@ -5516,7 +5592,7 @@ function updateRvcTrainProgress(j) {
   if (j.status !== "running" && j.status !== "pending") { wrap.classList.remove("show"); return; }
   wrap.classList.add("show");
   const total = j.epochs_total || j.epochs || 0;
-  if (j.step === "训练中" && total > 0 && j.epoch) {
+  if ((j.step || "").indexOf("训练中") === 0 && total > 0 && j.epoch) {
     bar.style.width = Math.min(100, Math.round(j.epoch / total * 100)) + "%";
   } else if (j.status === "pending") {
     bar.style.width = "4%";
