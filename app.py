@@ -2688,6 +2688,9 @@ def _rvc_f0_of_audio(path: Path) -> dict:
 # 孙燕姿出 0.634、邓丽君 0.365（几乎不变）；真人录音素材本身只有 0.271。
 _RVC_ROUGH_FLAT_DELTA = 0.12
 _RVC_ROUGH_FLAT_RATIO = 1.35
+# 音头保留率低于这个值就判"咬字发糊"：本机实测 LA 第 5 轮 0.55（糊）、第 10 轮 0.87（不糊）、
+# 蛋卷 1.07（完全没丢）。0.75 落在两档之间，且不误伤正常的人声平滑。
+_RVC_ONSET_KEEP = 0.75
 
 
 def _rvc_roughness(path: Path, max_sec: float = 150.0) -> dict:
@@ -2740,8 +2743,34 @@ def _rvc_roughness(path: Path, max_sec: float = 150.0) -> dict:
             if int(pair.sum()) > 10 else None
         ok = (f0[:-1] > 0) & (f0[1:] > 0)
         dc = 1200.0 * np.log2(f0[1:][ok] / f0[:-1][ok]) if int(ok.sum()) else np.array([0.0])
+        # 音头密度（3–8kHz 包络的突跳次数/秒）：齿音、爆破音都住这一段。"吐字不清"不是
+        # 高频少了那么简单——LA 复盘时总高频能量只差 0.8dB，音头却从 2.27/秒 掉到 1.24/秒，
+        # 能量被摊平成"糊"，这只有 onset 计数看得见，平坦度与 e7k 都看不见。
+        # 必须换更短的窗（25.6ms）：用上面 51ms 的窗实测，5 轮那档"糊"成 0.97 倍保留率
+        # （本该 0.55），窗一长瞬态全被抹平，指标就瞎了——这是当场量出来的假阴性。
+        fl_on = min(1024, fl)
+        if fl_on != fl:
+            idx_on = np.arange(fr)[:, None] * hop + np.arange(fl_on)[None, :]
+            sp_on = np.abs(np.fft.rfft(x[idx_on] * np.hanning(fl_on), axis=1)) + 1e-12
+            fq_on = np.fft.rfftfreq(fl_on, 1.0 / sr)
+        else:
+            sp_on, fq_on = sp, fq
+        loud = rms >= rms.max() * 10 ** (-40.0 / 20.0)   # 只按响度筛，不要求"有声"：
+        # 齿音/爆破音本来就是清音（pyworld 判 f0=0），拿唱帧去筛等于把要量的东西筛没了
+        # ——实测这样 LA 第 5 轮的保留率会虚高成 0.88（该是 0.55），指标当场失明。
+        aband = (fq_on >= 3000) & (fq_on < 8000)
+        if aband.any():
+            e38 = 10.0 * np.log10((sp_on[:, aband] ** 2).sum(axis=1) + 1e-12)
+            dd = np.diff(e38)
+            rise = (dd >= 6.0) & (np.r_[dd[1:], dd[-1]] < dd)
+            pos = np.where(rise)[0]
+            onsets = int(sum(1 for i in pos if loud[i] and loud[min(i + 1, loud.size - 1)]))
+            ons = round(onsets / (x.size / sr), 2)
+        else:
+            ons = None
         return {"sung_frames": int(keep.sum()),
                 "flat8_16k": round(flatness, 4),
+                "onsets_per_sec": ons,
                 "e12k": round(float((sp[:, fq >= 12000].sum(axis=1) / tot)[keep].mean()), 5)
                         if (fq >= 12000).any() else None,
                 "e7k": round(float((sp[:, fq >= 7000].sum(axis=1) / tot)[keep].mean()), 4),
@@ -2766,9 +2795,18 @@ def _rvc_roughness_shift(a: dict, b: dict) -> dict | None:
                 "worse": True, "unmeasurable": True,
                 "why_out": str(b.get("error") or "量不出高频纹理")}
     d = round(fb - fa, 3)
-    return {"in": fa, "out": fb, "delta": d,
-            "ratio": round(fb / max(fa, 1e-6), 2),
-            "worse": d >= _RVC_ROUGH_FLAT_DELTA and fb / max(fa, 1e-6) >= _RVC_ROUGH_FLAT_RATIO}
+    out = {"in": fa, "out": fb, "delta": d,
+           "ratio": round(fb / max(fa, 1e-6), 2),
+           "worse": d >= _RVC_ROUGH_FLAT_DELTA and fb / max(fa, 1e-6) >= _RVC_ROUGH_FLAT_RATIO}
+    oa, ob = a.get("onsets_per_sec"), b.get("onsets_per_sec")
+    if oa is not None and ob is not None and oa > 0:
+        # 注意是 `oa > 0` 而不是 `if oa and ob`：0 次/秒（音头被完全抹平）恰恰是最该报的情形
+        keep_ratio = round(ob / oa, 2)
+        out.update(onset_in=oa, onset_out=ob, onset_ratio=keep_ratio,
+                   muffled=keep_ratio < _RVC_ONSET_KEEP)
+    else:
+        out.update(onset_in=oa, onset_out=ob, onset_ratio=None, muffled=False)
+    return out
 
 
 def _rvc_quality_report(src_path: Path, out_path: Path, pitch: int,
@@ -2851,6 +2889,9 @@ def _rvc_quality_report(src_path: Path, out_path: Path, pitch: int,
                             "worse": shift["worse"],
                             "unmeasurable": shift.get("unmeasurable", False),
                             "why_out": shift.get("why_out"),
+                            "onset_in": shift.get("onset_in"), "onset_out": shift.get("onset_out"),
+                            "onset_ratio": shift.get("onset_ratio"),
+                            "muffled": shift.get("muffled", False),
                             "in_detail": {k: rough_in.get(k) for k in ("e7k", "e12k", "envelope_corr")},
                             "out_detail": {k: rough_out.get(k) for k in ("e7k", "e12k", "envelope_corr")}}
         if shift.get("unmeasurable"):
@@ -2866,6 +2907,15 @@ def _rvc_quality_report(src_path: Path, out_path: Path, pitch: int,
                 f"无关（实测调这两项不动它）。责任多半在音色本身：练过头或素材带噪，"
                 f"训练卡片上用逐档试听退到中途那一档定稿；先听一下 part=vocals_original "
                 f"那条原唱人声，若本来就脏，那是源音频的账，换声换不掉")
+        if shift.get("muffled"):
+            # 与平坦度是两种病：平坦度说"谐波被换成噪声"，音头说"辅音被摊平成糊"。
+            # 实测 LA 第 5 轮 3–8k 总能量只差 0.8dB，音头却少 45%——只听平坦度会漏掉
+            # 用户说的"吐字不清"这四个字。
+            tips.append(
+                f"辅音音头被抹掉了（{shift['onset_in']}→{shift['onset_out']} 次/秒，只剩 "
+                f"{shift['onset_ratio'] * 100:.0f}%）——这就是吐字不清/发糊。换档位重定稿优先"
+                f"（本机实测：同一素材第 5 轮 0.55、第 10 轮 0.87），其次换更干净的源；"
+                f"「保护辅音 protect」实测救不回来")
     if rep["hi_drop_ratio"] >= 0.15:
         tips.append(f"高音丢声偏多（{rep['hi_drop_ratio'] * 100:.0f}%）：优先把变调算法换成 "
                     "fcpe（rmvpe 在高音区更容易判成无声），并把音高平滑半径降到 0~3")
@@ -6113,6 +6163,13 @@ def _rvc_train_worker(rid: str, name: str, epochs: int,
                                   f"{shift['in']}→{shift['out']}（{shift['ratio']} 倍）。"
                                   f"练过头或素材带噪都会这样——逐档试听退到中途那一档定稿，"
                                   f"或降轮数重训")
+                if shift.get("muffled"):
+                    # 两种病分开说：脏=谐波变噪声，糊=辅音音头没了。用户耳朵里这是两句话
+                    sc["warn"] = "；".join([x for x in (
+                        sc.get("warn"),
+                        f"自检产物咬字发糊：辅音音头 {shift['onset_in']}→{shift['onset_out']} 次/秒"
+                        f"（只剩 {shift['onset_ratio'] * 100:.0f}%）——换更练够轮的档位定稿"
+                        f"（本机实测第 5 轮最干净但最糊、第 10 轮音头回到 87%）") if x])
             job["self_check"] = sc
         except Exception as pe:
             job["self_check"] = {"ok": False, "error": str(pe)[:200]}

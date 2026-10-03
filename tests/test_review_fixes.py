@@ -2986,6 +2986,40 @@ class TestRvcRoughness(Sandbox):
         finally:
             app._rvc_roughness = saved
 
+    def _artic(self, attack_s: float):
+        """谐波人声 + 每秒一次辅音音头；attack_s 控制这个音头被摊开多长。
+
+        辅音本质是宽带瞬态，所以用噪声burst模拟；把 burst 换成 0.35 秒的慢起音，
+        总高频能量几乎不变（实测只差 0.8dB），但音头没了——这正是"吐字不清"的形状。
+        """
+        sr, sec = self.SR, 6.0
+        t = np.arange(int(sec * sr)) / sr
+        ph = 2 * np.pi * np.cumsum(220 * (1 + 0.02 * np.sin(2 * np.pi * 5 * t)) / sr)
+        base = sum(np.sin(k * ph) / k for k in range(1, 71))
+        base = base / (np.abs(base).max() + 1e-9)
+        nz = np.random.default_rng(7).standard_normal(base.size)
+        k = np.arange(base.size)
+        env = np.clip(((k % sr) / (attack_s * sr)), 0, 1) if attack_s > 0.05 \
+            else (((k % sr) < int(attack_s * sr)).astype(float))
+        return (base * (0.3 + 0.7 * env) + nz * (0.25 * env)).astype("float32") * 0.3
+
+    def test_smeared_consonant_attacks_are_called_mumbling(self):
+        """"吐字不清"是第二种病，平坦度看不见它。
+
+        10-03 实测 LA 第 5 轮：3–8kHz 总能量只比原唱人声低 0.8dB，音头却从 2.27/秒
+        掉到 1.24/秒——能量被摊平成"糊"。所以除了平坦度，还要数得出 3–8kHz 包络的突跳次数。
+        """
+        a = app._rvc_roughness(self._write("at_sharp.wav", self._artic(0.03)))
+        b = app._rvc_roughness(self._write("at_blur.wav", self._artic(0.35)))
+        self.assertGreater(a["onsets_per_sec"], 0.5, f"硬起音该数得出音头：{a}")
+        self.assertLess(b["onsets_per_sec"], a["onsets_per_sec"] * 0.5,
+                        f"把攻击摊开后音头必须掉一半以上：{a} vs {b}")
+        sh = app._rvc_roughness_shift(a, b)
+        self.assertTrue(sh.get("muffled"),
+                        f"音头只剩 {sh.get('onset_ratio')} 该判成咬字发糊（0 次/秒也算，别当缺数）")
+        self.assertFalse(app._rvc_roughness_shift(a, a).get("muffled"),
+                         "同一条音频自己比不该报警")
+
     def test_convert_quality_report_blames_the_right_layer(self):
         """换声页的体检要把"电音"这件事说清楚，并且不许把它交给检索强度/protect。"""
         src = self._write("q_in.wav", self._tone())

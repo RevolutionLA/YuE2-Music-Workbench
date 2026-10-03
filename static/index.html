@@ -5301,7 +5301,8 @@ function renderRvcTrainList() {
     const rg = j.self_check && j.self_check.roughness;
     const rgText = rg ? (rg.out === null
       ? `高频噪声化 ${rg.in}→量不出（产物连基频都没有）`
-      : `高频噪声化 ${rg.in}→${rg.out}（${rg.ratio} 倍）`) : "";
+      : `高频噪声化 ${rg.in}→${rg.out}（${rg.ratio} 倍）` + (rg.onset_ratio != null
+          ? ` · 辅音音头 ${rg.onset_in}→${rg.onset_out}/秒（剩 ${Math.round(rg.onset_ratio * 100)}%）` : "")) : "";
     const sc = j.self_check
       ? (j.self_check.ok
           ? "自检片段已生成" + (rgText ? ` · ${rgText}` : "")
