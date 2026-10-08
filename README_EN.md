@@ -130,6 +130,13 @@ Versions follow semver `vMAJOR.MINOR.PATCH`; **the single source of truth is the
 | `v1.0` | First open-source release (historical starting point, never rewritten) |
 | `v1.1.0` | Unique per-task IDs + chord-aware route pairing + three-round adversarial-review fixes, verified through an authorized restart smoke run |
 | `v1.1.1` | LAN mode made to work along the **real** path (the dsh proxy rewrites `Host` to loopback; the UI's Origin port is `:3081`) + the watchdog's early-death circuit breaker |
+| `v1.3.0` | RVC best-practice landing + review fixes (J1–J4 / K1) |
+| `v1.3.1` | Three guards for the purification chain's NaN→silence incident (cuDNN path disabled, silence check with a CPU re-run, empty-slice diagnostics) |
+| `v1.4.0` | LAN exposure: portproxy + a panel auth gate + heavy work off the event loop + two misfire fixes |
+| `v1.4.1` | RVC accompaniment follows transposition: non-octave components folded within ±6 semitones, whole octaves kept |
+| `v1.7.0` | RVC training keeps real checkpoints + an "electro/artifact" attribution metric + a retrain channel + long-run interruption / watchdog fixes (v1.5.0 and v1.6.0 shipped inside it) |
+| `v1.7.1` | Vocal checkup gains a "consonant onsets per second" axis (mumbled diction is a second disease that spectral flatness cannot see) |
+| `v2.0.0` | **Workbench split into 11 pages**: ②④ share one generation panel, ③④ share one ABC editor; new ⑦ separation page, ⑩ settings page, ⑥ voice import, ⑨ unified task view, ⑧ result back-fill; 325 tests green |
 
 **Release checklist** — skip one and you may only claim "the code changed", not "it's live":
 
