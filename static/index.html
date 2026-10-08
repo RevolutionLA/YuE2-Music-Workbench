@@ -720,6 +720,67 @@
   html.embed .dock { left: 0; }
   /* dsh 内嵌时隐藏 AI 工作台页签：dsh 本身就是 AI 工作台，再嵌会形成 工作台⇄dsh 自嵌套循环 */
   html.embed .tab[data-tab="ailab"] { display: none !important; }
+
+  /* ================= v2.0 新增（11 页重构） ================= */
+  /* 侧栏：11 项分三组。项高压到 30px、分组标题只做视觉分层不可点；
+     nav 自身可滚动（小屏窗口高度不够时不挤掉底部的健康灯）。 */
+  .side nav { margin-top: 12px; flex: 1 1 auto; min-height: 0; overflow-y: auto; scrollbar-width: none; }
+  .side nav::-webkit-scrollbar { display: none; }
+  .side nav .nav-group { font: 600 10.5px var(--sans); letter-spacing: .14em; color: #8b8171; padding: 12px 10px 3px; user-select: none; }
+  .side nav .tab { padding: 5px 10px; min-height: 30px; font-size: 12.5px; }
+
+  /* ① 的产出条：粘在视口底部，调旋钮时始终看得见 Style 与六格自检 */
+  .grid.styleout { grid-template-columns: 1fr; margin-top: 18px; }
+  /* 选择器权重必须高过 .grid > div（它是 0,1,1，带着 position:relative）：
+     只写 .out-sticky 会被那条压掉，粘底直接失效，产出条沉到页面最下面。 */
+  .grid.styleout > div.out-sticky { position: sticky; bottom: 64px; z-index: 4; }
+  #style { min-height: 92px; font: 12.5px/1.55 var(--mono); }
+
+  /* ②④ 顶部的曲风来源条：回答"这词的曲风从哪来" */
+  .srcbar { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px;
+    border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--bg-2); margin: 0 0 12px; }
+  .srcbar .sb-k { font: 600 11px var(--sans); color: var(--muted); letter-spacing: .03em; }
+  .srcbar .sb-v { font: 11.5px/1.5 var(--mono); color: var(--text); max-height: 44px; overflow: hidden; }
+  .srcbar .sb-a { display: flex; gap: 6px; flex: none; }
+
+  /* ③⑦ 的上传区：整块可点，等价于一个大号文件按钮 */
+  .drop { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+    min-height: 96px; border: 1.5px dashed var(--line); border-radius: 12px; background: var(--bg-2);
+    cursor: pointer; text-align: center; padding: 12px; transition: border-color .15s, background .15s; }
+  .drop b { font: 600 13px var(--sans); color: var(--text); }
+  .drop small { font: 11.5px var(--sans); color: var(--muted); }
+  .drop:hover, .drop.over { border-color: var(--acc); background: var(--acc-soft); }
+  .drop.on { opacity: .5; pointer-events: none; }
+  #abcSlotScore textarea.abc { min-height: 300px; }
+
+  /* ⑩ 复用 .foot-row：侧栏是深底、内容区是浅色卡，颜色必须跟着主题令牌走 */
+  main .foot-row { color: var(--muted); background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; }
+  main .foot-row .fr-label, main .foot-row .fr-value { color: var(--text); }
+  main .foot-row .mode-pill { color: var(--text); background: var(--panel-2); border-color: var(--line); box-shadow: var(--key-edge); }
+  main .foot-row:hover { color: var(--acc-text); }
+
+  /* ⑩ 系统信息键值表 */
+  .kv { display: grid; gap: 2px; }
+  .kv > div { display: flex; gap: 10px; font: 12px var(--sans); border-bottom: 1px dashed var(--line-soft); padding: 5px 0; }
+  .kv .k { color: var(--muted); flex: none; min-width: 96px; }
+  .kv .v { color: var(--text); font: 11.5px var(--mono); word-break: break-all; }
+
+  /* 任务行的"更多"控件以前只有 HTML 没有规则，靠父级 flex 兜着——补上 */
+  .h-more { display: inline-flex; align-items: center; gap: 5px; font: 11px var(--mono); color: var(--muted); }
+
+  /* ⑧ 三栏：会话侧条 / iframe / 产出回填。窄屏退回单列（iframe 那一栏优先保住高度） */
+  .ailab-grid { display: grid; grid-template-columns: 196px minmax(0, 1fr) 300px; gap: 14px; align-items: start; }
+  .ailab-side, .ailab-back { background: var(--panel) var(--grain); border: 1px solid var(--line-soft);
+    border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px 15px; }
+  @media (max-width: 1400px) { .ailab-grid { grid-template-columns: 1fr; } .ailab-side { order: 2; } .ailab-back { order: 3; } }
+  /* ② 完成后的成片出口条 */
+  .gresult { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 4px; }
+  .gresult .actions { flex-wrap: wrap; }
+  /* ⑥ 选中态：分析卡跟着哪张卡片走，得看得出"我点的是它" */
+  .m-item.on { border-color: var(--acc); background: var(--acc-soft); box-shadow: inset 0 0 0 1px var(--acc-chip-hi); }
+  /* ⑥ 音色库的两个子页签：两套音色必须分开（同名不同物） */
+  .voice-note { font: 11.5px/1.6 var(--sans); color: var(--muted); margin: 4px 0 12px; padding: 8px 10px;
+    border-left: 2px solid var(--acc); background: var(--acc-soft); border-radius: 0 8px 8px 0; }
 </style>
 </head>
 <body>
@@ -733,12 +794,21 @@
     </div>
   </div>
   <nav>
-    <button class="tab active" data-tab="compose"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 12.7V3.6l7-1.6v9.1"/><circle cx="4.2" cy="12.7" r="1.8"/><circle cx="11.2" cy="11.1" r="1.8"/></svg>创作</button>
+    <!-- v2.0：一条链路上的每个环节各占一页，三组分栏。data-tab 值即 hash 与 #tab-X 面板名 -->
+    <div class="nav-group">创作</div>
+    <button class="tab active" data-tab="style"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 5.2h11M2.5 10.8h11"/><circle cx="6" cy="5.2" r="1.7"/><circle cx="10.4" cy="10.8" r="1.7"/></svg>Style 组装</button>
+    <button class="tab" data-tab="sing"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 12.7V3.6l7-1.6v9.1"/><circle cx="4.2" cy="12.7" r="1.8"/><circle cx="11.2" cy="11.1" r="1.8"/></svg>歌词生成歌曲</button>
+    <button class="tab" data-tab="score"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="2.2" width="10" height="11.6" rx="1.6"/><path d="M5.4 5.4h5.2M5.4 8h5.2M5.4 10.6h3"/></svg>提取乐谱</button>
+    <button class="tab" data-tab="scoreSing"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="2.2" width="10" height="11.6" rx="1.6"/><path d="M5.4 5.4h5.2M5.4 8h3.4"/><circle cx="10.6" cy="10.4" r="1.5"/><path d="M12.1 10.4V7.2l1.6-.5"/></svg>乐谱生成歌曲</button>
     <button class="tab" data-tab="ailab"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l1.7 3.5 3.8.5-2.8 2.7.7 3.8L8 10.5l-3.4 1.8.7-3.8L2.5 5.8l3.8-.5z"/></svg>AI 工作台</button>
-    <button class="tab" data-tab="rvc"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 10V6a5 5 0 0 1 10 0v4"/><rect x="2" y="9.5" width="3" height="4.5" rx="1.2"/><rect x="11" y="9.5" width="3" height="4.5" rx="1.2"/></svg>歌曲换声</button>
-    <button class="tab" data-tab="rvcTrain"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5" r="2.6"/><path d="M2.8 13.5c.6-2.8 2.7-4.3 5.2-4.3s4.6 1.5 5.2 4.3"/></svg>音色制作</button>
-    <button class="tab" data-tab="voice"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="6" y="1.8" width="4" height="7.2" rx="2"/><path d="M3.8 7.6a4.2 4.2 0 0 0 8.4 0M8 11.8v2.4"/></svg>音色库<span class="badge" id="voiceCount">0</span></button>
+    <div class="nav-group">声音</div>
+    <button class="tab" data-tab="train"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5" r="2.6"/><path d="M2.8 13.5c.6-2.8 2.7-4.3 5.2-4.3s4.6 1.5 5.2 4.3"/></svg>音色制作</button>
+    <button class="tab" data-tab="voices"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="6" y="1.8" width="4" height="7.2" rx="2"/><path d="M3.8 7.6a4.2 4.2 0 0 0 8.4 0M8 11.8v2.4"/></svg>音色库<span class="badge" id="voiceCount">0</span></button>
+    <button class="tab" data-tab="convert"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 10V6a5 5 0 0 1 10 0v4"/><rect x="2" y="9.5" width="3" height="4.5" rx="1.2"/><rect x="11" y="9.5" width="3" height="4.5" rx="1.2"/></svg>歌曲换声</button>
+    <button class="tab" data-tab="sep"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="4" cy="12.2" r="1.6"/><circle cx="4" cy="3.8" r="1.6"/><path d="M5.5 4.8 13 11.4M5.5 11.2 13 4.6"/></svg>人声伴奏分离</button>
+    <div class="nav-group">系统</div>
     <button class="tab" data-tab="history"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.3 2.3"/></svg>任务管理<span class="badge" id="histCount">0</span></button>
+    <button class="tab" data-tab="settings"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.5"/><path d="M8 1.6v1.8M8 12.6v1.8M1.6 8h1.8M12.6 8h1.8M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3"/></svg>设置</button>
   </nav>
   <div class="side-foot">
     <div class="foot-row loading" id="health">
@@ -746,131 +816,59 @@
       <span class="fr-label" id="healthText">正在连接…</span>
       <span class="dot"></span>
     </div>
-    <div class="foot-row" id="modelVerifyRow" style="display:none;">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l5.5 2.4v3.6c0 3.4-2.3 5.7-5.5 6.6-3.2-.9-5.5-3.2-5.5-6.6V4.2z"/></svg>
-      <span class="fr-label" id="modelVerifyText">模型校验…</span>
-      <button id="modelRepairBtn" class="mode-pill" style="display:none;" title="只重下缺失/损坏的文件（断点续传）">修复</button>
-    </div>
-    <div class="foot-row" id="modeRow" style="display:none;">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5.5 6.5h5M5.5 9.5h3"/></svg>
-      <span class="fr-label" id="modeText">引擎模式</span>
-      <button id="modeBtn" class="mode-pill" title="切换引擎模式">切GPU</button>
-    </div>
+    <!-- v2.0：侧栏底部只留「常驻可见」的两件事——服务健康灯 + 主题切换。
+         模型校验 / 引擎模式 / 主题色搬进 ⑩ 设置页（#modelVerifyRow / #modeRow / #accentRow）。 -->
     <button class="foot-row" id="themeBtn" title="切换明暗模式">
       <svg class="ico-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="3.2"/><path d="M8 1.5v1.8M8 12.7v1.8M1.5 8h1.8M12.7 8h1.8M3.4 3.4l1.3 1.3M11.3 11.3l1.3 1.3M12.6 3.4l-1.3 1.3M4.7 11.3l-1.3 1.3"/></svg>
       <svg class="ico-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13.5 9.7A5.8 5.8 0 0 1 6.3 2.5a5.8 5.8 0 1 0 7.2 7.2z"/></svg>
       <span class="fr-label" id="themeLabel">深色模式</span>
       <span class="fr-value">点击切换</span>
     </button>
-    <div class="foot-row" id="accentRow" title="自定义主题强调色">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2.2" fill="currentColor" stroke="none"/></svg>
-      <span class="fr-label">主题色</span>
-      <input type="color" id="accentPicker" value="#b0651c" style="width:28px;height:24px;padding:0;border:1px solid rgba(255,255,255,.2);border-radius:6px;background:none;cursor:pointer;" />
-    </div>
   </div>
 </aside>
 
 <main>
   <!-- ============ 创作 ============ -->
-  <section class="panel-tab" id="tab-compose">
-    <div class="grid compose">
+  <!-- ============ ① Style 组装 ============ -->
+  <section class="panel-tab" id="tab-style">
+    <div class="grid">
 
-      <!-- 左栏＝成品区：这一栏里的内容才真正提交给模型（任务名 / Style / 歌词 / 自检 / 进度）。
-           右栏＝选项区：点一下就把结果写进左栏——"点右边、看左边"就是这么分的。
-           Style 文本框永远是最终真相，手改不会被装配台抢走（见 renderAssembler 的 dirty 逻辑）。
-           两栏各自滚动（.pane-body{overflow-y}），长表单不再把整页拖成一屏接一屏。 -->
-      <div class="pane pane-out">
-        <div class="pane-head"><b>成品 · 要提交给模型的就是这些</b><span class="hint-xs">右边点一下，这里就变</span></div>
+      <!-- 左＝曲风配方库：大类是筛选器、卡片是配方。这一栏只管"挑配方"。 -->
+      <div class="pane pane-in">
+        <div class="pane-head"><b>曲风配方库</b><span class="hint-xs">12 大类 · 106 条配方 · 点一张卡片＝填满右边六个维度</span></div>
         <div class="pane-body">
-          <label for="taskName" style="margin-top:0;">任务名称（用于历史展示与下载命名）</label>
-          <input id="taskName" placeholder="例如：稻香" maxlength="100" />
-
-          <div class="sec" style="margin-top:16px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4h12M2 8h8M2 12h10"/></svg>Style 文本</div>
-          <label for="style" style="margin-top:0;">Style / 曲风描述（英文效果最佳 · 下面文本框就是提交给模型的内容，可直接手改）</label>
-          <!-- 预算表：用户问"超出 12 个词到底会怎样，页面上怎么不吭声"。
-               12 条是官方样本均值而不是模型上限（本机 20 条短语的历史任务照样出了音频），
-               所以这里只把长度实时亮出来并分级着色，不做拦截、也不偷偷删词。 -->
-          <div class="budgetrow">
-            <span class="budget ok" id="asmBudget" title="">— 短语 · — 词 · — 字符</span>
-            <span class="hint-xs">短语 / 词 / 字符：官方样本平均 12 条、约 20 词、200 字符；本机最长的一条成功生成是 20 条短语 / 330 字符。所以这是信息预算不是上限，词越多每个词越轻，重点要素记得放前面。</span>
+          <!-- 这三层的关系以前只能靠猜（用户原话："曲风装配台要和下面的 1-6 是什么关系讲清楚"）：
+               大类是筛选器、卡片是配方、六格是配方的明细，最后才汇成 Style 那一句。
+               画成一条流程，每一级都标"点它会发生什么"，避免把"点大类"误当成"选了曲风"。 -->
+          <div class="flow" aria-label="曲风装配台的三步流程">
+            <div class="node"><b>① 大类</b><small>流行 / 摇滚…<br>只是筛选，不改曲风</small></div><span class="arw">→</span>
+            <div class="node"><b>② 曲风卡片</b><small>钢琴抒情 / 主流流行<br>点它＝采用这套配方</small></div><span class="arw">→</span>
+            <div class="node"><b>③ 六个维度</b><small>语言到节奏<br>卡片拆开的明细，可增删</small></div><span class="arw">→</span>
+            <div class="node out"><b>Style 产出（本页底部）</b><small>真正提交给模型的<br>那一句英文</small></div>
           </div>
-          <textarea id="style">English, warm piano pop, expressive female voice, acoustic piano, rounded bass and light drums, lyrical memorable melody, unhurried phrasing, 88 BPM</textarea>
-
-          <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 8.5l3.5 3.5L14 3.5"/></svg>Style 自检</div>
-          <div class="six" id="sixBox"></div>
-          <div class="lint" id="styleLint"></div>
-
-          <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10v9H3zM6 6.5h4M6 9h5"/></svg>歌词</div>
-          <label for="lyrics" style="margin-top:0;">Lyrics / 歌词（[Verse] [Chorus] 分段，每段 4–8 行）</label>
-          <textarea id="lyrics">[Verse]
-Neon fades along the lane
-Footsteps keep the time of rain
-Fold the night and leave it here
-Morning has a sky to clear
-
-[Chorus]
-Let the day come into view
-Every road begins with you
-Hold a little room for light
-We will sing beyond the night</textarea>
-          <div class="actions" style="margin-top:8px;">
-            <button class="ghost" id="lyricCheck" title="用服务端同一套校验规则检查段落标签/行数/副歌一致性">🔍 检查歌词结构</button>
-            <button class="ghost" id="lyricSkeleton" title="按 6 段最小曲式骨架补齐标签，词自己填">＋ 插入曲式骨架</button>
-            <button class="ghost" id="lyricUndo" type="button" style="display:none;">↶ 恢复上一版</button>
+          <div class="step" style="margin-top:0;"><span class="sn">①</span>选一个大类（下面的卡片会被筛成这一类）</div>
+          <div class="pfam" id="famTabs" role="tablist"></div>
+          <div class="step"><span class="sn">②</span>选一张曲风卡片 —— 一次填满右边 <span class="sn">③</span> 六个维度</div>
+          <div class="wtools">
+            <label class="srch" for="presetSearch"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.2"/><path d="M10.4 10.4L14 14"/></svg><input id="presetSearch" placeholder="搜曲风（中文或英文，如 国风 / city pop / 808）· 不填只在本大类里挑" aria-label="搜索曲风配方" /></label>
+            <button class="ghost" id="presetExpand" type="button">▾</button>
           </div>
-          <div class="lint" id="lyricLint"></div>
-          <!-- 没词的时候才出现的一行指路（有词就收起来，不常年占左栏高度）：
-               本页刻意不自造歌词模板，所以"词从哪来"必须有人回答，否则第一次用的人
-               面对一个空框就卡住了。内嵌在 dsh 壳里时「AI 工作台」页签是隐藏的
-               （壳本身就是工作台），所以两种模式下指的路不一样。 -->
-          <div class="hint-xs" id="lyricHelp" style="margin-top:6px;"></div>
-        </div>
-        <div class="pane-foot">
-          <div class="actions">
-            <button class="primary" id="go">生成歌曲</button>
-            <button class="ghost" id="queue" title="不立即生成，加入队列由后台依次执行">加入队列</button>
-            <button class="danger" id="stopGen" style="display:none">终止任务</button>
-            <button class="ghost" id="randSeed">随机种子</button>
-          </div>
-          <div class="progress" id="progress"><div id="progressBar"></div></div>
-          <div class="status" id="status">填写风格和歌词后点击生成。本机完整歌曲约需 4-8 分钟。</div>
+          <div class="pgrid2" id="presetGrid"></div>
+          <div class="hint-xs" style="margin-top:7px;">点一张曲风卡片 = 把这套配方一次性填进右边六个维度；下面任何一格都可以再单独增删。</div>
+
+          <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l5.5 2.4v3.6c0 3.4-2.3 5.7-5.5 6.6-3.2-.9-5.5-3.2-5.5-6.6V4.2z"/></svg>我的预设</div>
+          <div class="chips" id="myPresetChips" style="margin-top:6px;"></div>
         </div>
       </div>
-        <!-- 右栏＝选项区：这一栏全是"点一下就写进左边"的按钮和词表（装配台 / 候选词 /
-             歌词候选 / 模型与参数 / 乐谱）。左栏只放真正提交给模型的那几样东西，
-             用户视线落在左栏，鼠标在右栏，改哪儿都能当场在左边看到结果。
-             折叠方式重做（用户原话："这种折叠、滚动方式太呆了"）：
-             ① 删掉每格词表自己的内滚动条（.arow .chips 的 max-height 已移除），
-                展开后由这一栏唯一的那条滚动条接手，不再出现"滚动条里套滚动条"；
-             ② 候选词、曲风卡片各自配一个搜索框（中英都能搜），
-                不用一格一格点开翻；曲风卡片搜索会跨大类一起找；
-             ③ 「其余 N 个 ▾」改成实心可点的动作按钮并留在原位，展开/收起就地发生。 -->
+
+      <!-- 右＝六要素装配台：卡片拆开的明细，逐格微调实时写进底部产出。 -->
       <div class="pane pane-in">
-        <div class="pane-head"><b>选项 · 点一下写进左边</b><span class="hint-xs">曲风装配台 → 候选词 → 歌词候选 → 模型与参数</span></div>
+        <div class="pane-head"><b>六要素装配台</b><span class="hint-xs">改动实时写进下方 Style 产出</span></div>
         <div class="pane-body">
         <div class="sec" style="margin-top:0;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4h12M2 8h8M2 12h10"/></svg>曲风装配台
           <button class="ghost" id="asmReset" type="button" style="margin-left:auto; padding:3px 10px; font-size:11.5px;" title="清空装配台的所有选择，回到空白">清空</button>
         </div>
-        <!-- 这三层的关系以前只能靠猜（用户原话："曲风装配台要和下面的 1-6 是什么关系讲清楚"）：
-             大类是筛选器、卡片是配方、六格是配方的明细，最后才汇成 Style 那一句。
-             画成一条流程，每一级都标"点它会发生什么"，避免把"点大类"误当成"选了曲风"。 -->
-        <div class="flow" aria-label="曲风装配台的三步流程">
-          <div class="node"><b>① 大类</b><small>流行 / 摇滚…<br>只是筛选，不改曲风</small></div><span class="arw">→</span>
-          <div class="node"><b>② 曲风卡片</b><small>钢琴抒情 / 主流流行<br>点它＝采用这套配方</small></div><span class="arw">→</span>
-          <div class="node"><b>③ 六个维度</b><small>语言到节奏<br>卡片拆开的明细，可增删</small></div><span class="arw">→</span>
-          <div class="node out"><b>Style 文本（左栏）</b><small>真正提交给模型的<br>那一句英文</small></div>
-        </div>
-        <div class="step"><span class="sn">①</span>选一个大类（下面的卡片会被筛成这一类）</div>
-        <div class="pfam" id="famTabs" role="tablist"></div>
-        <div class="step"><span class="sn">②</span>选一张曲风卡片 —— 一次填满下面 <span class="sn">③</span> 六个维度</div>
-        <div class="wtools">
-          <label class="srch" for="presetSearch"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.2"/><path d="M10.4 10.4L14 14"/></svg><input id="presetSearch" placeholder="搜曲风（中文或英文，如 国风 / city pop / 808）· 不填只在本大类里挑" aria-label="搜索曲风配方" /></label>
-          <button class="ghost" id="presetExpand" type="button">▾</button>
-        </div>
-        <div class="pgrid2" id="presetGrid"></div>
-        <div class="hint-xs" id="presetNote" style="margin-top:7px;">点一张曲风卡片 = 把这套配方一次性填进下面六个维度；下面任何一格都可以再单独增删。</div>
-
-        <div class="step" style="margin-top:12px;"><span class="sn">③</span>六个维度逐格微调，改动实时写回左边的 Style 文本框</div>
+        <div class="step"><span class="sn">③</span>六个维度逐格微调，改动实时写进本页底部的 Style 产出</div>
         <div class="wtools">
           <label class="srch" for="wordSearch"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.2"/><path d="M10.4 10.4L14 14"/></svg><input id="wordSearch" placeholder="搜候选词（中文或英文，如 治愈 / warm / 钢琴）· 四格一起筛" aria-label="搜索候选词" /></label>
           <button class="ghost" id="wordExpand" type="button">▾</button>
@@ -915,34 +913,164 @@ We will sing beyond the night</textarea>
         </div>
 
         <div class="actions" style="margin-top:10px;">
-          <button class="ghost" id="asmApply" title="按上面六个维度重新生成 Style 文本（会覆盖左栏文本框里的手改）">↻ 重新装配到 Style</button>
+          <button class="ghost" id="asmApply" title="按上面六个维度重新生成 Style 文本（会覆盖产出框里的手改）">↻ 重新装配到 Style</button>
           <button class="ghost" id="asmSave" title="把当前这套配方存进「我的预设」，下次一键回填">💾 存为我的预设</button>
         </div>
-        <div class="chips" id="myPresetChips" style="margin-top:6px;"></div>
+        </div><!-- /pane-body -->
+      </div><!-- /装配台 -->
 
-        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10v9H3zM6 6.5h4M6 9h5"/></svg>歌词候选</div>
-        <div class="hint-xs" style="margin:-2px 0 6px;">点一张卡片 = 把这份词整首填进<b>左边</b>的歌词框（现在的内容会被替换）。</div>
-        <div class="chips" id="lyricChips"></div>
-        <!-- 最近生成过的歌词：用户要求"一点就把最近几次用的词填进来"。
-             数据源用创作历史同一个接口（/api/generate/list），只取已完成、歌词够长、
-             内容不重复的最近 10 份；换声/训练任务（kind=rvc/train）不算歌词，跳过。 -->
-        <div id="recentLyricBox" hidden>
-          <div class="step">🎧 最近生成过的歌词
-            <span class="hint-xs">点一下即填进左边的歌词框（本机已完成任务里最近 10 份，同词只留一份）</span></div>
-          <div class="chips" id="recentLyricChips"></div>
+    </div>
+
+    <!-- 产出条：① 的唯一交付物。粘在视口底部，调旋钮时始终看得见结果与自检。
+         Style 文本框是最终真相，手改不会被装配台抢走（见 styleDirty 逻辑）。 -->
+    <div class="grid styleout">
+      <div class="pane pane-out out-sticky">
+        <div class="pane-head"><b>产出 · 这段英文就是提交给模型的 Style</b><span class="hint-xs">可直接手改；手改后装配台只刷新预览，不覆盖这里</span></div>
+        <div class="pane-body">
+          <!-- 预算表：用户问"超出 12 个词到底会怎样，页面上怎么不吭声"。
+               12 条是官方样本均值而不是模型上限（本机 20 条短语的历史任务照样出了音频），
+               所以这里只把长度实时亮出来并分级着色，不做拦截、也不偷偷删词。 -->
+          <div class="budgetrow">
+            <span class="budget ok" id="asmBudget" title="">— 短语 · — 词 · — 字符</span>
+            <span class="hint-xs">短语 / 词 / 字符：官方样本平均 12 条、约 20 词、200 字符；本机最长的一条成功生成是 20 条短语 / 330 字符。所以这是信息预算不是上限，词越多每个词越轻，重点要素记得放前面。</span>
+          </div>
+          <label for="style" style="margin-top:0;">Style / 曲风描述（英文效果最佳 · 这里就是提交给模型的内容）</label>
+          <textarea id="style">English, warm piano pop, expressive female voice, acoustic piano, rounded bass and light drums, lyrical memorable melody, unhurried phrasing, 88 BPM</textarea>
+          <div class="six" id="sixBox" style="margin-top:9px;"></div>
+          <div class="lint" id="styleLint"></div>
+          <div class="hint-xs" id="presetNote" style="margin-top:7px;"></div>
+          <div class="hint-xs" id="styleRecipe" style="margin-top:6px;"></div>
+        </div>
+        <div class="pane-foot">
+          <div class="actions">
+            <button class="ghost" id="styleCopy" title="复制到剪贴板，贴去任何地方">⧉ 复制</button>
+            <button class="primary" id="toSing">→ ② 歌词生成歌曲</button>
+            <button class="ghost" id="toScoreSing">→ ④ 乐谱生成歌曲</button>
+          </div>
+          <div class="hint-xs">「发送」= 把这段 Style 与当前配方写进共享暂存，目标页立刻可见（覆盖对方原来的曲风，目标页歌词与参数不受影响）。</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ ② 歌词生成歌曲 ============ -->
+  <!-- ②④ 是同一个生成内核：#genForm 这一份 DOM 在两个页签的槽位之间搬家，
+       差异只是 data-mode（② 收起乐谱区，④ 展开）。绝不写两套生成代码。 -->
+  <section class="panel-tab" id="tab-sing" style="display:none;">
+    <div id="genSlotSing">
+    <div class="grid compose" id="genForm" data-mode="sing">
+
+      <!-- 左栏＝成品区：这一栏里的内容才真正提交给模型（任务名 / 歌词 / 进度）。
+           右栏＝选项区：点一下就把结果写进左栏——"点右边、看左边"就是这么分的。 -->
+      <div class="pane pane-out">
+        <div class="pane-head"><b>成品 · 要提交给模型的就是这些</b><span class="hint-xs">曲风来自 ①，本页只管歌词、参数与生成</span></div>
+        <div class="pane-body">
+          <!-- 来源条：用户问"这词的曲风是从哪儿来的"。把当前 Style 摊开在这里，
+               并给出两条改曲风的路（回 ① 点选 / 去 ⑧ 让 AI 写）。 -->
+          <div class="srcbar" id="styleSourceBar">
+            <div class="sb-k">曲风来源</div>
+            <div class="sb-v" id="stylePreview">（还没选曲风）</div>
+            <div class="sb-a">
+              <button class="ghost" id="editStyle" title="回到 ① Style 组装重新点选或手改">✎ 改曲风</button>
+              <button class="ghost" id="styleFromAI" title="去 ⑧ 歌词曲风 AI 工作台生成 Style">✨ AI 生成</button>
+            </div>
+          </div>
+
+          <!-- 三段关系条：只在 ④（乐谱生成歌曲）展开，说清"Style + 乐谱 + 歌词 → 歌曲"。 -->
+          <div class="flow" id="flowBar" aria-label="乐谱生成歌曲的三段输入" hidden>
+            <div class="node"><b>① Style</b><small>曲风那一句英文<br>本页顶部来源条</small></div><span class="arw">＋</span>
+            <div class="node"><b>③ 乐谱</b><small>ABC 谱决定旋律<br>右侧乐谱区</small></div><span class="arw">＋</span>
+            <div class="node"><b>歌词</b><small>填进谱子的哪个字<br>本页左栏</small></div><span class="arw">→</span>
+            <div class="node out"><b>按谱演唱的歌</b><small>模型照谱唱，<br>不自编旋律</small></div>
+          </div>
+
+          <label for="taskName">任务名称（用于历史展示与下载命名）</label>
+          <input id="taskName" placeholder="例如：稻香" maxlength="100" />
+
+          <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10v9H3zM6 6.5h4M6 9h5"/></svg>歌词</div>
+          <label for="lyrics" style="margin-top:0;">Lyrics / 歌词（[Verse] [Chorus] 分段，每段 4–8 行）</label>
+          <textarea id="lyrics">[Verse]
+Neon fades along the lane
+Footsteps keep the time of rain
+Fold the night and leave it here
+Morning has a sky to clear
+
+[Chorus]
+Let the day come into view
+Every road begins with you
+Hold a little room for light
+We will sing beyond the night</textarea>
+          <div class="actions" style="margin-top:8px;">
+            <button class="ghost" id="lyricCheck" title="用服务端同一套校验规则检查段落标签/行数/副歌一致性">🔍 检查歌词结构</button>
+            <button class="ghost" id="lyricSkeleton" title="按 6 段最小曲式骨架补齐标签，词自己填">＋ 插入曲式骨架</button>
+            <button class="ghost" id="lyricUndo" type="button" style="display:none;">↶ 恢复上一版</button>
+          </div>
+          <div class="lint" id="lyricLint"></div>
+          <!-- 没词的时候才出现的一行指路（有词就收起来，不常年占左栏高度）：
+               本页刻意不自造歌词模板，所以"词从哪来"必须有人回答，否则第一次用的人
+               面对一个空框就卡住了。内嵌在 dsh 壳里时「AI 工作台」页签是隐藏的
+               （壳本身就是工作台），所以两种模式下指的路不一样。 -->
+          <div class="hint-xs" id="lyricHelp" style="margin-top:6px;"></div>
+          <!-- 填词助手：只在 ④ 出现——歌词行数与谱子小节数对不上时提前警告，
+               不等生成四五分钟后才发现唱不下。 -->
+          <div class="lint" id="lyricBarWarn" hidden></div>
+
+          <!-- 结果卡：完成后给五个出口。以前出成片只剩底部播放坞一个口，
+               想要 LRC / eLRC / 送去换声都得先绕去 ⑨ 任务管理把这一条找回来。 -->
+          <div id="genResult" class="gresult" hidden>
+            <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 8.5l3.5 3.5L14 3.5"/></svg>成片出口<span class="m-count" id="genResultId"></span></div>
+            <div class="actions" id="genResultActs"></div>
+            <div class="lint" id="genResultNote"></div>
+          </div>
+        </div>
+        <div class="pane-foot">
+          <div class="actions">
+            <button class="primary" id="go">生成歌曲</button>
+            <button class="ghost" id="queue" title="不立即生成，加入队列由后台依次执行">加入队列</button>
+            <button class="danger" id="stopGen" style="display:none">终止任务</button>
+            <button class="ghost" id="randSeed">随机种子</button>
+          </div>
+          <div class="progress" id="progress"><div id="progressBar"></div></div>
+          <div class="status" id="status">填写风格和歌词后点击生成。本机完整歌曲约需 4-8 分钟。</div>
+        </div>
+      </div>
+
+      <!-- 右栏＝选项区：乐谱（仅④）→ 模型与参数 → 批次 → 歌词候选。
+           折叠方式重做（用户原话："这种折叠、滚动方式太呆了"）：
+           ① 删掉每格词表自己的内滚动条，展开后由这一栏唯一的那条滚动条接手；
+           ② 候选词各自配搜索框（中英都能搜）；
+           ③ 「其余 N 个 ▾」改成实心可点的动作按钮并留在原位。 -->
+      <div class="pane pane-in">
+        <div class="pane-head"><b>选项 · 点一下写进左边</b><span class="hint-xs">乐谱 → 模型与参数 → 批次 → 歌词候选</span></div>
+        <div class="pane-body">
+
+        <!-- 乐谱区：④ 的主位（data-mode="score" 时展开），② 里整块收起 -->
+        <div id="scoreSection" hidden>
+          <div class="sec" style="margin-top:0;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h7"/></svg>乐谱（ABC）<span class="m-count" id="scoreModeTag"></span></div>
+          <div class="pgrid" style="grid-template-columns:1fr 1fr;">
+            <div><label for="scoreSrc">乐谱来源</label>
+              <select id="scoreSrc">
+                <option value="keep">用当前乐谱框里的谱（从 ③ 带过来的就是它）</option>
+                <option value="lib">从乐谱库里挑一份</option>
+                <option value="manual">自己粘贴 / 手填</option>
+              </select>
+            </div>
+            <div id="scoreLibWrap" hidden><label for="scorePick">乐谱库</label><select id="scorePick"></select></div>
+          </div>
+          <div id="abcSlotSing"></div>
+          <div class="actions" style="margin-top:8px;">
+            <button class="ghost" id="scoreLoadBtn" hidden>↩ 载入所选乐谱</button>
+            <button class="ghost" id="scoreFromAudio" title="上传一首歌，用 SheetSage2 转出乐谱（在 ③ 页）">🎸 从参考歌曲提取</button>
+            <button class="ghost" id="scoreClear" title="清空乐谱：本页就退回 ② 的自由发挥模式">✕ 不用谱，让模型自己编</button>
+          </div>
+          <div class="hint-xs" style="margin-top:6px;">填了谱就按谱唱：无和弦记号自动走 <b>melody</b>、有和弦自动走 <b>full</b>，档位选错（含选 off）提交时会被纠正。清空乐谱＝回到「模型自己规划旋律」。</div>
         </div>
 
-        <!-- 模型与参数 / 乐谱 / 高级采样：默认收起。
-             第一次用的人必经之路只有"点卡片 → 微调六格 → 生成"，这三块是给第二十三次
-             使用准备的，以前却和必经之路平铺在同一条滚动里，把右栏顶到 3.4 屏。
-             收起时标题右侧直接显示当前摘要（档位 · 有无谱 · seed · 首数），
-             所以"折叠"不会让人看不见自己填了什么。 -->
         <details class="fold" id="paramFold">
           <summary class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 5h3l1.5-2h3L11 5h3v8H2zM8 10.2a1.8 1.8 0 1 0 0-3.6 1.8 1.8 0 0 0 0 3.6z"/></svg>模型与参数<span class="fold-sum" id="paramSum"></span></summary>
           <div class="fold-body">
-        <label for="modelSel">模型</label>
-        <select id="modelSel" class="model-select"></select>
-        <div class="hint-xs" id="modelHint"></div>
+        <div class="hint-xs" style="margin-top:0;">当前模型：<b id="modelNow">—</b>
+          <button class="ghost" id="toSettingsModel" style="margin-left:8px;padding:2px 10px;font-size:11.5px;" title="量化档切换在 ⑩ 设置页，会重启音频引擎">去 ⑩ 切换</button></div>
         <div class="pgrid" style="margin-top:10px;">
           <div><label for="cot">规划 CoT</label>
             <select id="cot">
@@ -954,23 +1082,7 @@ We will sing beyond the night</textarea>
           <div><label for="seed">Seed（-1 随机）</label><input id="seed" type="number" value="-1" /></div>
           <div><label for="steps">NAR Steps</label><input id="steps" type="number" value="32" min="1" /></div>
           <div><label for="cfg">CFG Scale</label><input id="cfg" type="number" step="0.01" value="1.0" min="0" max="20" /></div>
-          <div><label for="genCount">生成次数</label><input id="genCount" type="number" value="1" min="1" max="20" /></div>
         </div>
-
-        <label for="abc">ABC 乐谱（填了=默认按这份谱生成；留空=由模型自己规划乐谱）</label>
-        <textarea id="abc" class="abc" placeholder="X:1&#10;M:4/4&#10;K:C&#10;V:Vocal&#10;C2 D2 E2 F2 |"></textarea>
-        <div class="hint-xs" id="abcAnalysis" style="margin-top:6px;"></div>
-        <div class="actions" style="margin-top:6px;">
-          <button class="ghost" id="extractAbc">🎸 从参考歌曲提取乐谱</button>
-          <input type="file" id="abcAudio" accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" style="display:none;">
-          <span class="status" id="abcStatus" style="padding:0;"></span>
-        </div>
-        <label for="abcChords" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:6px;">
-          <input id="abcChords" type="checkbox" />
-          <span>提取时带和弦（出「旋律+和弦」完整谱）</span>
-        </label>
-        <div class="hint-xs">不勾 = 纯旋律谱（配 melody 路线，伴奏交给模型，翻唱常用）；勾选 = 谱里额外写进 <code>"C"</code>、<code>"Am7"</code> 这类和弦记号（配 full 路线，和声也锚住）。和弦本来就会被识别，勾选几乎不多花时间；但个别和弦性质不被记号表认得时整份谱会提取失败，失败就取消勾选重提一次。</div>
-        <div id="scoreList" style="margin-top:8px;"></div>
 
         <details style="margin-top:12px;">
           <summary>高级采样参数</summary>
@@ -996,26 +1108,178 @@ We will sing beyond the night</textarea>
           </div>
         </details>
           </div><!-- /fold-body -->
-        </details><!-- /paramFold（模型与参数：默认收起，摘要写在标题上） -->
+        </details><!-- /paramFold -->
+
+        <details class="fold" id="batchFold">
+          <summary class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 4.5h10M3 8h10M3 11.5h6"/></svg>批次<span class="fold-sum" id="batchSum"></span></summary>
+          <div class="fold-body">
+            <label for="genCount">连发首数（1-20）</label>
+            <input id="genCount" type="number" value="1" min="1" max="20" />
+            <div class="hint-xs" style="margin-top:8px;">两种出多首的办法不一样：<br>
+              <b>连发 N 首</b> = 一次请求里出 N 个候选（走 /api/generate/start 的 count），同一串行队列连着跑，中途可终止；<br>
+              <b>加入队列</b> = 把这一组参数交给后台批量队列（走 /api/batch/start），可在 ⑨ 任务管理里看到位次、一键继续，逐条完成。<br>
+              要挑最佳take用连发；要挂着跑一批不同参数用队列。</div>
+            <div class="hint-xs" id="batchMini" style="margin-top:6px;"></div>
+          </div>
+        </details>
+
+        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10v9H3zM6 6.5h4M6 9h5"/></svg>歌词候选</div>
+        <div class="hint-xs" style="margin:-2px 0 6px;">点一张卡片 = 把这份词整首填进<b>左边</b>的歌词框（现在的内容会被替换）。</div>
+        <div class="chips" id="lyricChips"></div>
+        <!-- 最近生成过的歌词：用户要求"一点就把最近几次用的词填进来"。
+             数据源用生成历史同一个接口（/api/generate/list），只取已完成、歌词够长、
+             内容不重复的最近 10 份；换声/训练任务（kind=rvc/train）不算歌词，跳过。 -->
+        <div id="recentLyricBox" hidden>
+          <div class="step">🎧 最近生成过的歌词
+            <span class="hint-xs">点一下即填进左边的歌词框（本机已完成任务里最近 10 份，同词只留一份）</span></div>
+          <div class="chips" id="recentLyricChips"></div>
+        </div>
         </div><!-- /pane-body -->
       </div><!-- /pane-in（右栏＝选项区） -->
+
+    </div><!-- /#genForm -->
+    </div><!-- /#genSlotSing -->
+  </section>
+
+  <!-- ============ ③ 参考歌曲提取乐谱 ============ -->
+  <section class="panel-tab" id="tab-score" style="display:none;">
+    <div class="grid compose">
+
+      <!-- 左＝上传与乐谱库。转谱有服务端串行锁，同一时刻只能有一份在跑。 -->
+      <div class="pane pane-in">
+        <div class="pane-head"><b>① 上传参考歌曲</b><span class="hint-xs">SheetSage2 转谱 · 3 分钟歌约 1-2 分钟</span></div>
+        <div class="pane-body">
+          <div class="drop" id="abcDrop" tabindex="0" role="button" aria-label="选择或拖入音频文件">
+            <b>点选或拖入音频文件</b>
+            <small>wav / mp3 / flac / m4a / ogg / opus / aac / wma — 选完即提交转谱</small>
+          </div>
+          <input type="file" id="abcAudio" accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" style="display:none;">
+          <div class="actions" style="margin-top:10px;">
+            <button class="primary" id="extractAbc">🎸 选择歌曲开始转谱</button>
+            <span class="status" id="abcStatus" style="padding:0;"></span>
+          </div>
+          <label for="abcChords" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px;">
+            <input id="abcChords" type="checkbox" />
+            <span>提取时带和弦（出「旋律+和弦」完整谱）</span>
+          </label>
+          <div class="hint-xs">不勾 = 纯旋律谱（配 melody 路线，伴奏交给模型，翻唱常用）；勾选 = 谱里额外写进 <code>"C"</code>、<code>"Am7"</code> 这类和弦记号（配 full 路线，和声也锚住）。和弦本来就会被识别，勾选几乎不多花时间；但个别和弦性质不被记号表认得时整份谱会提取失败，失败就取消勾选重提一次。</div>
+          <div class="actions" id="abcRetryWrap" style="margin-top:8px;" hidden>
+            <button class="ghost" id="abcRetryPure" title="上一次带和弦提取失败时用这个：取消勾选并重新提交">↻ 改用纯旋律重试</button>
+          </div>
+          <div class="hint-xs" style="margin-top:10px;">⚠ 转谱在服务端串行执行：转谱期间再提交一份会互相覆盖输出目录，所以提交后本页会锁住上传，等这一份出结果为止。</div>
+
+          <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h7"/></svg>乐谱库<span class="m-count">已保存的谱（点一行回填到右边）</span></div>
+          <div id="scoreList"></div>
+        </div>
+      </div>
+
+      <!-- 右＝乐谱本体：#abcBlock 这一份 DOM 在 ③④ 之间搬家，两页共用同一个谱框与同一套分析。 -->
+      <div class="pane pane-out">
+        <div class="pane-head"><b>② 乐谱（ABC 源码，可直接改）</b><span class="hint-xs">改完 0.5 秒自动重分析</span></div>
+        <div class="pane-body">
+          <!-- 共用的 ABC 谱框：③ 与 ④ 之间搬家（同一时刻只在一个面板里可见） -->
+          <div id="abcSlotScore"><div id="abcBlock">
+            <label for="abc" style="margin-top:0;">ABC 乐谱（填了=按这份谱生成；留空=由模型自己规划乐谱）</label>
+            <textarea id="abc" class="abc" placeholder="X:1&#10;M:4/4&#10;K:C&#10;V:Vocal&#10;C2 D2 E2 F2 |"></textarea>
+            <div class="hint-xs" id="abcAnalysis" style="margin-top:6px;"></div>
+          </div></div>
+          <div class="actions" style="margin-top:10px;">
+            <button class="ghost" id="abcCopy" title="复制这份 ABC 源码">⧉ 复制谱面</button>
+            <button class="ghost" id="abcExportMid" title="下载这份谱的 MIDI（转谱时已随任务归档）">⬇ MIDI</button>
+            <button class="ghost" id="abcExportAbc" title="下载 .abc 文本">⬇ ABC</button>
+          </div>
+          <div class="lint" id="abcIoStatus"></div>
+        </div>
+        <div class="pane-foot">
+          <div class="actions">
+            <button class="primary" id="toScoreSing2">→ ④ 用这份谱生成歌曲</button>
+          </div>
+          <div class="hint-xs">「→④」= 把这份谱与当前 Style 送进乐谱生成歌曲页；谱框是同一个，回来接着改不丢。</div>
+        </div>
+      </div>
 
     </div>
   </section>
 
-  <!-- ============ 音色库 ============ -->
-  <section class="panel-tab" id="tab-voice" style="display:none;">
-    <div class="grid">
+  <!-- ============ ④ 乐谱生成歌曲 ============ -->
+  <section class="panel-tab" id="tab-scoreSing" style="display:none;">
+    <div id="genSlotScore"></div>
+  </section>
 
-      <!-- 左栏 = YuE2 参考音色这一条线（列表 + 新增表单：表单产出就是左边的列表项） -->
+  <!-- ============ ⑥ 音色库 ============ -->
+  <section class="panel-tab" id="tab-voices" style="display:none;">
+    <!-- 两套音色同名不同物，以前平铺在同一页左右两栏，用户会把 .pth 存进参考库、
+         或把参考音频当 RVC 模型用。现在拆成两个子页签，各自开头一句话讲清用途。 -->
+    <div class="subtabs" id="voiceTabs">
+      <button class="subtab active" data-vtab="rvc" type="button">🎙 换声音色（RVC）<span id="voiceCountRvc"></span></button>
+      <button class="subtab" data-vtab="ref" type="button">🎧 参考音色（YuE2 翻唱）<span id="voiceCountRef"></span></button>
+    </div>
+
+    <div class="grid" id="voicePaneRvc">
+
+      <!-- 左：模型列表 + 导入。列表卡片保留原有 5 个操作（体检/建档/融合/重命名/删除）。 -->
       <div>
-        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="6" y="1.8" width="4" height="7.2" rx="2"/><path d="M3.8 7.6a4.2 4.2 0 0 0 8.4 0M8 11.8v2.4"/></svg>本地音色库</div>
+        <div class="voice-note">这里是<b>换声用的 .pth + 检索索引</b>：歌曲生成好了只想把唱腔换成某个音色，用它（⑪ 歌曲换声）。训练产出与外部下载导入的都在这。</div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 10V6a5 5 0 0 1 10 0v4"/><rect x="2" y="9.5" width="3" height="4.5" rx="1.2"/><rect x="11" y="9.5" width="3" height="4.5" rx="1.2"/></svg>RVC 音色模型<span class="m-count" id="rvcModelCount"></span>
+          <input id="rvcModelFilter" class="m-filter" type="search" placeholder="按名称筛选…" aria-label="按名称筛选音色" />
+        </div>
+        <div class="model-list" id="rvcModelList">
+          <div class="empty">暂无音色模型。可在「⑤ 音色制作」页训练，或点下面的「导入音色文件」装入外部 .pth。</div>
+        </div>
+        <div class="actions" style="margin-top:10px;">
+          <button class="ghost" id="rvcImportBtn" title="上传外部 .pth（可再选一份 .index 检索索引）；入库后必须建档音域才给得出变调建议">⬆ 导入音色文件（.pth）</button>
+          <input type="file" id="rvcImportPth" accept=".pth" style="display:none;">
+          <input type="file" id="rvcImportIndex" accept=".index" style="display:none;">
+          <button class="ghost" id="rvcImportRefBtn" title="该歌手本人 10~30 秒干声：外部音色靠它量出音域，不带就没有变调建议">＋ 建档参考音频</button>
+          <input type="file" id="rvcImportRef" accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" style="display:none;">
+        </div>
+        <div id="rvcImportPick" class="hint-xs" style="margin-top:6px;" hidden></div>
+        <div class="actions" style="margin-top:6px;">
+          <button class="primary" id="rvcImportGo" style="display:none;">提交导入</button>
+          <button class="ghost" id="rvcImportCancel" style="display:none;">取消</button>
+        </div>
+        <div class="status" id="rvcImportStatus"></div>
+        <div class="hint" style="margin-top:8px;">重命名后索引文件保留；删除会同时清理对应的音色索引（只删精确属于自己的那几枚，不抢邻居同名前缀）。正在被换声任务使用的音色不能删除或重命名。</div>
+        <details style="margin-top:12px;">
+          <summary>想要"那个人的嗓子"该走哪条路（三条路线的区别）</summary>
+          <div class="hint">
+            ① <b>换声（RVC）</b>：歌已经生成好了、只想把唱腔换成某个音色 → 去「⑪ 歌曲换声」。伴奏可以原样留住，这是唯一能<b>保留原旋律与原编曲</b>的路线。<br>
+            ② <b>翻唱（YuE2）</b>：上传参考音频 →「识别为歌词」→ ② 歌词生成歌曲 cot 选 <b>melody</b> 重新生成 → 同旋律、<b>全新编曲</b>、<b>不保留原歌手音色</b>。<br>
+            ③ <b>自制音色（训练）</b>：手上没有现成模型、要用某人/自己的嗓子反复出片 → 去「⑤ 音色制作」用干声样本训练，练完自动进⑪的音色下拉框。
+          </div>
+        </details>
+      </div>
+
+      <!-- 右：选中音色的分析卡。以前这些数字分散在「体检」弹窗与训练日志里，
+           换声页要判断"这个嗓子能唱多高"得翻两个地方，现在一页看全。 -->
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l5.5 2.4v3.6c0 3.4-2.3 5.7-5.5 6.6-3.2-.9-5.5-3.2-5.5-6.6V4.2z"/></svg>音色文件分析<span class="m-count" id="voiceInfoName">（点左边任一音色）</span></div>
+        <div id="voiceInfo" class="row-list cap">
+          <div class="empty">左边点一个音色，这里展开它的体检报告、音域档案、安全变调区间、索引状态与来源。</div>
+        </div>
+        <div class="actions" style="margin-top:10px;">
+          <button class="ghost" id="voiceInfoRecheck" disabled>↻ 重新体检（不吃缓存）</button>
+          <button class="ghost" id="voiceInfoGoConvert" disabled>→ ⑪ 用这个音色换声</button>
+        </div>
+        <div class="hint-xs" style="margin-top:8px;">外部下载的 .pth 没有训练实测音域，不建档就没有变调建议（页面会直说"无音域"而不是猜一个）。音域档案的单位是 Hz；<b>不要把 RVC 索引里的 2a_f0 当 Hz 读</b>——那是量化后的 mel bin，读错会让建议飞两个八度。</div>
+      </div>
+
+    </div>
+
+    <div class="grid" id="voicePaneRef" hidden>
+
+      <!-- YuE2 参考音色：列表 + 新增表单（表单产出就是下面的列表项） -->
+      <div>
+        <div class="voice-note">这里是<b>YuE2 用的参考音频 + 参考文本</b>（翻唱路线：识别成歌词再重新演绎）。它不是 RVC 模型，放进换声页的音色下拉里不会生效。</div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="6" y="1.8" width="4" height="7.2" rx="2"/><path d="M3.8 7.6a4.2 4.2 0 0 0 8.4 0M8 11.8v2.4"/></svg>参考音色<span class="m-count" id="voiceRefCount"></span></div>
         <div class="row-list cap" id="voiceGrid">
           <div class="empty">暂无保存的音色。</div>
         </div>
+      </div>
 
-        <div class="sec" style="margin-top:16px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 3v10M3 8h10"/></svg>新增音色</div>
-        <label for="vName">音色名称</label>
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 3v10M3 8h10"/></svg>新增参考音色</div>
+        <label for="vName" style="margin-top:0;">音色名称</label>
         <input id="vName" placeholder="例如：粤语主播 / 叶奈法" />
         <label for="vRefText">参考文本（音频里说的话）</label>
         <textarea id="vRefText" placeholder="音频里说的内容…"></textarea>
@@ -1028,42 +1292,13 @@ We will sing beyond the night</textarea>
         </div>
         <div class="status" id="vStatus">上传一段人声参考，可保存到音色库；或识别为歌词做翻唱。</div>
         <audio id="vPreview" controls preload="metadata" style="margin-top:10px; display:none;"></audio>
-        <div class="hint">翻唱工作流：上传参考音频 → 识别为歌词 → 填入创作页 → cot 选 melody 生成。<b>产出为同旋律新编曲，不保留原歌手音色</b>（YuE2 官方路线）。</div>
-      </div>
-
-      <!-- 右栏 = RVC 换声音色这一条线（列表 + 两条路线说明）。
-           两个列表各自封顶滚动：模型会越装越多，以前整列展开时左栏 1800px、右栏 470px，
-           页面下半截永远空着。 -->
-      <div>
-        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 10V6a5 5 0 0 1 10 0v4"/><rect x="2" y="9.5" width="3" height="4.5" rx="1.2"/><rect x="11" y="9.5" width="3" height="4.5" rx="1.2"/></svg>RVC 音色模型<span class="m-count" id="rvcModelCount"></span>
-          <input id="rvcModelFilter" class="m-filter" type="search" placeholder="按名称筛选…" aria-label="按名称筛选音色" />
-        </div>
-        <div class="model-list" id="rvcModelList">
-          <div class="empty">暂无音色模型。</div>
-        </div>
-        <div class="hint" style="margin-top:8px;">重命名后索引文件保留；删除会同时清理对应的音色索引。正在被换声任务使用的音色不能删除或重命名。</div>
-        <details style="margin-top:12px;">
-          <summary>想要"那个人的嗓子"该走哪条路（三条路线的区别）</summary>
-          <div class="hint">
-            ① <b>换声（RVC）</b>：歌已经生成好了、只想把唱腔换成某个音色 → 去「歌曲换声」页。伴奏可以原样留住，这是唯一能<b>保留原旋律与原编曲</b>的路线。<br>
-            ② <b>翻唱（YuE2）</b>：上传参考音频 →「识别为歌词」→ 创作页 cot 选 <b>melody</b> 重新生成 → 同旋律、<b>全新编曲</b>、<b>不保留原歌手音色</b>。<br>
-            ③ <b>自制音色（训练）</b>：手上没有现成模型、要用某人/自己的嗓子反复出片 → 去「音色制作」页用干声样本训练，练完自动进①的音色下拉框。
-          </div>
-        </details>
-        <details style="margin-top:8px;">
-          <summary>「本地音色库」和「RVC 音色模型」为什么是两个列表</summary>
-          <div class="hint">
-            「本地音色库」= <b>YuE2 用的参考音频</b>（翻唱/参考音色，存的是音频 + 参考文本）；<br>
-            「RVC 音色模型」= <b>换声用的 .pth + 索引</b>（训练产出与下载导入的都在这）。<br>
-            同名不同物，别混：把 .pth 存进左边、或把参考音频当 RVC 模型用，都不会生效。
-          </div>
-        </details>
+        <div class="hint">翻唱工作流：上传参考音频 → 识别为歌词 → 填进 ② 歌词生成歌曲 → cot 选 melody 生成。<b>产出为同旋律新编曲，不保留原歌手音色</b>（YuE2 官方路线）。YuE2 引擎不支持拿参考音频直接控制音色（ICL 无此参数），这条是唯一可行路径。</div>
       </div>
 
     </div>
   </section>
 
-  <!-- ============ 历史 ============ -->
+  <!-- ============ ⑨ 任务管理 ============ -->
   <section class="panel-tab" id="tab-history" style="display:none;">
     <div class="head-row">
       <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.3 2.3"/></svg>生成历史（服务端保留最近 1000 条，含音频）</div>
@@ -1089,6 +1324,8 @@ We will sing beyond the night</textarea>
         <button class="subtab active" data-kind="all">🎵 歌曲</button>
         <button class="subtab" data-kind="rvc">🎙 换声</button>
         <button class="subtab" data-kind="train">🎨 音色制作</button>
+        <button class="subtab" data-kind="score">🎼 乐谱提取</button>
+        <button class="subtab" data-kind="separate">✂ 分离</button>
       </div>
       <input id="histSearch" placeholder="搜任务名 / 曲风 / 任务 ID" style="max-width:220px;padding:5px 10px;font-size:12px;" />
       <button class="ghost" id="batchResume" style="display:none; padding:3px 12px; font-size:12px;" title="把意外终止/已停止/失败的队列任务重新入队继续执行">▶ 一键继续</button>
@@ -1100,20 +1337,46 @@ We will sing beyond the night</textarea>
   </section>
 
 
-  <!-- ============ AI 工作台 ============ -->
+  <!-- ============ ⑧ 歌词曲风 AI 工作台 ============ -->
   <section class="panel-tab" id="tab-ailab" style="display:none;">
     <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l1.7 3.5 3.8.5-2.8 2.7.7 3.8L8 10.5l-3.4 1.8.7-3.8L2.5 5.8l3.8-.5z"/></svg>AI 音乐制作人
       <button class="ghost" id="aiReload" style="margin-left:auto;">↻ 重新加载</button>
     </div>
-    <div class="ai-frame-wrap">
-      <iframe id="aiFrame" title="DeepSeek Harness AI 工作台" allow="clipboard-write; clipboard-read" style="display:none;"></iframe>
-      <div class="empty" id="aiFrameLoading">AI 工作台加载中（首次需启动 dsh 内核，约 10-30 秒）…</div>
-      <div class="empty" id="aiFrameError" style="display:none;">加载失败：点击「↻ 重新加载」重试，或查看 dsh-plugin/_dsh_web.log。</div>
+    <div class="ailab-grid">
+      <div class="ailab-side">
+        <div class="sec" style="margin-top:0;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10v7H6l-3 3z"/></svg>会话<span class="m-count" id="aiSessCount"></span></div>
+        <div class="row-list cap" id="aiSessList"><div class="empty">加载中…</div></div>
+        <div class="actions" style="margin-top:8px;">
+          <button class="ghost" id="aiSessReload" style="padding:3px 10px;font-size:11.5px;">↻ 刷新会话</button>
+        </div>
+        <div class="hint-xs" style="margin-top:6px;">这里只读：点开一条是把它最后交给创作链的产出取回来，对话本体仍在右边的工作台里进行（本期不做原生对话）。</div>
+      </div>
+      <div class="ai-frame-wrap">
+        <iframe id="aiFrame" title="DeepSeek Harness AI 工作台" allow="clipboard-write; clipboard-read" style="display:none;"></iframe>
+        <div class="empty" id="aiFrameLoading">AI 工作台加载中（首次需启动 dsh 内核，约 10-30 秒）…</div>
+        <div class="empty" id="aiFrameError" style="display:none;">加载失败：点击「↻ 重新加载」重试，或查看 dsh-plugin/_dsh_web.log。</div>
+      </div>
+      <div class="ailab-back">
+        <div class="sec" style="margin-top:0;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 12.5V3.5M8 3.5 4.5 7M8 3.5 11.5 7"/></svg>产出回填</div>
+        <label for="aiFeedPick" style="margin-top:0;">取哪一条产出</label>
+        <select id="aiFeedPick"></select>
+        <label for="aiFeedStyle">Style（填进 ① 的产出框）</label>
+        <textarea id="aiFeedStyle" class="abc" placeholder="（这条产出里没有 Style）"></textarea>
+        <label for="aiFeedLyrics">歌词</label>
+        <textarea id="aiFeedLyrics" placeholder="（这条产出里没有歌词）"></textarea>
+        <div class="lint" id="aiFeedLint"></div>
+        <div class="actions" style="margin-top:8px;">
+          <button class="ghost" id="aiFeedCheck">🔍 校验歌词</button>
+          <button class="ghost" id="aiFeedTo1">→ ① Style</button>
+          <button class="primary" id="aiFeedTo2">→ ② 歌词生成</button>
+        </div>
+        <div class="hint-xs" style="margin-top:6px;">回填前可以自己改：这里写进的是 ① 的 Style 框与 ② 的歌词框，改曲风重跑、撤销上一版都在原页继续可用。</div>
+      </div>
     </div>
   </section>
 
-  <!-- ============ 换声（RVC） ============ -->
-  <section class="panel-tab" id="tab-rvc" style="display:none;">
+  <!-- ============ ⑪ 歌曲换声（RVC） ============ -->
+  <section class="panel-tab" id="tab-convert" style="display:none;">
     <div class="grid">
 
       <!-- 左栏：源头与音高——「用谁的嗓子、抬几个半音」。这四件事互相依赖（音色决定舒适音域、
@@ -1124,6 +1387,10 @@ We will sing beyond the night</textarea>
         <input id="rvcTaskName" placeholder="例如：稻香·女声版" maxlength="100" />
         <label for="rvcFile" style="margin-top:10px;">选择音频文件（wav / mp3 / flac / m4a…，如生成历史里的歌曲）</label>
         <input id="rvcFile" type="file" accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" />
+        <div class="actions" style="margin-top:6px;">
+          <button class="ghost" id="rvcFromSep" title="直接从 ⑦ 的分离产物里挑一份当音源，不用再下载回来重传">🎤 从 ⑦ 分离结果导入音源</button>
+        </div>
+        <div class="hint-xs" id="rvcFileNow"></div>
         <div class="pgrid" style="margin-top:10px;">
           <div><label for="rvcModel">音色模型</label><select id="rvcModel"></select></div>
           <div><label for="rvcPitch">变调（半音）</label><input id="rvcPitch" type="number" value="0" min="-24" max="24" /></div>
@@ -1221,6 +1488,7 @@ We will sing beyond the night</textarea>
         </div>
         <div class="progress" id="rvcProgress"><div id="rvcProgressBar"></div></div>
         <div class="status" id="rvcStatus">选择文件与音色后点击「开始换声」。转换在服务端进行，可离开页面；连点不会并行，会排成队一次只跑一个。</div>
+        <div class="hint-xs" style="margin-top:4px;">⚠ 诚实说明：排队位次存在网关内存里，<b>网关重启后尚未开跑的排队条目会丢</b>（已完成的产物落盘不受影响）。本页不承诺重启后继续排队，需要重跑请到 ⑨ 任务管理里看哪条没跑。</div>
 
         <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 8.5l3.5 3.5L14 3.5"/></svg>转换结果</div>
         <div class="row-list cap" id="rvcList">
@@ -1236,8 +1504,8 @@ We will sing beyond the night</textarea>
     </div>
   </section>
 
-  <!-- ============ 音色制作 ============ -->
-  <section class="panel-tab" id="tab-rvcTrain" style="display:none;">
+  <!-- ============ ⑤ 音色制作 ============ -->
+  <section class="panel-tab" id="tab-train" style="display:none;">
     <div class="grid">
 
       <!-- 左栏：素材侧——名字、样本、分离与净化、轮数。录音指南留在这一栏，
@@ -1248,6 +1516,10 @@ We will sing beyond the night</textarea>
         <input id="rvcTrainName" placeholder="例如：myvoice" />
         <label for="rvcTrainFiles" style="margin-top:10px;">人声样本（可多选；干声最佳，完整歌曲也可以——勾选下方自动分离即可）</label>
         <input id="rvcTrainFiles" type="file" multiple accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" />
+        <div class="actions" style="margin-top:6px;">
+          <button class="ghost" id="trainFromSep" title="⑦ 的「人声（去和声）」就是理想训练素材：直接追加进上面的样本框，不必重传">🎤 从 ⑦ 导入分离好的人声</button>
+        </div>
+        <div class="hint-xs" id="rvcTrainFilesNow"></div>
         <div style="margin-top:8px;">
           <label for="rvcTrainSep" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
             <input id="rvcTrainSep" type="checkbox" />
@@ -1308,6 +1580,125 @@ We will sing beyond the night</textarea>
     </div>
   </section>
 
+  <!-- ============ ⑦ 人声伴奏分离 ============ -->
+  <section class="panel-tab" id="tab-sep" style="display:none;">
+    <div class="grid compose">
+
+      <!-- 左＝上传与提交 -->
+      <div class="pane pane-in">
+        <div class="pane-head"><b>① 上传歌曲</b><span class="hint-xs">官方 PyMSS BS-Roformer · 3.5 分钟歌约 1.5 分钟</span></div>
+        <div class="pane-body">
+          <label for="sepName" style="margin-top:0;">任务名称（用于历史展示与下载命名）</label>
+          <input id="sepName" placeholder="例如：稻香·分离" maxlength="100" />
+          <div class="drop" id="sepDrop" tabindex="0" role="button" aria-label="选择或拖入音频文件" style="margin-top:10px;">
+            <b>点选或拖入音频文件</b>
+            <small>wav / mp3 / flac / m4a / ogg / opus / aac / wma</small>
+          </div>
+          <input type="file" id="sepFile" accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" style="display:none;">
+          <div class="hint-xs" id="sepFileName"></div>
+          <label for="sepHarmony" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px;">
+            <input id="sepHarmony" type="checkbox" />
+            <span>分离后再去和声（只留主唱干声；翻唱与训练素材建议开，多约 1 分钟）</span>
+          </label>
+          <div class="hint-xs" style="margin-top:6px;">开了多产出「人声（去和声）」一份：副歌有叠唱/和声时，这份才是干净的训练素材。产出清单：关=人声(含和声)+伴奏两份，开=三份。</div>
+          <div class="actions" style="margin-top:12px;">
+            <button class="primary" id="sepGo">开始分离</button>
+            <button class="danger" id="sepStop" style="display:none;">取消排队</button>
+          </div>
+          <div class="progress" id="sepProgress"><div id="sepProgressBar"></div></div>
+          <div class="status" id="sepStatus">GPU 与生成/换声/训练共用一条串行队列：前面有任务时会显示排队位次，不会并行硬抢显存。</div>
+          <div class="hint" style="margin-top:12px;">分离失败会说清是哪一段失败（PyMSS / 降级到 GPT-SoVITS 链 / 静音守卫判定产物为数字静音），不会给你一个空文件就报成功。</div>
+        </div>
+      </div>
+
+      <!-- 右＝产物与历史 -->
+      <div class="pane pane-out">
+        <div class="pane-head"><b>② 产物</b><span class="hint-xs">每份都可单独试听 / 下载 / 送去别的页</span></div>
+        <div class="pane-body">
+          <div class="row-list cap" id="sepResults">
+            <div class="empty">暂无分离结果。</div>
+          </div>
+          <div class="sec" style="margin-top:20px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.3 2.3"/></svg>分离记录</div>
+          <div class="row-list cap" id="sepList">
+            <div class="empty">暂无分离记录。</div>
+          </div>
+        </div>
+        <div class="pane-foot">
+          <div class="hint-xs">产物同时登记进 ⑨ 任务管理（类型「分离」），关掉本页不会丢掉任务。</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ ⑩ 设置 ============ -->
+  <section class="panel-tab" id="tab-settings" style="display:none;">
+    <div class="grid settings">
+
+      <!-- 左：服务 / 模型 / 引擎 / 外观 —— 需要动手的都在这栏 -->
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 14S2.5 10.5 2.5 6.6C2.5 4.4 4.2 3 6 3c1 0 1.7.5 2 1 .3-.5 1-1 2-1 1.8 0 3.5 1.4 3.5 3.6C13.5 10.5 8 14 8 14z"/></svg>服务与模型</div>
+        <div class="foot-row" id="modelVerifyRow" style="display:none;">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l5.5 2.4v3.6c0 3.4-2.3 5.7-5.5 6.6-3.2-.9-5.5-3.2-5.5-6.6V4.2z"/></svg>
+          <span class="fr-label" id="modelVerifyText">模型校验…</span>
+          <button id="modelRepairBtn" class="mode-pill" style="display:none;" title="只重下缺失/损坏的文件（断点续传）">修复</button>
+        </div>
+        <div class="actions" style="margin-top:8px;">
+          <button class="ghost" id="modelVerifyNow">↻ 立即重新校验</button>
+        </div>
+        <div id="modelFiles" class="hint-xs" style="margin-top:8px;"></div>
+        <div class="progress" id="repairProgress" style="margin-top:8px;"><div id="repairProgressBar"></div></div>
+        <div class="lint" id="repairStatus"></div>
+
+        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 5h3l1.5-2h3L11 5h3v8H2zM8 10.2a1.8 1.8 0 1 0 0-3.6 1.8 1.8 0 0 0 0 3.6z"/></svg>模型档位</div>
+        <label for="modelSel" style="margin-top:0;">当前模型 / 量化档（切换会重启音频引擎，需 1-2 分钟）</label>
+        <select id="modelSel" class="model-select"></select>
+        <div class="hint-xs" id="modelHint"></div>
+
+        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5.5 6.5h5M5.5 9.5h3"/></svg>引擎模式</div>
+        <div class="foot-row" id="modeRow" style="display:none;">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5.5 6.5h5M5.5 9.5h3"/></svg>
+          <span class="fr-label" id="modeText">引擎模式</span>
+          <button id="modeBtn" class="mode-pill" title="切换引擎模式">切GPU</button>
+        </div>
+        <div class="hint-xs" style="margin-top:6px;">CUDA 模式下若显存不足，生成前会自动降级到 CPU（慢 5-10 倍但能出结果）；生成与换声/训练共用 GPU，串行执行。</div>
+
+        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2.2" fill="currentColor" stroke="none"/></svg>外观</div>
+        <div class="foot-row" id="accentRow" title="自定义主题强调色">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2.2" fill="currentColor" stroke="none"/></svg>
+          <span class="fr-label">主题色</span>
+          <input type="color" id="accentPicker" value="#b0651c" style="width:34px;height:26px;padding:0;border:1px solid var(--line);border-radius:6px;background:none;cursor:pointer;" />
+        </div>
+        <div class="hint-xs" style="margin-top:4px;">明暗模式在左侧栏底部（常驻，不用进本页切）。主题与主题色写进 localStorage，刷新后保持。</div>
+        <div class="status" id="settingsStatus" style="margin-top:10px;"></div>
+      </div>
+
+      <!-- 右：只读的系统信息 + 维护 + 关于 -->
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.2v4M8 4.8v.2"/></svg>系统信息（只读）</div>
+        <div class="kv" id="sysInfo"><div class="empty">读取中…</div></div>
+        <div class="actions" style="margin-top:8px;">
+          <button class="ghost" id="sysRefresh">↻ 刷新</button>
+        </div>
+        <div class="hint-xs" style="margin-top:6px;">端口与目录刻意不做成可改：它们由 <code>ports.json</code> 与启动脚本/看门狗共同决定，改了会与三者不一致，风险大于收益。</div>
+
+        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 4.5h10M3 8h10M3 11.5h6"/></svg>维护</div>
+        <div class="actions">
+          <button class="danger" id="setClearHist" title="删除服务端保存的历史任务记录与音频">清空任务历史</button>
+          <button class="ghost" id="setLogPath" title="复制日志目录路径到剪贴板">📋 复制日志目录</button>
+        </div>
+
+        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 11.2V8M8 5.2v.2"/></svg>关于</div>
+        <div class="hint-xs" id="aboutLine">音乐工作台 v2.0 · 页面重构版（11 页）</div>
+        <div class="hint" style="margin-top:8px;">
+          许可 <b>CC BY-NC 4.0</b>（署名-非商业性使用）。<br>
+          <b>模型权重不可商用</b>：YuE2 / SheetSage2 / RVC 相关权重与素材各自带非商用限制，产出物请勿用于商业用途。<br>
+          <b>诚实声明</b>：<code>git clone</code> 拿不到运行时二进制（<code>main.cp312-win_amd64.pyd</code>、<code>audiocpp_server.exe</code>、py312 运行时），需按 README 自备；换声队列存在网关内存里，网关重启后排队条目会丢，页面不承诺续跑。
+        </div>
+      </div>
+
+    </div>
+  </section>
 </main>
 
 <!-- ============ 底部播放坞 ============ -->
@@ -1564,7 +1955,7 @@ async function jfetch(url, opts) {
 // ---------- state ----------
 let lastBlob = null, lastUrl = null;
 let lastTaskName = "";  // 当前播放坞音频对应的任务名称（用于下载命名）
-let curTab = "compose";
+let curTab = "style";
 let currentModels = [];
 
 // ---------- theme（明暗模式，localStorage 持久化）----------
@@ -1785,18 +2176,52 @@ const Favicon = (() => {
 // hash 同步收在 switchTab 内部：无论是点页签还是程序化跳转（回填/播放/去换声…），
 // 界面状态与 hash 始终一致，避免 stale hash 触发 hashchange 把页面拽回旧页签。
 $$(".tab").forEach(t => t.onclick = () => switchTab(t.dataset.tab));
+// v2.0 拆页共用：② 与 ④ 共用同一份 #genForm（生成表单），③ 与 ④ 共用同一份 #abcBlock（谱框）。
+// 实现方式是"把节点搬进目标页的槽位"，而不是复制一份 DOM 和一套代码——
+// 生成链路里已经修过的坑（CoT 档位纠正、歌词护栏、撤销栈、切页后进度续看）各写两遍必然分叉。
+function moveInto(node, slotId) {
+  const slot = $(slotId);
+  if (node && slot && node.parentElement !== slot) slot.appendChild(node);
+}
 function switchTab(name) {
   curTab = name;
   $$(".tab").forEach(x => x.classList.toggle("active", x.dataset.tab === name));
   $$(".panel-tab").forEach(p => p.style.display = p.id === "tab-" + name ? "" : "none");
+  // 共用件归位：先搬生成表单，再往它内部的谱槽放 #abcBlock（④ 用右侧乐谱区，其余页回 ③）
+  const scoreMode = name === "scoreSing";
+  const gen = $("genForm");
+  if (gen) { moveInto(gen, scoreMode ? "genSlotScore" : "genSlotSing"); gen.dataset.mode = scoreMode ? "score" : "sing"; }
+  moveInto($("abcBlock"), scoreMode ? "abcSlotSing" : "abcSlotScore");
+  const ss = $("scoreSection"); if (ss) ss.hidden = !scoreMode;
+  const fb = $("flowBar"); if (fb) fb.hidden = !scoreMode;
+  if (scoreMode && typeof updateLyricBarHint === "function") updateLyricBarHint();
+  if (name === "sing" || name === "scoreSing") syncStylePreview();
   try { if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name); } catch {}
   // 内嵌模式（dsh iframe）：通知父窗口同步侧栏页签高亮
   try { if (window.parent && window.parent !== window) window.parent.postMessage({ type: "yue2-lab-tab", tab: name }, "*"); } catch {}
   // 进入历史页时自动刷新，确保看到的是最新列表
   if (name === "history" && typeof renderHistory === "function") renderHistory();
-  // 进入换声/音色制作页时刷新任务列表与音色下拉
-  if (name === "rvc" && typeof renderRvc === "function") renderRvc();
-  if (name === "rvcTrain" && typeof renderRvcTrainList === "function") renderRvcTrainList();
+  // 进入声音四页时刷新各自的任务列表 / 音色下拉
+  if (name === "convert" && typeof renderRvc === "function") renderRvc();
+  if (name === "train" && typeof renderRvcTrainList === "function") renderRvcTrainList();
+  if (name === "voices") {
+    if (typeof renderVoices === "function") renderVoices();
+    if (typeof renderRvcModels === "function") renderRvcModels();
+    setVoiceTab(voiceTab);
+  }
+  if (name === "sep" && typeof loadSepList === "function") loadSepList();
+  if (name === "ailab" && typeof loadAiSessions === "function") loadAiSessions();
+  // 创作四页：曲风配方摘要 / 歌词候选 / 乐谱库与导出归档
+  if (name === "style" && typeof updateAsmHint === "function") { updateAsmHint(); updateStyleChecks(); }
+  if (name === "score" && typeof loadScoreList === "function") loadScoreList();
+  if (name === "scoreSing" && typeof loadScorePicker === "function") loadScorePicker();
+  // 设置页：进页面就把健康灯/模型校验/引擎模式/系统信息刷一遍，不看陈旧读数
+  if (name === "settings") {
+    if (typeof refreshHealth === "function") refreshHealth();
+    if (typeof refreshModelVerify === "function") refreshModelVerify();
+    if (typeof loadModels === "function") loadModels();
+    if (typeof loadSysInfo === "function") loadSysInfo();
+  }
 }
 
 // ---------- 曲风库与装配台 ----------
@@ -2473,6 +2898,7 @@ function syncGenreNow() {
 function updateAsmHint() {
   const el = $("presetNote");
   if (!el) return;
+  if (typeof updateStyleRecipe === "function") updateStyleRecipe();
   const preview = compileStyle();
   const cur = (($("style") || {}).value || "").trim();
   // 预算说的是"真正会提交的那一句"：没手改时就是装配产物，手改后就是文本框本身。
@@ -2484,7 +2910,7 @@ function updateAsmHint() {
       : b.level === "soft" ? "（" + b.over.join("，") + "：已超官方样本均值，能生成，只是每个词的分量变轻）"
         : "（" + b.over.join("，") + "：明显偏多，建议删词或把重点往前挪）");
   if (styleDirty) {
-    el.innerHTML = "⚠ <b>Style 文本已被手改</b>（第 ③ 步的改动只刷新下面的预览，不会覆盖左栏的文本框）。" +
+    el.innerHTML = "⚠ <b>Style 文本已被手改</b>（第 ③ 步的改动只刷新下面的预览，不会覆盖本页底部的 Style 产出框）。" +
       "要按六要素重写文本框，点「↻ 重新装配到 Style」。<br>装配预览：" +
       "<span style=\"font-family:var(--mono);opacity:.85;\">" + escapeHtml(preview || "（空）") + "</span>" + bud;
   } else if (cur && cur !== preview) {
@@ -2494,7 +2920,7 @@ function updateAsmHint() {
   } else {
     el.innerHTML = "<b>②</b> 点一张曲风卡片 = 一次性把 <b>③</b> 六个维度填满并写进 Style；" +
       "六个维度是卡片展开后的明细，任何一格都能单独增删，改动实时重写 Style 文本。" +
-      "<b>一旦你在文本框里手改，装配台就只给预览不再覆盖</b>。" + bud;
+      "<b>一旦你在文本框里手改，装配台就只给预览不再覆盖产出框</b>。" + bud;
   }
   const m = $("asmBudget");
   if (m) {
@@ -3003,8 +3429,9 @@ function initAssembler() {
   const sb = $("style");
   if (sb) sb.addEventListener("input", () => {
     if (suppressStyleWatch) { updateStyleChecks(); return; }
-    if (!styleDirty) { styleDirty = true; updateAsmHint(); }
-    updateStyleChecks();
+    styleDirty = true;
+    // 每次按键都要重算：预算读数就贴在文本框上方，它停在第一次改动的值上就是假读数
+    updateStyleChecks(); updateAsmHint();
   });
   const apply = $("asmApply");
   if (apply) apply.onclick = () => {
@@ -3180,10 +3607,12 @@ async function refreshModelVerify() {
   try {
     const j = await (await fetch("/api/models/verify")).json();
     row.style.display = "";
+    if (typeof loadModelFiles === "function") loadModelFiles(j);
     if (j.repair_running) {
       row.className = "foot-row loading";
       txt.textContent = "模型修复中…";
       btn.style.display = "none";
+      if (typeof watchRepair === "function") watchRepair();   // 修复要有进度，不能只剩一个转圈的词
       setTimeout(refreshModelVerify, 5000);
       return;
     }
@@ -3206,6 +3635,8 @@ $("modelRepairBtn").onclick = async () => {
   $("modelRepairBtn").disabled = true;
   try {
     const r = await jfetch("/api/models/repair", { method: "POST" });
+    statusSay(r.message || "修复已开始", "ok");
+    if (typeof watchRepair === "function") watchRepair();
     toast(r.message || "修复已开始", "ok");
     refreshModelVerify();
   } catch (e) { toast("修复失败：" + e.message, "err"); }
@@ -3235,7 +3666,7 @@ $("modeBtn").onclick = async () => {
     const r = await jfetch("/api/backend/mode", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ mode: target }) });
     const j = await r.json();
     toast(j.message || "已切换", "ok");
-    $("status").className = "status ok"; $("status").textContent = j.message || "引擎模式已切换";
+    statusSay(j.message || "引擎模式已切换", "ok");
     refreshEngineMode();
     setTimeout(refreshHealth, 4000);
   } catch (e) { toast("切换失败：" + e.message, "err"); }
@@ -3285,16 +3716,16 @@ $("modelSel").onchange = async () => {
   const m = currentModels.find(x => x.path === path);
   if (!m) return;
   $("modelSel").disabled = true;
-  $("status").className = "status"; $("status").textContent = "正在切换到 " + m.quant + " 并重启音频引擎…（模型较大时需 1-2 分钟）";
+  statusSay("正在切换到 " + m.quant + " 并重启音频引擎…（模型较大时需 1-2 分钟）", "");
   try {
     const r = await jfetch("/api/models/switch", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ path, vae: m.vae }) });
     const j = await r.json();
     toast("已切换到 " + m.quant, "ok");
-    $("status").className = "status ok"; $("status").textContent = j.message || "模型已切换";
+    statusSay(j.message || "模型已切换", "ok");
     updateModelHint();
     setTimeout(refreshHealth, 4000);
   } catch (err) {
-    $("status").className = "status err"; $("status").textContent = "模型切换失败：" + err.message;
+    statusSay("模型切换失败：" + err.message, "err");
     $("modelSel").dataset.last = "";
   } finally { $("modelSel").disabled = false; }
 };
@@ -3483,6 +3914,7 @@ function applyFinishedJob(job) {
     toast("歌曲生成完成，已保存到 output/", "ok");
     stickyNotify(name + " 成功", "已保存到 output/，可在历史页回放。" + (job.batch ? "批量队列将继续下一首。" : ""), true);
     renderHistory();
+    if (typeof renderGenResult === "function") renderGenResult(job);
   } else {
     $("status").className = "status err";
     let msg = "生成失败：" + (job.error || "未知错误");
@@ -3491,7 +3923,7 @@ function applyFinishedJob(job) {
     toast("生成失败", "err");
     Favicon.set("error");
     setTimeout(() => Favicon.set("idle"), 8000);  // 红叉停留 8 秒后回到空闲图标
-    stickyNotify(name + " 失败", (job.batch ? "批量队列将自动继续下一首。" : "") + "点击本条回创作页查看。", false);
+    stickyNotify(name + " 失败", (job.batch ? "批量队列将自动继续下一首。" : "") + "点击本条回 ② 歌词生成歌曲查看。", false);
   }
   setGenerating(false);
   setTimeout(() => $("progress").classList.remove("show"), 1500);
@@ -3530,7 +3962,7 @@ function pollJob() {
         setGenerating(false);
         $("progress").classList.remove("show");
         $("status").className = "status err";
-        $("status").textContent = "连不上工作台服务（" + String(e.message || e).slice(0, 80) + "），进度已停止刷新。恢复后点「历史」页看结果。";
+        $("status").textContent = "连不上工作台服务（" + String(e.message || e).slice(0, 80) + "），进度已停止刷新。恢复后点 ⑨ 任务管理看结果。";
         return;
       }
       const wait = 2000 * netMiss;
@@ -3760,7 +4192,8 @@ $("abcAudio").onchange = async () => {
   form.append("audio", file);
   // 默认纯旋律谱（SheetSage2 两种模式都会识别和弦，只是导出时写不写进 ABC）
   form.append("melody_only", $("abcChords").checked ? "false" : "true");
-  $("extractAbc").disabled = true;
+  // 服务端转谱有串行锁，并发两份会互相覆盖 sheetsage2-output/ —— 提交即锁住上传口
+  setScoreLock(true);
   $("abcStatus").textContent = $("abcChords").checked ? "正在上传并提交转谱任务（带和弦）…" : "正在上传并提交转谱任务…";
   try {
     const r = await fetch("/api/score", { method: "POST", body: form });
@@ -3806,8 +4239,11 @@ $("abcAudio").onchange = async () => {
         ? "⚠ 谱里没出现和弦记号（这首歌可能识别不出可用和弦），已按 melody 路线准备生成"
         : "✓ 乐谱已保存（走 " + want + "），可改词后生成（下方列表可随时复用）";
       $("abcStatus").style.color = wantedChords ? "#ff9f0a" : "var(--ok, #34c759)";
-      $("extractAbc").disabled = false;
+      setScoreLock(false);
       $("abcAudio").value = "";
+      // 转谱成功的谱已落盘 data/scores/，记下 score_id 才谈得上导出 MIDI
+      LabStore.set({ abc: ($("abc").value || "").trim(), scoreId: rj.score_id || null, from: "score" });
+      $("abcRetryWrap").hidden = true;
       stickyNotify("乐谱提取完成", "已从参考歌曲提取 ABC 乐谱，可直接改词生成。", true);
       loadScoreList();
       return;
@@ -3816,8 +4252,12 @@ $("abcAudio").onchange = async () => {
   } catch (err) {
     $("abcStatus").textContent = "提取失败: " + err.message;
     $("abcStatus").style.color = "var(--err, #ff3b30)";
-    $("extractAbc").disabled = false;
+    setScoreLock(false);
     $("abcAudio").value = "";
+    // 带和弦时个别和弦性质不被记号表认得会让整份谱失败——把"改纯旋律重试"做成一键，
+    // 而不是让用户自己去猜该取消哪个勾选
+    $("abcRetryWrap").hidden = !$("abcChords").checked;
+    stickyNotify("乐谱提取失败", err.message, false);
   }
 };
 
@@ -3845,6 +4285,8 @@ async function loadScoreList() {
           if (!rec.analysis) analyzeAbcDebounced();
           $("abcStatus").textContent = "✓ 已回填历史乐谱 " + s.id;
           $("abcStatus").style.color = "var(--ok, #34c759)";
+          // 记下这是库里哪一份，导出 MIDI 才知道取哪个归档目录
+          LabStore.set({ abc: ($("abc").value || "").trim(), scoreId: s.id, from: "score" });
         } catch (e) { $("abcStatus").textContent = "回填失败: " + e.message; }
       };
       const del = document.createElement("button");
@@ -3875,14 +4317,16 @@ let histQueuePoll = null; // 历史页队列区轮询句柄
 
 // ---------- history（output/ 自动落盘，含 style/歌词/参数）----------
 // ---------- history：进行中任务（生成/换声/音色训练） ----------
-const _KIND_LABEL = { generate: "🎵 生成", rvc: "🎙 换声", train: "🎨 音色制作" };
+const _KIND_LABEL = { generate: "🎵 生成", rvc: "🎙 换声", train: "🎨 音色制作", score: "🎼 乐谱提取", separate: "✂ 分离" };
 // 历史页当前子页签（all/generate/rvc/train）
 let histKind = "all";
+let histPage = 60;            // 一屏先渲这么多行（HIST_KEEP 上限 1000，全量渲染会卡）
 // 类型筛选（歌曲/换声/音色制作）与状态筛选（全部/进行中/已完成/失败）双维组合
 let histType = "all";
 $("histKindTabs").querySelectorAll(".subtab").forEach(btn => {
   btn.onclick = () => {
     histType = btn.dataset.kind || "all";
+    histPage = 60;
     $("histKindTabs").querySelectorAll(".subtab").forEach(b => b.classList.toggle("active", b === btn));
     renderHistory();
   };
@@ -3890,6 +4334,7 @@ $("histKindTabs").querySelectorAll(".subtab").forEach(btn => {
 $("histTabs").querySelectorAll(".subtab").forEach(btn => {
   btn.onclick = () => {
     histKind = btn.dataset.kind || "all";
+    histPage = 60;
     $("histTabs").querySelectorAll(".subtab").forEach(b => b.classList.toggle("active", b === btn));
     renderHistory();
   };
@@ -3899,7 +4344,7 @@ $("histTabs").querySelectorAll(".subtab").forEach(btn => {
   const el = $("histSearch");
   if (!el) return;
   let timer = null;
-  el.oninput = () => { clearTimeout(timer); timer = setTimeout(renderHistory, 250); };
+  el.oninput = () => { clearTimeout(timer); histPage = 60; timer = setTimeout(renderHistory, 250); };
 })();
 
 async function fetchExtraTasks() {
@@ -3961,6 +4406,14 @@ async function fetchExtraTasks() {
       });
     });
   } catch {}
+  // 乐谱提取 / 分离 两类不在 output/*.json 的主口径里（乐谱在 data/scores/），
+  // 由聚合端点一次带回，省掉前端再拼两个源。去重交给 renderHistory 按 id 做——
+  // seen 在它自己那一层，本函数里引用不到（引用了会整页抛错、历史列表直接空掉）。
+  try {
+    const u = await (await fetchT("/api/tasks/unified?limit=400", {}, 30000)).json();
+    (u.items || []).filter((x) => x.kind === "score" || x.kind === "separate")
+      .forEach((x) => out.push(x));
+  } catch {}
   return out;
 }
 
@@ -3997,7 +4450,7 @@ async function renderHistory() {
     const kw = (($("histSearch") || {}).value || "").trim().toLowerCase();
     if (kw) list = list.filter(h => [h.task_name, h.name, h.style, h.id]
       .some(v => String(v || "").toLowerCase().includes(kw)));
-    const shown = list;
+    const shown = list.slice(0, histPage);
     // 搜索时把「全部」页签变成 匹配数/总数，否则用户看到 8 行却写着 113 会以为漏了
     const allBadge = $("histN_all");
     if (allBadge) allBadge.textContent = kw ? shown.length + "/" + counts.all : counts.all;
@@ -4009,6 +4462,8 @@ async function renderHistory() {
     if (!shown.length) { el.innerHTML = `<div class="empty">${histKind === "all" ? "暂无历史记录。生成歌曲后会自动保存（含音频与参数）。" : "该分类下暂无记录。"}</div>`; return; }
     el.innerHTML = "";
     shown.forEach(h => {
+      // 乐谱提取 / 分离 两类没有音频产物与歌词，用轻量行，不套生成任务那 12 个按钮
+      if (h.kind === "score" || h.kind === "separate") { el.appendChild(lightTaskRow(h)); return; }
       const d = document.createElement("div");
       d.className = "hist-item";
       const title = (h.task_name || (h.style || "").split(",")[0] || "未命名");
@@ -4078,7 +4533,7 @@ async function renderHistory() {
         if (p.seed !== undefined && p.seed !== null) $("seed").value = p.seed;
         if (p.cfg_scale !== undefined && p.cfg_scale !== null) $("cfg").value = p.cfg_scale;
         if (p.num_inference_steps) $("steps").value = p.num_inference_steps;
-        if (jump) switchTab("compose");
+        if (jump) switchTab("sing");
       };
       // 播放 + 回填二合一：整条记录可点；失败/进行中的记录点击仅回填参数。
       // 播放不跳页：留在历史页，音频在底部播放坞播放。
@@ -4263,7 +4718,7 @@ async function renderHistory() {
         const want = h.model || ((h.voice_name || "") + ".pth");
         const found = sel && [...sel.options].some(o => o.value === want);
         if (found) sel.value = want;
-        switchTab("rvc");
+        switchTab("convert");
         // 音色不在下拉里时以前也照旧报"已选中"——那是句假话，用户到换声页会发现选的是别的音色
         toast(found ? "已选中音色：" + want.replace(/\.pth$/i, "")
                     : "换声页的下拉里没有「" + want.replace(/\.pth$/i, "") + "」，请手动选一个音色", found ? "ok" : "err");
@@ -4277,7 +4732,7 @@ async function renderHistory() {
         if (!rvcReco) await renderRvc();
         let models = [];
         try { models = (await (await fetch("/api/rvc/models")).json()).models || []; } catch {}
-        if (!models.length) { toast("没有可用音色，请先到「换声」页制作", "err"); return; }
+        if (!models.length) { toast("没有可用音色，请先到 ⑤ 音色制作训练，或 ⑥ 音色库导入", "err"); return; }
         // 音色改成下拉、变调改成数字框：以前是连着两个 prompt()，要凭记忆敲准确的音色名，
         // 敲错只得到一句"没有叫 XX 的音色"；空着则会静默用列表第一个（用户以为在换王菲，实际是孙燕姿）。
         const pitchDefault = (rvcReco && rvcReco.pitch !== null) ? rvcReco.pitch : (parseInt($("rvcPitch").value, 10) || 0);
@@ -4286,8 +4741,8 @@ async function renderHistory() {
           title: "🎤 送去换声：" + (h.task_name || (h.style || "").split(",")[0] || h.id),
           okText: "开始换声", busyText: "提交中…",
           hint: "变调半音：男转女 +12 / 女转男 -12 / 不变 0" +
-                (rvcReco && rvcReco.pitch !== null ? "（已按上次分析的推荐值填好）" : "（「换声」页「分析音域」可自动算出）") +
-                "；其余档位沿用「换声」页当前设置。",
+                (rvcReco && rvcReco.pitch !== null ? "（已按上次分析的推荐值填好）" : "（⑪ 页「分析音域 → 变调建议」可自动算出）") +
+                "；其余档位沿用 ⑪ 页当前设置。",
           fields: [
             { id: "model", label: "音色", kind: "select", value: models[0],
               options: models.map(x => ({ v: x, t: x.replace(/\.pth$/i, "") })) },
@@ -4319,9 +4774,9 @@ async function renderHistory() {
           renderRvcList();
           pollRvc(j.id);
           const ahead = Math.max(0, Number(j.position || 1) - 1);
-          toast(ahead ? `已排队（第 ${j.position} 位，前面还有 ${ahead} 个），去「换声」页看进度`
-                      : `已送入换声（${model.replace(/\.pth$/i, "")}），去「换声」页看进度`, "ok");
-          switchTab("rvc");
+          toast(ahead ? `已排队（第 ${j.position} 位，前面还有 ${ahead} 个），去 ⑪ 歌曲换声看进度`
+                      : `已送入换声（${model.replace(/\.pth$/i, "")}），去 ⑪ 歌曲换声看进度`, "ok");
+          switchTab("convert");
         });
       };
       // 重命名任务：改 meta 的 task_name，历史展示与下载命名同步生效
@@ -4357,7 +4812,7 @@ async function renderHistory() {
         const label = (h.task_name || (h.style || "").split(",")[0] || h.id);
         if (!confirm(`删除「${label}」？
 音频与乐谱等产物文件会一起删除，本机不可恢复。
-（进行中的任务删不了，会被服务端拦下）`)) return;
+（进行中的任务删不了，服务端会返回 409 拦下）`)) return;
         btn.disabled = true;
         try {
           const rr = await fetch("/api/generate/" + h.id, { method: "DELETE" });
@@ -4369,6 +4824,20 @@ async function renderHistory() {
       };
       el.appendChild(d);
     });
+    // 分页尾巴：一屏 60 行，剩下的点"加载更多"。1000 条全量渲染会把主线程按死。
+    if (list.length > shown.length) {
+      const more = document.createElement("div");
+      more.className = "hist-item";
+      more.style.cssText = "justify-content:center;gap:10px;";
+      const b = document.createElement("button");
+      b.className = "ghost"; b.type = "button";
+      b.textContent = "↓ 加载更多（已显 " + shown.length + " / " + list.length + "）";
+      b.onclick = () => { histPage += 120; renderHistory(); };
+      const tip = document.createElement("span");
+      tip.className = "hint-xs"; tip.textContent = "再往下翻可用上方搜索框直接定位";
+      more.appendChild(b); more.appendChild(tip);
+      el.appendChild(more);
+    }
   } catch { $("histList").innerHTML = '<div class="empty">后端未连接。</div>'; }
 }
 $("histRefresh").onclick = () => { renderHistory(); renderVoices(); toast("已刷新", "ok"); };
@@ -4418,6 +4887,7 @@ async function renderVoices() {
     const j = await r.json();
     const list = Array.isArray(j.voices) ? j.voices : [];
     $("voiceCount").textContent = list.length;
+    if (typeof setVoiceTab === "function") setVoiceTab(voiceTab);   // 子页签上的计数跟着真实列表走
     const el = $("voiceGrid");
     if (!list.length) { el.innerHTML = '<div class="empty">暂无保存的音色。</div>'; return; }
     el.innerHTML = "";
@@ -4441,7 +4911,7 @@ async function renderVoices() {
           "歌词框里已经有内容：\n· 确定 = 用这个音色的参考文本替换（原歌词丢失）\n· 取消 = 什么都不改")) return;
         if (v.reference_text) { box.value = v.reference_text; box.focus(); }
         $("cot").value = "melody";
-        switchTab("compose");
+        switchTab("sing");
         toast("已填入参考文本，cot 已设为 melody", "ok");
       };
       c.querySelector("[data-trans]").onclick = async (e) => {
@@ -4452,7 +4922,7 @@ async function renderVoices() {
           const fd = new FormData(); fd.append("audio", blob, v.filename || "ref.wav");
           const rr = await fetch("/api/voices/transcribe", { method: "POST", body: fd });
           const jj = await rr.json();
-          if (rr.ok && jj.text) { pushLyricUndo("把参考音频识别成歌词"); $("lyrics").value = jj.text; $("cot").value = "melody"; switchTab("compose"); toast("已识别歌词并填入", "ok"); }
+          if (rr.ok && jj.text) { pushLyricUndo("把参考音频识别成歌词"); $("lyrics").value = jj.text; $("cot").value = "melody"; switchTab("sing"); toast("已识别歌词并填入", "ok"); }
           else throw new Error(jj.detail || "识别失败");
         } catch (err) { toast("识别失败：" + err.message, "err"); }
         finally { btn.disabled = false; }
@@ -4548,10 +5018,16 @@ async function renderRvc() {
   try {
     const mr = await fetch("/api/rvc/models");
     if (mr.ok) {
-      const { models } = await mr.json();
+      const { models, items } = await mr.json();
+      const byName = {}; (items || []).forEach((it) => { byName[it.name] = it; });
       const sel = $("rvcModel");
       const cur = sel.value;
-      sel.innerHTML = (models || []).map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m.replace(/\.pth$/i, ""))}</option>`).join("");
+      // 下拉里就带上音域：不用先跳去 ⑥ 查"这个嗓子能唱多高"再回来填变调
+      sel.innerHTML = (models || []).map((m) => {
+        const it = byName[m] || {};
+        const tag = it.range_summary || (it.f0_range ? `中位 ${it.f0_range.median_hz}Hz` : "无音域");
+        return `<option value="${escapeHtml(m)}">${escapeHtml(m.replace(/\.pth$/i, ""))} · ${escapeHtml(tag)}</option>`;
+      }).join("");
       if (cur && models.includes(cur)) sel.value = cur;
       else if (models && models.length) sel.value = models[0];
       // 音色定了就把推荐参数拉下来并自动套用：用户不该面对一堆空输入框
@@ -4564,7 +5040,7 @@ const rvcJobs = [];
 
 function renderRvcList() {
   const el = $("rvcList");
-  if (!rvcJobs.length) { el.innerHTML = '<div class="empty">暂无换声任务。结果也会出现在「历史」页（标注 RVC 换声）。</div>'; return; }
+  if (!rvcJobs.length) { el.innerHTML = '<div class="empty">暂无换声任务。结果也会出现在 ⑨ 任务管理（标注 🎙 换声）。</div>'; return; }
   el.innerHTML = "";
   // 列表顺序 = 执行顺序：正在转换的排第一，其后按排队位次，已结束的最后（新→旧）。
   // 直接遍历 rvcJobs 会让"刚提交的"永远显示在最上面，看着像插队。
@@ -5051,7 +5527,7 @@ switchTab = function (name) {
   _origSwitchTab(name);
   if (name === "ailab" && !aiFrameLoaded) aiLoadFrame();
   // 回到创作页时把"最近歌词"刷新一次：刚生成完的那首应该立刻能被点回来
-  if (name === "compose") loadRecentLyrics(true);
+  if (name === "sing") loadRecentLyrics(true);
 };
 
 // ---------- rvc 音色模型管理（音色库页）----------
@@ -5082,9 +5558,10 @@ function paintRvcModels() {
     cnt.title = kw ? `筛选命中 ${items.length} 个 · 库内共 ${rvcModelsAll.length} 个` : `库内共 ${rvcModelsAll.length} 个音色模型`;
   }
   el.innerHTML = "";
-  if (!rvcModelsAll.length) { el.innerHTML = '<div class="empty">暂无音色模型。可在「换声」页用干声样本制作。</div>'; return; }
+  if (!rvcModelsAll.length) { el.innerHTML = '<div class="empty">暂无音色模型。可在「⑤ 音色制作」页训练，或点「导入音色文件」装入外部 .pth。</div>'; if (typeof setVoiceTab === "function") setVoiceTab(voiceTab); return; }
   if (!items.length) { el.innerHTML = `<div class="empty">没有名字含「${escapeHtml(kw)}」的音色（共 ${rvcModelsAll.length} 个）。</div>`; return; }
   items.forEach(m => el.appendChild(rvcModelCard(m)));
+  if (typeof setVoiceTab === "function") setVoiceTab(voiceTab);
 }
 function rvcModelCard(m) {
   const d = document.createElement("div");
@@ -5521,7 +5998,7 @@ function renderRvcTrainList() {
       const found = sel && [...sel.options].some(o => o.value === want);
       if (found) sel.value = want;
       // 与历史页同名按钮同口径：只选不切页的话，用户留在制作页，看不到"被选中"这件事
-      switchTab("rvc");
+      switchTab("convert");
       toast(found ? "已选中音色：" + want.replace(/\.pth$/i, "") + "，切到换声页开跑"
                   : "下拉里还没有「" + want.replace(/\.pth$/i, "") + "」——定稿/索引可能未就绪，刷新后再试", found ? "ok" : "err");
     };
@@ -5735,6 +6212,1402 @@ $("rvcTrainGo").onclick = async () => {
   } finally { $("rvcTrainGo").disabled = false; }
 };
 
+// ================= v2.0 · 跨页共享 + 创作四页（①②③④） =================
+
+// ---------- 跨页共享 store ----------
+// 单一真相仍是 #style / #lyrics / #abc 这几个 DOM 节点本身（②④ 共用同一份表单 DOM，
+// ③④ 共用同一个谱框），所以"跳转后目标页必须已是新值"由 DOM 天然保证。
+// LabStore 存的是页间意图与出处：这段 Style 从哪一页来、对应哪套配方、③ 的谱是哪条 scoreId，
+// 以及给 ⑧ AI 工作台回填用。
+const LabStore = (() => {
+  const KEY = "yue2_lab_store_v2";
+  const subs = new Set();
+  let state = { style: "", asm: null, lyrics: "", abc: "", scoreId: null, params: {}, from: "", ts: 0 };
+  let timer = null;
+  const write = () => {
+    timer = null;
+    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { console.warn("LabStore 写入失败：", e); }
+  };
+  return {
+    get state() { return state; },
+    set(patch) {
+      Object.assign(state, patch || {}, { ts: Date.now() });
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(write, 400);
+      for (const fn of [...subs]) { try { fn(state); } catch (e) { console.warn(e); } }
+    },
+    subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
+    init() {
+      try {
+        const j = JSON.parse(localStorage.getItem(KEY) || "null");
+        if (j && typeof j === "object") Object.assign(state, j);
+      } catch (e) { console.warn("LabStore 读取失败：", e); }
+      // 旧的两条持久化只当"首次升级的搬迁源"。yue2_compose_form 仍然是表单恢复的真源，
+      // 这里只读不回写——两个写入方互写同一个 key 迟早互相覆盖。
+      try {
+        const f = JSON.parse(localStorage.getItem("yue2_compose_form") || "null");
+        if (f) {
+          if (!state.style && f.style) state.style = f.style;
+          if (!state.lyrics && f.lyrics) state.lyrics = f.lyrics;
+          if (!state.abc && f.abc) state.abc = f.abc;
+        }
+        const a = JSON.parse(localStorage.getItem(ASM_KEY) || "null");
+        if (a && !state.asm) state.asm = a;
+      } catch (e) { console.warn("旧持久化搬迁失败：", e); }
+      this.set({});
+    },
+  };
+})();
+LabStore.init();
+
+// ---------- 统一轮询器 ----------
+// 新增的长任务（⑦ 分离、⑩ 模型修复）一律走这里，别再抄第三份、第四份。
+// 老的三份（pollJob / pollRvc / pollRvcTrain）行为已被真实长跑验证过，本次不并轨：
+// 动它们等于拿"生成中断点续看"和"换声排队位次"的既有正确性冒险。
+const POLLERS = new Map();
+const pollKey = (kind, id) => kind + ":" + id;
+function stopPoller(kind, id) {
+  const k = pollKey(kind, id), h = POLLERS.get(k);
+  if (!h) return;
+  POLLERS.delete(k);
+  if (h.timer) clearTimeout(h.timer);
+}
+function isPolling(kind, id) { return POLLERS.has(pollKey(kind, id)); }
+// opts: {url, interval=4000, missMax=5, maxMs, onState(j)->true 表示已结束, onDone(j), onGiveUp(err)}
+// 连不上 ≠ 失败：单次 502 / 网络抖动会让用户白等一次 GPU 时间，miss 计数到上限才认输。
+function startPoller(kind, id, opts) {
+  const { url, interval = 4000, missMax = 5, maxMs = 40 * 60 * 1000, onState, onDone, onGiveUp } = opts || {};
+  stopPoller(kind, id);
+  const k = pollKey(kind, id);
+  const h = { miss: 0, startedAt: Date.now(), timer: null };
+  POLLERS.set(k, h);
+  const loop = async () => {
+    if (!POLLERS.has(k)) return;
+    let j = null, ok = false;
+    try {
+      const r = await fetchT(url, {}, 20000);
+      ok = r.ok;
+      j = await r.json().catch(() => null);
+      if (!ok) { const d = j && (j.detail || j.error); h.lastError = d || ("HTTP " + r.status); }
+    } catch (e) { j = null; h.lastError = e.message; }
+    if (!POLLERS.has(k)) return;                       // 等待期间被别的页取消了
+    h.miss = (ok && j) ? 0 : h.miss + 1;
+    const finish = (fn, arg) => { POLLERS.delete(k); if (fn) fn(arg); };
+    if (ok && j) {
+      let done = false;
+      try { done = !!onState && await onState(j); } catch (e) { console.warn(e); }
+      if (done) { finish(onDone, j); return; }
+    } else if (h.miss >= missMax) {
+      finish(onGiveUp, new Error("连续 " + h.miss + " 次查询不到任务" + (h.lastError ? "（" + h.lastError + "）" : "")));
+      return;
+    }
+    if (Date.now() - h.startedAt > maxMs) {
+      finish(onGiveUp, new Error("等待超时（超过 " + Math.round(maxMs / 60000) + " 分钟）"));
+      return;
+    }
+    h.timer = setTimeout(loop, interval);
+  };
+  loop();
+  return k;
+}
+
+// ---------- ① Style 组装：产出条 / 配方摘要 / 发送 ----------
+function styleText() { return (($("style") || {}).value || "").trim(); }
+function findPreset(id) {
+  if (!id) return null;
+  for (const f of FAMS) { const p = (f.items || []).find(x => x.id === id); if (p) return { fam: f, p }; }
+  return null;
+}
+// 人话摘要：让用户在点"发送"之前确认自己调出来的到底是什么
+function updateStyleRecipe() {
+  const el = $("styleRecipe");
+  if (!el) return;
+  const zh = (w) => W_ZH[w] || w;
+  const bits = [];
+  const langVal = (($("aLang") || {}).value || "").trim();
+  const langZh = (LANGS.find(l => l[0] === langVal) || [])[1];
+  if (langZh) bits.push(langZh);
+  const hit = findPreset(asm.preset);
+  if (hit) bits.push(hit.fam.zh + " · " + hit.p.zh);
+  const voiceZh = (VOICES.find(v => v[0] === (($("gender") || {}).value || "")) || [])[1];
+  if (voiceZh) bits.push(voiceZh);
+  if (asm.mood.length) bits.push(asm.mood.map(zh).slice(0, 3).join("/"));
+  if (asm.inst.length) bits.push(asm.inst.map(zh).slice(0, 3).join("+"));
+  const bpm = parseInt(($("bpm") || {}).value, 10);
+  if (bpm >= 40 && bpm <= 220) bits.push(bpm + " BPM");
+  el.textContent = bits.length ? "🧾 当前配方：" + bits.join(" · ") : "";
+}
+function syncStylePreview() {
+  const el = $("stylePreview");
+  if (el) {
+    const t = styleText();
+    el.textContent = t || "（还没选曲风：去 ① 点一张曲风卡片，或让 ⑧ AI 生成）";
+    el.title = t;
+  }
+  const mn = $("modelNow");
+  if (mn) {
+    const sel = $("modelSel");
+    const m = currentModels.find(x => x.path === (sel && sel.value));
+    mn.textContent = m ? (m.quant + " · " + m.size_gb + " GB") : ((sel && sel.value) ? "已选" : "未检测到模型");
+  }
+  if (typeof updateBatchSummary === "function") updateBatchSummary();
+}
+// 「发送」= 覆盖目标页的曲风（并留下出处），目标页的歌词与参数不受影响。
+// 目标页的来源条就显示这一段文本本身（同一 DOM，改一处两边都看得见）。
+function sendStyle(target) {
+  const t = styleText();
+  if (!t) { toast("Style 还是空的：先去点一张曲风卡片，或在产出框里自己写一句", "err"); switchTab("style"); return; }
+  LabStore.set({ style: t, asm: { fam: asm.fam, preset: asm.preset, mood: [...asm.mood], timbre: [...asm.timbre], inst: [...asm.inst], feel: [...asm.feel] }, lyrics: (($("lyrics") || {}).value || ""), from: "style" });
+  switchTab(target);
+  toast(target === "scoreSing" ? "曲风已带到 ④ 乐谱生成歌曲" : "曲风已带到 ② 歌词生成歌曲", "ok");
+}
+$("styleCopy").onclick = async () => {
+  const t = styleText();
+  if (!t) { toast("产出框是空的", "err"); return; }
+  try { await navigator.clipboard.writeText(t); toast("Style 已复制（" + t.length + " 字符）", "ok"); }
+  catch { const ta = $("style"); ta.select(); document.execCommand("copy"); toast("已复制（剪贴板 API 不可用，走了选中复制）"); }
+};
+$("toSing").onclick = () => sendStyle("sing");
+$("toScoreSing").onclick = () => sendStyle("scoreSing");
+$("toScoreSing2").onclick = () => { pushAbcToStore(); sendStyle("scoreSing"); };
+$("editStyle").onclick = () => switchTab("style");
+$("styleFromAI").onclick = () => switchTab("ailab");
+$("toSettingsModel").onclick = () => switchTab("settings");
+LabStore.subscribe(() => { syncStylePreview(); updateStyleRecipe(); });
+
+// ---------- ② 批次：连发与队列是两件事，摘要写在折叠标题上 ----------
+function updateBatchSummary() {
+  const sum = $("batchSum");
+  if (sum) {
+    const n = parseInt(($("genCount") || {}).value, 10) || 1;
+    sum.textContent = "连发 " + Math.max(1, Math.min(20, n)) + " 首 · 队列走后台";
+  }
+  const go = $("go");
+  if (go) {
+    const n = Math.max(1, Math.min(20, parseInt(($("genCount") || {}).value, 10) || 1));
+    const label = curTab === "scoreSing" ? "按谱生成" : "生成歌曲";
+    go.textContent = n > 1 ? label + " ×" + n : label;
+  }
+}
+$("genCount").addEventListener("input", () => { updateBatchSummary(); });
+$("queue").addEventListener("click", () => { $("batchMini").textContent = "队列已提交：去 ⑨ 任务管理看位次与「一键继续」。"; });
+
+// ---------- ③ 上传：拖拽与转谱锁 ----------
+// 转谱在服务端有串行锁（并发两份会互相覆盖输出目录），所以提交后必须锁住上传入口。
+function setScoreLock(on) {
+  const go = $("extractAbc"), drop = $("abcDrop"), box = $("abcAudio");
+  if (go) go.disabled = on;
+  if (box) box.disabled = on;
+  if (drop) drop.classList.toggle("on", on);
+}
+function bindDropZone(zoneId, inputId, onFiles) {
+  const zone = $(zoneId), input = $(inputId);
+  if (!zone || !input) return;
+  zone.addEventListener("click", () => { if (!input.disabled) input.click(); });
+  zone.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && !input.disabled) { e.preventDefault(); input.click(); } });
+  ["dragenter", "dragover"].forEach((ev) => zone.addEventListener(ev, (e) => { e.preventDefault(); if (!input.disabled) zone.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((ev) => zone.addEventListener(ev, (e) => { e.preventDefault(); zone.classList.remove("over"); }));
+  zone.addEventListener("drop", (e) => {
+    if (input.disabled) return;
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (!f) return;
+    const dt = new DataTransfer();
+    dt.items.add(f);
+    input.files = dt.files;
+    if (onFiles) onFiles(f); else input.dispatchEvent(new Event("change"));
+  });
+}
+bindDropZone("abcDrop", "abcAudio");
+// 把当前谱框内容记进 store（③→④ 的出处，也供 ④ 的"乐谱来源=用当前谱"判断）
+function pushAbcToStore() {
+  LabStore.set({ abc: (($("abc") || {}).value || "").trim(), from: "score" });
+}
+$("abcCopy").onclick = async () => {
+  const v = $("abc").value.trim();
+  if (!v) { toast("谱框是空的", "err"); return; }
+  try { await navigator.clipboard.writeText(v); toast("ABC 源码已复制", "ok"); } catch { $("abc").select(); document.execCommand("copy"); toast("已复制"); }
+};
+$("abcRetryPure").onclick = () => {
+  $("abcChords").checked = false;
+  $("abcRetryWrap").hidden = true;
+  $("abcStatus").textContent = "已改为纯旋律，请重新点选歌曲（带和弦里认不出的和弦性质会让整份谱失败）";
+  $("abcStatus").style.color = "var(--muted)";
+  $("abcAudio").click();
+};
+// 导出：mid 由转谱时归档，abc 直接给源码
+async function exportScore(fmt) {
+  const st = $("abcIoStatus");
+  const id = LabStore.state.scoreId;
+  if (!id) { st.textContent = "还没有可导出的乐谱：先在左边转一份谱，或从乐谱库点一行载入。"; return; }
+  st.textContent = "导出中…";
+  try {
+    const r = await fetchT("/api/scores/" + encodeURIComponent(id) + "/export?format=" + encodeURIComponent(fmt));
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      throw new Error(j.detail || j.error || ("HTTP " + r.status));
+    }
+    const blob = await r.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = (fmt === "mid" ? "score-" + id + ".mid" : "score-" + id + ".abc");
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    st.textContent = "✓ 已下载 " + a.download;
+  } catch (e) {
+    st.textContent = "✕ 导出失败：" + e.message + "（MIDI 只在转谱成功时才归档；手填的谱没有 MIDI 可导）";
+  }
+}
+$("abcExportMid").onclick = () => exportScore("mid");
+$("abcExportAbc").onclick = () => exportScore("abc");
+
+// ---------- ④ 乐谱来源三选 + 填词助手 ----------
+async function loadScorePicker() {
+  const sel = $("scorePick");
+  if (!sel) return;
+  try {
+    const list = await (await fetchT("/api/scores", {}, 15000)).json();
+    sel.innerHTML = "";
+    if (!list.length) {
+      const o = document.createElement("option"); o.value = ""; o.textContent = "乐谱库为空（去 ③ 转一份）";
+      sel.appendChild(o); return;
+    }
+    list.forEach((s) => {
+      const o = document.createElement("option");
+      o.value = s.id;
+      o.textContent = (s.time || s.id) + (s.cot ? " [" + s.cot + "]" : "") + " · " + (s.abc_preview || "").replace(/\s+/g, " ").slice(0, 34);
+      sel.appendChild(o);
+    });
+    if (LabStore.state.scoreId) sel.value = LabStore.state.scoreId;
+  } catch (e) { /* 拉不到列表只是不能"从库里选"，手填与从③带来不受影响 */ }
+}
+$("scoreSrc").onchange = () => {
+  const v = $("scoreSrc").value;
+  $("scoreLibWrap").hidden = v !== "lib";
+  $("scoreLoadBtn").hidden = v !== "lib";
+  if (v === "lib") loadScorePicker();
+  if (v === "manual" || v === "keep") $("abc").focus();
+};
+$("scoreLoadBtn").onclick = async () => {
+  const id = $("scorePick").value;
+  if (!id) { toast("乐谱库是空的", "err"); return; }
+  try {
+    const rec = await (await fetchT("/api/scores/" + encodeURIComponent(id), {}, 20000)).json();
+    $("abc").value = rec.abc || "";
+    const sug = rec.analysis && rec.analysis.cot_suggested;
+    if (sug) $("cot").value = sug;
+    if (typeof renderAbcAnalysis === "function") renderAbcAnalysis(rec.analysis);
+    LabStore.set({ abc: (rec.abc || "").trim(), scoreId: id, from: "lib" });
+    if (typeof analyzeAbcDebounced === "function") analyzeAbcDebounced();
+    toast("已载入乐谱 " + id, "ok");
+    updateLyricBarHint();
+  } catch (e) { toast("载入失败：" + e.message, "err"); }
+};
+$("scoreClear").onclick = () => {
+  if (!confirm("清空乐谱？清空后 ④ 就等于 ②：旋律由模型自己规划。")) return;
+  $("abc").value = "";
+  LabStore.set({ abc: "", scoreId: null });
+  if (typeof renderAbcAnalysis === "function") renderAbcAnalysis(null);
+  $("abcAnalysis").textContent = "";
+  updateLyricBarHint();
+};
+$("scoreFromAudio").onclick = () => { pushAbcToStore(); switchTab("score"); };
+// 填词助手：每段行数对不上谱的段落数/小节数时提前警告，别等生成 5 分钟才发现唱不下
+function updateLyricBarHint() {
+  const el = $("lyricBarWarn");
+  if (!el || curTab !== "scoreSing") return;
+  const abc = ($("abc") || {}).value || "";
+  const lines = (($("lyrics") || {}).value || "").split(/\n+/).map(s => s.trim()).filter(Boolean);
+  if (!abc.trim()) {
+    el.hidden = false;
+    el.innerHTML = "⚠ 还没有乐谱：④ 是「按谱演唱」，谱空着等于回到 ② 让模型自己编旋律。";
+    return;
+  }
+  const bars = (abc.match(/\|/g) || []).length;
+  const words = lines.filter(l => !/^\[.*\]$/.test(l)).length;
+  const notes = (abc.match(/[a-gA-G]/g) || []).length;
+  const msgs = [];
+  if (bars && words && bars < words) msgs.push("谱只有 " + bars + " 小节，歌词却有 " + words + " 行 —— 词多半唱不下，会被挤掉或糊在一起");
+  if (bars && words && bars > words * 3) msgs.push("谱有 " + bars + " 小节、词只有 " + words + " 行 —— 大量小节没人声，可能出器乐段");
+  if (!notes) msgs.push("谱里没解析到音符");
+  el.hidden = !msgs.length;
+  el.innerHTML = msgs.length ? "⚠ " + msgs.join("；") + "（这是轻量提示，不拦提交）" : "";
+}
+$("lyrics").addEventListener("input", () => { if (curTab === "scoreSing") updateLyricBarHint(); });
+
+// ---------- 状态摘要条（②④ 右栏顶部的"我填了什么"） ----------
+function paintScoreModeTag() {
+  const tag = $("scoreModeTag");
+  if (!tag) return;
+  const abc = (($("abc") || {}).value || "").trim();
+  if (!abc) { tag.textContent = "无谱 · 模型自己编旋律"; return; }
+  const chords = lastAbcAnalysis && lastAbcAnalysis.chord_count;
+  tag.textContent = "有谱 · " + (chords ? "带和弦（走 full）" : "纯旋律（走 melody）");
+}
+LabStore.subscribe(paintScoreModeTag);
+// ================= v2.0 · ⑩ 设置页 =================
+
+// 侧栏搬来的三样（模型校验 / 引擎模式 / 主题色）现在住在 ⑩。
+// 它们原来的回执写在 $("status")（② 的状态条）上：人在设置页切模型，却看不见任何回音。
+// 两个地方一起说——② 那边仍是原行为，不设"只在设置页才写"的条件（那会让人以为没生效）。
+function statusSay(msg, cls) {
+  for (const id of ["status", "settingsStatus"]) {
+    const el = $(id);
+    if (!el) continue;
+    el.className = "status" + (cls ? " " + cls : "");
+    el.textContent = msg;
+  }
+}
+
+// ---------- 系统信息（只读） ----------
+let sysCache = null;
+// 键必须写成 renderSys 实际产出的点号路径（walk 会把父级拼进前缀），
+// 只写叶子名会一行都匹配不上，整页退化成英文裸键。
+const SYS_LABEL = {
+  version: "版本", read_only: "只读说明",
+  // 后三个是 /api/system/info 缺席时退回 /api/health 用的裸键
+  gateway: "网关", backend: "引擎模式", audiocpp: "音频引擎",
+  "ports.gateway": "网关端口", "ports.dsh": "界面端口 (dsh)", "ports.audiocpp": "引擎端口",
+  "ports.ports_file": "端口真源文件", "ports.ports_file_exists": "端口文件在位",
+  "paths.root": "项目根目录", "paths.output_dir": "输出目录", "paths.runtime_dir": "运行目录",
+  "paths.scores_dir": "乐谱目录", "paths.records_dir": "听歌记录目录",
+  "paths.rvc_weights_dir": "RVC 音色目录", "paths.model_dir": "模型目录", "paths.log_dir": "日志目录",
+  "disk.output_free_mb": "输出盘剩余", "disk.output_total_mb": "输出盘总量",
+  "disk.output_files": "产物文件数", "disk.upload_floor_mb": "上传闸门",
+  "gpu.mode": "引擎模式", "gpu.total_mb": "显存总量", "gpu.free_mb": "显存空闲",
+  "gpu.used_mb": "显存已用", "gpu.headroom_mb": "显存留白", "gpu.query_failed": "显存查询失败",
+  "engines.audiocpp_alive": "音频引擎在线", "engines.vocal_separation_ready": "人声分离可用",
+  "engines.sheetsage2_ready": "SheetSage2 权重",
+  "engines.ai_workbench.ready": "AI 工作台就绪", "engines.ai_workbench.key_configured": "对话模型密钥",
+  "engines.ai_workbench.runner_exists": "dsh 启动脚本", "engines.ai_workbench.model": "对话模型",
+  "engines.ai_workbench.dsh_listening": "dsh 端口在听",
+};
+function fmtSysVal(k, v) {
+  if (v && typeof v === "object") return JSON.stringify(v);
+  if (typeof v === "boolean") return v ? "✅ 是" : "⛔ 否";
+  if (typeof v === "number" && /_mb$/.test(k)) return v >= 1024 ? (v / 1024).toFixed(1) + " GB" : v + " MB";
+  return String(v);
+}
+function kvAdd(rows, k, v) {
+  const d = document.createElement("div");
+  const kk = document.createElement("span");
+  kk.className = "k";
+  kk.textContent = SYS_LABEL[k] || SYS_LABEL[k.split(".").pop()] || k;
+  const vv = document.createElement("span"); vv.className = "v";
+  vv.textContent = fmtSysVal(k, v);
+  d.appendChild(kk); d.appendChild(vv); rows.push(d);
+}
+function renderSys(j) {
+  const box = $("sysInfo");
+  if (!box) return;
+  const rows = [];
+  const walk = (obj, prefix) => {
+    Object.entries(obj || {}).forEach(([k, v]) => {
+      if (v === null || v === undefined || v === "") return;
+      if (typeof v === "object" && !Array.isArray(v)) walk(v, prefix + k + ".");
+      else kvAdd(rows, prefix + k, Array.isArray(v) ? v.join("、") : v);
+    });
+  };
+  walk(j, "");
+  box.innerHTML = "";
+  if (!rows.length) { box.innerHTML = '<div class="empty">没有读到信息。</div>'; return; }
+  rows.forEach((r) => box.appendChild(r));
+}
+async function loadSysInfo() {
+  const box = $("sysInfo");
+  if (!box) return;
+  try {
+    const j = await (await fetchT("/api/system/info", {}, 15000)).json();
+    sysCache = j;
+    renderSys(j);
+    return;
+  } catch (e) {
+    sysCache = null;
+  }
+  // /api/system/info 不在（旧网关没重启）时退回 /api/health：至少引擎状态是真的，
+  // 并且要如实说明缺了什么，不能把半截数据摆成完整档案。
+  try {
+    const h = await (await fetchT("/api/health", {}, 8000)).json();
+    const rows = [];
+    kvAdd(rows, "gateway", h.gateway || "—");
+    kvAdd(rows, "backend", (h.audiocpp || {}).backend || "—");
+    kvAdd(rows, "audiocpp", (h.audiocpp || {}).status || "—");
+    kvAdd(rows, "端口", "只读项需要 /api/system/info（改过 app.py 后必须重启 7863 才生效）");
+    box.innerHTML = "";
+    rows.forEach((r) => box.appendChild(r));
+    box.insertAdjacentHTML("beforeend", '<div class="empty">⚠ 系统信息不完整：/api/system/info 还没生效（网关未重启？）</div>');
+  } catch (e2) {
+    box.innerHTML = '<div class="empty">✕ 读不到系统信息：' + escapeHtml(e2.message) + '</div>';
+  }
+}
+$("sysRefresh").onclick = () => { loadSysInfo(); refreshHealth(); refreshModelVerify(); };
+$("setLogPath").onclick = async () => {
+  const p = (sysCache && (sysCache.log_dir || (sysCache.paths && sysCache.paths.log_dir))) || "";
+  if (!p) { toast("还没读到日志目录：先点「↻ 刷新」", "err"); return; }
+  try { await navigator.clipboard.writeText(p); toast("日志目录已复制：" + p, "ok"); }
+  catch { toast("复制失败，路径是：" + p, "err"); }
+};
+$("setClearHist").onclick = async () => {
+  if (!confirm("清空任务历史？\n\n会删除服务端保存的历史任务记录与对应音频文件，且不可撤销。\n正在运行的任务不受影响（会返回 409）。")) return;
+  $("setClearHist").disabled = true;
+  try {
+    const r = await jfetch("/api/history/clear", { method: "DELETE" });
+    toast("已清空：" + ((r && (r.message || r.removed)) || "记录与音频已删除"), "ok");
+    statusSay("任务历史已清空", "ok");
+    renderHistory();
+  } catch (e) { toast("清空失败：" + e.message, "err"); }
+  finally { $("setClearHist").disabled = false; }
+};
+
+// ---------- 模型文件清单 + 修复进度 ----------
+async function loadModelFiles(pre) {
+  const box = $("modelFiles");
+  if (!box) return;
+  try {
+    const j = pre || await (await fetchT("/api/models/verify", {}, 30000)).json();
+    const files = j.files || [];
+    if (!files.length) { box.textContent = ""; return; }
+    const bad = files.filter((f) => !f.ok);
+    box.innerHTML = "";
+    box.insertAdjacentHTML("beforeend",
+      '<div style="margin-bottom:4px;">逐文件校验：<b>' + (j.ok ? "全部完整" : ("缺件 " + bad.length + " 项")) + "</b>（共 " + files.length + " 个文件）</div>");
+    files.forEach((f) => {
+      const d = document.createElement("div");
+      d.style.cssText = "display:flex;gap:8px;align-items:baseline;padding:2px 0;";
+      d.innerHTML = '<span style="flex:none;">' + (f.ok ? "✅" : "❌") + "</span>"
+        + "<span>" + escapeHtml(f.name || f.path || "?") + "</span>"
+        + (f.ok ? "" : '<span style="color:var(--err);">' + escapeHtml(f.reason || "不可用") + "</span>");
+      box.appendChild(d);
+    });
+  } catch (e) { box.textContent = "校验读不到：" + e.message; }
+}
+function renderRepair(j) {
+  const bar = $("repairProgressBar"), txt = $("repairStatus");
+  const files = (j && (j.files || j.total)) || 0;
+  const done = (j && ((j.repaired || []).length + (j.failed || []).length)) || 0;
+  if (bar) bar.style.width = (j && j.running && files) ? Math.round(done / files * 100) + "%" : (j && j.running ? "35%" : "100%");
+  if (txt) {
+    if (!j) { txt.textContent = ""; }
+    else if (j.running) txt.textContent = "修复中：" + (j.message || "…") + (files ? "（" + done + "/" + files + "）" : "");
+    else {
+      const okn = (j.repaired || []).length, badn = (j.failed || []).length;
+      txt.textContent = okn || badn
+        ? (badn ? "✕ 修复结束：补回 " + okn + " 个，仍失败 " + badn + " 个（" + escapeHtml((j.message || "") + "") + "）"
+               : "✓ 修复结束：补回 " + okn + " 个文件")
+        : (j.message ? "修复状态：" + j.message : "");
+      txt.className = "lint" + (badn ? " err" : "");
+    }
+  }
+}
+function watchRepair() {
+  if (isPolling("repair", "state")) return;
+  startPoller("repair", "state", {
+    url: "/api/models/repair/status",
+    interval: 3000,
+    missMax: 8,
+    maxMs: 90 * 60 * 1000,
+    onState: (j) => { renderRepair(j); refreshModelVerify(); return !j.running; },
+    onDone: () => { loadModelFiles(); loadSysInfo(); toast("修复任务已结束", "ok"); },
+    onGiveUp: (e) => { $("repairStatus").textContent = "✕ 修改进度读不到了：" + e.message; },
+  });
+}
+$("modelVerifyNow").onclick = () => { refreshModelVerify(); loadModelFiles(); };
+// ================= v2.0 · ⑦ 人声伴奏分离 =================
+const SEP_PARTS = [
+  { key: "vocals",           label: "人声（含和声）",  hint: "副歌有叠唱时里面混着和声；只想换音色用它" },
+  { key: "vocals_noharmony", label: "人声（去和声）",  hint: "只留主唱，训练素材与干净干声用它" },
+  { key: "accompaniment",    label: "伴奏",            hint: "无人声，转谱/做 instrumental/自己配人声用它" },
+];
+let sepCurrent = null;          // 本页正在盯的任务 id
+let sepAssets = null;           // 当前任务的产物清单 {part: 文件名}
+
+function sepSay(msg, cls) {
+  const el = $("sepStatus");
+  if (!el) return;
+  el.className = "status" + (cls ? " " + cls : "");
+  el.textContent = msg;
+}
+function sepSetRunning(on) {
+  const go = $("sepGo"), drop = $("sepDrop"), box = $("sepFile");
+  if (go) go.disabled = on;
+  if (box) box.disabled = on;
+  if (drop) drop.classList.toggle("on", on);
+  const stop = $("sepStop");
+  if (stop) stop.style.display = on ? "" : "none";
+}
+function fmtMb(bytes) { return bytes ? (bytes / 1048576).toFixed(1) + " MB" : ""; }
+
+// 产物卡：三行，每行都能试听 / 下载 / 送去别的页
+function renderSepParts(job) {
+  const box = $("sepResults");
+  if (!box) return;
+  const assets = job.assets || {};
+  const sizes = job.sizes || {};
+  if (!Object.keys(assets).length) {
+    box.innerHTML = '<div class="empty">暂无分离结果。</div>';
+    return;
+  }
+  box.innerHTML = "";
+  SEP_PARTS.forEach((p) => {
+    if (!assets[p.key]) return;
+    const url = "/api/audio/separate/audio/" + encodeURIComponent(sepCurrent) + "?part=" + p.key;
+    const row = document.createElement("div");
+    row.className = "h-item";
+    row.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 0;border-bottom:1px solid var(--line-soft);";
+    const name = document.createElement("b");
+    name.textContent = p.label;
+    name.style.cssText = "font:600 12.5px var(--sans);min-width:112px;";
+    const size = document.createElement("span");
+    size.className = "hint-xs";
+    size.textContent = fmtMb(sizes[p.key]) + " · " + assets[p.key];
+    const mk = (text, fn, cls) => {
+      const b = document.createElement("button");
+      b.className = cls || "ghost"; b.type = "button"; b.textContent = text;
+      b.style.cssText = "padding:3px 10px;font-size:11.5px;";
+      b.onclick = (e) => { e.stopPropagation(); fn(); };
+      return b;
+    };
+    row.appendChild(name);
+    row.appendChild(mk("▶ 试听", () => playRemoteAudio(url, p.label)));
+    row.appendChild(mk("⬇ 下载", () => downloadRemoteAudio(url, assets[p.key])));
+    if (p.key !== "accompaniment") {
+      row.appendChild(mk("→⑪ 换声", () => handoffAudio(p.key, "convert")));
+      row.appendChild(mk("→⑤ 训练素材", () => handoffAudio(p.key, "train")));
+    } else {
+      row.appendChild(mk("→③ 转谱", () => handoffAudio(p.key, "score")));
+    }
+    box.appendChild(row);
+    const h = document.createElement("div");
+    h.className = "hint-xs";
+    h.textContent = p.hint;
+    box.appendChild(h);
+  });
+  if (job.harmony_note) {
+    const n = document.createElement("div");
+    n.className = "lint";
+    n.style.color = "var(--warn)";
+    n.textContent = "⚠ " + job.harmony_note;
+    box.appendChild(n);
+  }
+}
+// 播放/下载走服务端文件：与历史页同一套（底部播放坞是全局共用的出口）
+function playRemoteAudio(url, label) {
+  fetchT(url, {}, 120000).then((r) => {
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.blob();
+  }).then((b) => loadAudio(b, label, label)).catch((e) => toast("试听失败：" + e.message, "err"));
+}
+function downloadRemoteAudio(url, fname) {
+  const a = document.createElement("a");
+  a.href = url; a.download = fname || "audio.wav";
+  document.body.appendChild(a); a.click(); a.remove();
+}
+// 跨页带音源：服务端文件拉成 File 塞进目标页的 file input。
+// file input 不能被赋路径，只能塞对象——所以"送去⑪/⑤"必须是真把音频取回来。
+async function handoffAudio(part, target) {
+  const id = sepCurrent;
+  if (!id) { toast("还没有可送的产物", "err"); return; }
+  const url = "/api/audio/separate/audio/" + encodeURIComponent(id) + "?part=" + part;
+  const label = (SEP_PARTS.find((p) => p.key === part) || {}).label || part;
+  const fname = id + "_" + part + ".wav";
+  if (target === "score" && !confirm("把这份" + label + "送去 ③ 转谱？\n\n送去后会立刻开始转谱（约 1-2 分钟，占用 GPU 串行队列）。")) return;
+  toast("正在取回" + label + "…", "");
+  const boxId = target === "convert" ? "rvcFile" : (target === "train" ? "rvcTrainFiles" : "abcAudio");
+  try {
+    await pullServerAudioInto(url, boxId, fname, target === "train");
+    switchTab(target);
+    if (target === "convert") {
+      const label2 = (SEP_PARTS.find((p) => p.key === part) || {}).label || part;
+      $("rvcFileNow").textContent = "音源：来自 ⑦ " + id + " · " + label2;
+      // 已经是纯人声了，再让它"先做人声分离"就是白跑一遍 GPU（还会把人声再切一遍）
+      if (part !== "accompaniment" && $("rvcSep").checked) {
+        $("rvcSep").checked = false;
+        $("rvcStatus").textContent = "已导入 " + label2 + "，「先做人声分离」自动取消勾选（再分离一次是白等约 1.5 分钟）。选音色与变调后即可换声。";
+      } else {
+        $("rvcStatus").textContent = "音源已从 ⑦ 分离结果导入（" + label2 + "），选音色与变调后即可换声。";
+      }
+    }
+    if (target === "train") {
+      $("rvcTrainFilesNow").textContent = "样本框里现有 " + $("rvcTrainFiles").files.length + " 个文件（刚从 ⑦ 追加）";
+      $("rvcTrainStatus").textContent = "素材已从 ⑦ 分离结果导入（" + (SEP_PARTS.find((p) => p.key === part) || {}).label + "）。建议先点「先体检素材」看时长/静音/爆音，再决定轮数。";
+      if (part === "vocals_noharmony" && $("rvcTrainClean").value !== "off" && !$("rvcTrainClean").dataset.touched) {
+        $("rvcTrainClean").value = "off";
+        toast("这份已经分离并去过和声，净化档位已切到「不净化」（再净化一遍只会把气声抹掉）", "ok");
+      }
+    }
+    if (target === "score") {
+      // ③ 的既有约定是"选完文件即提交转谱"，所以要真的把 change 发出去，
+      // 不能只写一句"进行中"却什么都没跑
+      $("abcAudio").dispatchEvent(new Event("change"));
+    }
+  } catch (e) {
+    toast("导入失败：" + e.message, "err");
+  }
+}
+async function pullServerAudioInto(url, inputId, fname, append) {
+  const el = $(inputId);
+  if (!el) throw new Error("目标页缺少文件框 " + inputId);
+  const blob = await (await fetchT(url, {}, 180000)).blob();
+  if (!blob.size) throw new Error("取回来的文件是空的");
+  const file = new File([blob], fname, { type: blob.type || "audio/wav" });
+  const dt = new DataTransfer();
+  if (append) [...el.files].forEach((f) => dt.items.add(f));
+  dt.items.add(file);
+  el.files = dt.files;
+  return file;
+}
+
+// ---------- 状态轮询 ----------
+function sepTick(j) {
+  const bar = $("sepProgressBar");
+  const pct = Number(j.progress || 0);
+  if (bar) bar.style.width = Math.max(pct, 3) + "%";
+  const step = j.step || (j.status === "pending" ? "排队中（等待 GPU 空闲）" : "进行中");
+  const el = j.elapsed_sec;
+  const extra = el ? "　已用 " + Math.round(el) + "s（约需 90-120s/首歌）" : "";
+  sepSay((j.status === "running" || j.status === "pending" ? "⏳ " : "") + step + extra, "");
+  renderSepParts(j);
+  return j.status === "done" || j.status === "error";
+}
+function sepWatch(id) {
+  sepCurrent = id;
+  startPoller("sep", id, {
+    url: "/api/audio/separate/status/" + encodeURIComponent(id),
+    interval: 4000,
+    missMax: 6,
+    maxMs: 40 * 60 * 1000,
+    onState: (j) => {
+      sepAssets = j.assets || null;
+      return sepTick(j);
+    },
+    onDone: (j) => {
+      sepSetRunning(false);
+      if (j.status === "error") {
+        // 失败必须说清原因，绝不静默给空文件（规划 §四-⑦ 验收点）
+        sepSay("✕ 分离失败：" + (j.error || "未知原因"), "err");
+        stickyNotify("人声分离失败", j.error || "未知原因", false);
+      } else {
+        $("sepProgress").querySelector("div").style.width = "100%";
+        sepSay("✓ 分离完成：" + Object.keys(j.assets || {}).length + " 份产物，可试听 / 下载 / 送去别的页", "ok");
+        stickyNotify("人声分离完成", "产物在 ⑦ 右侧，也已登记进 ⑨ 任务管理。", true);
+      }
+      loadSepList();
+    },
+    onGiveUp: (e) => { sepSetRunning(false); sepSay("✕ 查询不到这个分离任务：" + e.message, "err"); },
+  });
+}
+$("sepGo").onclick = async () => {
+  const f = $("sepFile").files[0];
+  if (!f) { toast("先点上面的虚线框选一首歌", "err"); $("sepFile").click(); return; }
+  const f2 = new FormData();
+  f2.append("audio", f);
+  f2.append("strip_harmony", $("sepHarmony").checked ? "on" : "off");
+  f2.append("task_name", $("sepName").value.trim());
+  $("sepGo").disabled = true;
+  sepSay("上传中（" + fmtMb(f.size) + "）…", "");
+  try {
+    const r = await fetchT("/api/audio/separate", { method: "POST", body: f2 }, 300000);
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.detail || j.error || ("HTTP " + r.status));
+    sepSay(j.gpu_busy ? "已提交：" + (j.gpu_note || "排队中") : "已开始分离（本机约 1.5 分钟/3.5 分钟歌）…", "");
+    $("sepFileName").textContent = "音源：" + f.name + " · " + fmtMb(f.size);
+    sepWatch(j.id);
+    setTimeout(loadSepList, 1200);
+  } catch (e) {
+    $("sepGo").disabled = false;
+    sepSay("✕ 提交失败：" + e.message, "err");
+  }
+};
+$("sepStop").onclick = () => {
+  // 只能取消"本页不再盯"：GPU 上的子进程由服务端串行队列管，前端无权强杀
+  if (!sepCurrent) return;
+  if (!confirm("停止跟踪这个分离任务？\n\n服务端仍在跑（跑完的产物照样能在 ⑨ 任务管理与下方记录里看到），本页只是不再轮询。")) return;
+  stopPoller("sep", sepCurrent);
+  sepSetRunning(false);
+  sepSay("已停止跟踪；任务仍在服务端排队/进行，稍后可在下方记录里看到结果。", "");
+};
+bindDropZone("sepDrop", "sepFile", () => {
+  const f = $("sepFile").files[0];
+  $("sepFileName").textContent = f ? ("已选：" + f.name + " · " + fmtMb(f.size)) : "";
+  if (f) $("sepGo").click();     // 与 ③ 一致：选完即提交，少一次"忘了点开始"
+});
+async function loadSepList() {
+  const box = $("sepList");
+  if (!box) return;
+  try {
+    const j = await (await fetchT("/api/audio/separate/list", {}, 20000)).json();
+    const items = j.items || [];
+    if (!items.length) { box.innerHTML = '<div class="empty">暂无分离记录。</div>'; return; }
+    box.innerHTML = "";
+    items.slice(0, 12).forEach((m) => {
+      const row = document.createElement("div");
+      row.className = "hist-item";
+      const head = document.createElement("div");
+      head.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap;";
+      const nm = document.createElement("b");
+      nm.textContent = (m.task_name || m.src_name || m.id);
+      nm.style.cssText = "font:600 12.5px var(--sans);flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+      const st = document.createElement("span");
+      st.className = "hint-xs";
+      st.textContent = (m.status === "done" ? "✓ 完成" : m.status === "error" ? "✕ 失败" : "⏳ " + (m.step || m.status))
+        + " · " + (m.ts || "") + " · " + ((m.parts || []).length) + " 份";
+      row.appendChild(head); head.appendChild(nm); head.appendChild(st);
+      (m.parts || []).forEach((p) => {
+        const b = document.createElement("button");
+        b.className = "ghost"; b.type = "button";
+        b.textContent = "⬇ " + ((SEP_PARTS.find((x) => x.key === p) || {}).label || p);
+        b.style.cssText = "padding:2px 9px;font-size:11.5px;margin-top:4px;";
+        b.onclick = () => downloadRemoteAudio("/api/audio/separate/audio/" + encodeURIComponent(m.id) + "?part=" + p, m.id + "_" + p + ".wav");
+        row.appendChild(b);
+      });
+      if (m.status === "error" && m.error) {
+        const e2 = document.createElement("div");
+        e2.className = "lint"; e2.style.color = "var(--err)"; e2.textContent = m.error;
+        row.appendChild(e2);
+      }
+      if (m.status === "running" || m.status === "pending") { sepCurrent = m.id; sepSetRunning(true); sepWatch(m.id); }
+      box.appendChild(row);
+    });
+  } catch (e) { box.innerHTML = '<div class="empty">分离记录读不到：' + escapeHtml(e.message) + "</div>"; }
+}
+// ================= v2.0 · ⑥ 音色库（子页签 / 分析卡 / 导入） =================
+
+// 子页签只管显隐，不重画列表：筛选词与已渲染的卡片都留在原处，切回来不丢状态。
+// 拆两区的原因（规划 §四-⑥）：两套音色同名不同物，平铺时用户会把 .pth 存进参考库、
+// 或把参考音频当 RVC 模型用，两边都不生效且没有任何报错。
+let voiceTab = "rvc";
+function setVoiceTab(which) {
+  const rvc = which !== "ref";
+  voiceTab = rvc ? "rvc" : "ref";
+  const pr = $("voicePaneRvc"), pf = $("voicePaneRef");
+  if (pr) pr.hidden = !rvc;
+  if (pf) pf.hidden = rvc;
+  $$("#voiceTabs .subtab").forEach((b) => b.classList.toggle("active", b.dataset.vtab === (rvc ? "rvc" : "ref")));
+  const cr = $("voiceCountRvc"), cf = $("voiceCountRef"), cf2 = $("voiceRefCount");
+  if (cr) cr.textContent = rvcModelsAll.length ? " " + rvcModelsAll.length : "";
+  const n = $("voiceGrid") ? $("voiceGrid").querySelectorAll(".voice-card").length : 0;
+  if (cf) cf.textContent = n ? " " + n : "";
+  if (cf2) cf2.textContent = n ? n + " 条" : "";
+}
+$$("#voiceTabs .subtab").forEach((b) => { b.onclick = () => setVoiceTab(b.dataset.vtab); });
+
+// ---------- 音色分析卡 ----------
+// 判断"这个嗓子能不能唱这首歌"需要体检 + 音域 + 安全区间 + 索引四样同时在眼前；
+// 以前这些数字分散在体检提示与训练日志里，得翻两个地方才凑齐。
+let voiceInfoSel = null;
+async function showVoiceInfo(name, force) {
+  const box = $("voiceInfo");
+  if (!box || !name) return;
+  voiceInfoSel = name;
+  const t = $("voiceInfoName"); if (t) t.textContent = name.replace(/\.pth$/i, "");
+  $("voiceInfoRecheck").disabled = false;
+  $("voiceInfoGoConvert").disabled = false;
+  box.innerHTML = '<div class="empty">读取中…</div>';
+  const item = rvcModelsAll.find((m) => m.name === name) || {};
+  let check = null, checkErr = "";
+  try {
+    const r = await fetchT("/api/rvc/models/" + encodeURIComponent(name) + "/check" + (force ? "?force=1" : ""), {}, 60000);
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) check = j; else checkErr = j.detail || j.error || ("HTTP " + r.status);
+  } catch (e) { checkErr = e.message; }
+  const rows = [];
+  const row = (k, vHtml) => {
+    const d = document.createElement("div");
+    const kk = document.createElement("span"); kk.className = "k"; kk.textContent = k;
+    const vv = document.createElement("span"); vv.className = "v"; vv.innerHTML = vHtml;
+    d.appendChild(kk); d.appendChild(vv); rows.push(d);
+  };
+  if (check) {
+    const cs = check.checks || {};
+    row("体检", escapeHtml(check.summary || (check.ok ? "通过" : "有问题"))
+        + "<br>" + Object.entries(cs).map(([k, ok]) => (ok ? "✅ " : "❌ ") + escapeHtml(k)).join("　"));
+    const inf = check.info || {};
+    row("底模规格", escapeHtml([inf.sr, inf.version, inf.f0 ? "带 f0 预测头" : "无 f0 头", inf.epoch ? "epoch " + inf.epoch : ""]
+        .filter(Boolean).join(" · ") || "—"));
+    row("检索索引", check.index ? "✅ " + escapeHtml(check.index)
+        : '<span style="color:var(--err)">❌ 没有索引：换声会退化成无检索模式，音色相似度上不去。可去 ⑤ 用素材训练一份，或「导入」时带上 .index</span>');
+  } else {
+    row("体检", '<span style="color:var(--err)">✕ 读不到：' + escapeHtml(checkErr || "未知错误") + "</span>");
+  }
+  const fr = item.f0_range;
+  if (fr) {
+    row("音域档案", "中位 <b>" + fr.median_hz + " Hz</b>　舒适区 " + fr.p5_hz + "–" + fr.p95_hz + " Hz　p99 " + (fr.p99_hz || "—") + " Hz");
+    row("音域来源", fr.source === "training"
+        ? "本机训练素材实测（" + (fr.frames || 0) + " 帧 / " + (fr.files || 0) + " 个切片）"
+        : "外部参考音频建档" + (fr.analyzed_sec ? "（读了 " + Math.round(fr.analyzed_sec) + " 秒）" : ""));
+  } else {
+    row("音域档案", '<span style="color:var(--warn)">无档案——⑪ 换声页对这个音色给不出变调建议（不猜）。点卡片上的「建档音域」上传该歌手本人 10~30 秒干声量一次。</span>');
+  }
+  row("安全变调", item.safe_range ? escapeHtml(item.safe_range)
+      : (fr ? "要有一首源歌才算得出：去 ⑪ 点「分析音域 → 变调建议」" : "没有音域档案，算不出安全变调区间"));
+  row("规格", escapeHtml([item.size_mb ? item.size_mb + " MB" : "", item.mtime ? "文件时间 " + item.mtime : ""]
+      .filter(Boolean).join(" · ") || "—"));
+  row("来源", escapeHtml(item.f0_source === "training" ? "本机训练" : "外部导入 / 下载")
+      + (item.range_note ? "　·　" + escapeHtml(item.range_note) : ""));
+  const rec = item.recommend || {};
+  if (Object.keys(rec).length) row("官方推荐档", escapeHtml(Object.entries(rec).map(([k, v]) => k + "=" + v).join("　")));
+  box.innerHTML = "";
+  rows.forEach((r) => box.appendChild(r));
+}
+// 点卡片＝选中看分析。卡片上原有 5 个操作按钮各自 stopPropagation，不会被这一击误触发
+{
+  const bindCards = () => {
+    const el = $("rvcModelList");
+    if (!el) return;
+    el.querySelectorAll(".m-item").forEach((card) => {
+      if (card.dataset.infoBound) return;
+      card.dataset.infoBound = "1";
+      card.addEventListener("click", () => {
+        const nm = card.querySelector(".m-name");
+        if (!nm) return;
+        el.querySelectorAll(".m-item").forEach((c) => c.classList.remove("on"));
+        card.classList.add("on");
+        const want = nm.textContent.trim();
+        const hit = rvcModelsAll.find((m) => m.name === want || m.name.replace(/\.pth$/i, "") === want);
+        if (hit) showVoiceInfo(hit.name);
+      });
+    });
+  };
+  new MutationObserver(bindCards).observe($("rvcModelList") || document.documentElement, { childList: true, subtree: true });
+}
+$("voiceInfoRecheck").onclick = async () => {
+  if (!voiceInfoSel) return;
+  const btn = $("voiceInfoRecheck");
+  btn.disabled = true; btn.textContent = "体检中…";
+  await showVoiceInfo(voiceInfoSel, true);   // force=1：绕过服务端的 mtime/size 缓存，真重检一遍
+  btn.disabled = false; btn.textContent = "↻ 重新体检（不吃缓存）";
+};
+$("voiceInfoGoConvert").onclick = () => {
+  if (!voiceInfoSel) return;
+  switchTab("convert");
+  const sel = $("rvcModel");
+  const found = sel && [...sel.options].some((o) => o.value === voiceInfoSel);
+  if (found) { sel.value = voiceInfoSel; sel.dispatchEvent(new Event("change")); }
+  toast(found ? "已选中音色：" + voiceInfoSel.replace(/\.pth$/i, "")
+              : "⑪ 的音色下拉里还没有「" + voiceInfoSel.replace(/\.pth$/i, "") + "」，请手动选一个",
+        found ? "ok" : "err");
+};
+
+// ---------- 导入外部音色 ----------
+// 后端强制建档：外部 .pth 没有训练实测音域，不建档 ⑪ 就没有变调建议，
+// 所以参考音频是该音色的必需项（本机训练过的音色则不许用参考档案降级）。
+let imp = { pth: null, idx: null, ref: null, overwrite: false };
+function impRepaint() {
+  const box = $("rvcImportPick"), go = $("rvcImportGo"), cancel = $("rvcImportCancel");
+  if (!box) return;
+  const size = (f) => f ? (f.size / 1048576).toFixed(1) + " MB" : "";
+  if (!imp.pth) {
+    box.hidden = true; go.style.display = "none"; cancel.style.display = "none"; box.innerHTML = "";
+    $("rvcImportStatus").textContent = ""; return;
+  }
+  box.hidden = false;
+  box.innerHTML = "待导入：<b>" + escapeHtml(imp.pth.name) + "</b>（" + size(imp.pth) + "）"
+    + (imp.idx ? "　索引 " + escapeHtml(imp.idx.name) : "　<i>无索引（可选，缺了相似度下降）</i>")
+    + (imp.ref ? "　建档参考音频 " + escapeHtml(imp.ref.name) : '　<span style="color:var(--warn)">缺建档参考音频（外部音色必需）</span>')
+    + (imp.overwrite ? "　<b>同名将替换</b>" : "");
+  go.style.display = ""; cancel.style.display = "";
+  go.textContent = imp.overwrite ? "确认替换并导入" : "提交导入";
+}
+function pickFile(inputId, cb) {
+  const el = $(inputId);
+  el.onchange = () => { cb(el.files[0] || null); impRepaint(); };
+  el.click();
+}
+$("rvcImportBtn").onclick = () => pickFile("rvcImportPth", (f) => {
+  if (!f) return;
+  if (!/\.pth$/i.test(f.name)) { toast("只能导入 .pth 权重文件", "err"); $("rvcImportPth").value = ""; return; }
+  imp.pth = f; $("rvcImportStatus").textContent = "";
+  pickFile("rvcImportIndex", (g) => { imp.idx = g; });        // 索引可选：取消也能继续
+});
+$("rvcImportIndex").addEventListener("change", () => { imp.idx = $("rvcImportIndex").files[0] || null; });
+$("rvcImportRefBtn") && ($("rvcImportRefBtn").onclick = () => pickFile("rvcImportRef", (f) => { imp.ref = f; }));
+$("rvcImportCancel").onclick = () => {
+  imp = { pth: null, idx: null, ref: null, overwrite: false };
+  $("rvcImportPth").value = ""; $("rvcImportIndex").value = ""; $("rvcImportRef").value = "";
+  impRepaint();
+};
+async function doImport() {
+  const st = $("rvcImportStatus");
+  $("rvcImportGo").disabled = true;
+  st.className = "status";
+  st.textContent = "上传中（" + (imp.pth.size / 1048576).toFixed(1) + " MB，外加建档要跑一次 F0 提取，耐心等）…";
+  const fd = new FormData();
+  fd.append("model", imp.pth);
+  if (imp.idx) fd.append("index", imp.idx);
+  if (imp.ref) fd.append("ref_audio", imp.ref);
+  fd.append("overwrite", imp.overwrite ? "on" : "off");
+  try {
+    const r = await fetchT("/api/rvc/models/import", { method: "POST", body: fd }, 600000);
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const msg = j.detail || j.error || ("HTTP " + r.status);
+      if (r.status === 409 && !imp.overwrite) {
+        st.className = "status err";
+        st.textContent = "⚠ " + msg + "　点「确认替换并导入」会用新权重替换它（旧文件先备份，不静默覆盖）。";
+        imp.overwrite = true; impRepaint();
+        return;
+      }
+      throw new Error(msg);
+    }
+    const f0 = j.f0_reference || {};
+    const bits = ["✓ 已导入 " + (j.name || "")];
+    bits.push(j.index ? "索引 " + j.index : "无索引");
+    if (j.overwritten) bits.push("（替换了同名旧文件）");
+    if (f0.source === "training") bits.push("音域沿用训练实测");
+    else if (f0.ok && f0.attempted) bits.push("音域已建档：中位 " + ((f0.stats && (f0.stats.median_hz || f0.stats.median)) || "?") + " Hz");
+    else if (f0.ok) bits.push("音域沿用已有档案（" + (f0.note || "本次未带参考音频") + "）");
+    else bits.push("⚠ 音域建档失败：" + (f0.error || "未知"));
+    st.textContent = bits.join("　");
+    st.className = "status" + (f0.ok ? " ok" : "");
+    if (j.warning) { st.textContent += "　" + j.warning; }
+    imp = { pth: null, idx: null, ref: null, overwrite: false };
+    $("rvcImportPth").value = ""; $("rvcImportIndex").value = ""; $("rvcImportRef").value = "";
+    impRepaint();
+    renderRvcModels();
+    if (typeof renderRvc === "function") renderRvc();
+  } catch (e) {
+    st.className = "status err";
+    st.textContent = "✕ 导入失败：" + e.message;
+  } finally { $("rvcImportGo").disabled = false; }
+}
+$("rvcImportGo").onclick = () => {
+  if (!imp.pth) { toast("先选一个 .pth 文件", "err"); $("rvcImportPth").click(); return; }
+  if (!imp.ref && !imp.overwrite) {
+    if (!confirm("没带「建档参考音频」。\n\n外部下载的音色必须有音域档案，否则 ⑪ 换声页给不出变调建议（页面会显示「无音域」而不是猜一个）。\n\n确定先不建档、只把 .pth 入库吗？（之后可在音色卡片上点「建档音域」补一次）")) return;
+  }
+  doImport();
+};
+// ---------- ⑦ → ⑪ / ⑤ 的音源通道 ----------
+// 分离完直接换声、直接开练是最高频的两条路。file input 不能塞服务器路径，只能把产物
+// 取回来做成 File 再塞进去——所以"导入"是真取音频，不是记个路径字符串。
+async function sepSourceOptions() {
+  const j = await (await fetchT("/api/audio/separate/list", {}, 25000)).json();
+  const done = (j.items || []).filter((m) => m.status === "done" && (m.parts || []).length);
+  const out = [];
+  done.slice(0, 12).forEach((m) => {
+    const label = (m.task_name || m.src_name || m.id).slice(0, 26);
+    m.parts.forEach((p) => {
+      out.push({ v: m.id + "|" + p, t: label + " · " + ((SEP_PARTS.find((x) => x.key === p) || {}).label || p) + " · " + (m.ts || "").slice(5, 16) });
+    });
+  });
+  return out;
+}
+function pickSepSource(btn, title, onPick) {
+  sepSourceOptions().then((opts) => {
+    if (!opts.length) {
+      toast("⑦ 还没有分离好的产物：先去 ⑦ 人声伴奏分离跑一首", "err");
+      switchTab("sep");
+      return;
+    }
+    inlineForm(btn, {
+      anchor: btn.parentElement, title, okText: "导入", busyText: "取回中…",
+      hint: "取回后要几分钟？产物在服务器本地，只是换一页重新提交，不重跑分离。",
+      fields: [{ id: "src", label: "选一份分离产物", kind: "select", options: opts, value: opts[0].v }],
+    }, async (vals) => {
+      const [id, part] = String(vals.src).split("|");
+      const f = await pullServerAudioInto("/api/audio/separate/audio/" + encodeURIComponent(id)
+        + "?part=" + encodeURIComponent(part), onPick.input, id + "_" + part + ".wav", onPick.append);
+      onPick.after(f, id, part);
+    });
+  }).catch((e) => toast("读分离记录失败：" + e.message, "err"));
+}
+$("rvcFromSep").onclick = () => pickSepSource($("rvcFromSep"), "导入 ⑦ 的分离产物当音源", {
+  input: "rvcFile", append: false,
+  after: (f, id, part) => {
+    $("rvcFileNow").textContent = "音源：" + f.name + "（来自 ⑦ " + id + " · " + ((SEP_PARTS.find((x) => x.key === part) || {}).label || part) + "）";
+    // 已经是纯人声了，再让它"先做人声分离"就是白跑一遍 GPU（而且会把人声再切一遍）
+    if (part !== "accompaniment" && $("rvcSep").checked) {
+      $("rvcSep").checked = false;
+      $("rvcStatus").textContent = "已导入纯人声，「先做人声分离」自动取消勾选（再分离一次是白等 1.5 分钟）。";
+    }
+    toast("音源已导入", "ok");
+  },
+});
+$("trainFromSep").onclick = () => pickSepSource($("trainFromSep"), "导入 ⑦ 的分离人声当训练素材", {
+  input: "rvcTrainFiles", append: true,
+  after: (f, id, part) => {
+    const n = $("rvcTrainFiles").files.length;
+    $("rvcTrainFilesNow").textContent = "样本框里现有 " + n + " 个文件（刚从 ⑦ 追加：" + ((SEP_PARTS.find((x) => x.key === part) || {}).label || part) + "）";
+    if (part === "vocals_noharmony" && $("rvcTrainClean").value !== "off" && !$("rvcTrainClean").dataset.touched) {
+      $("rvcTrainClean").value = "off";
+      toast("这份已经分离并去过和声，净化档位已切到「不净化」（再净化一遍只会把气声抹掉）", "ok");
+    }
+    $("rvcTrainStatus").textContent = "素材已从 ⑦ 导入。建议先点「先体检素材」看时长/静音/爆音，再决定轮数。";
+  },
+});
+// 伴奏送去转谱时同理：转谱不需要人声，勾选状态不用管（③ 里没有分离步骤）
+// ================= v2.0 · ⑨ 轻量任务行 / ② 成片出口 / ⑧ 会话与回填 =================
+
+// ---------- ⑨ 乐谱提取与分离两类：轻量行 ----------
+// 它们没有音频产物也没有歌词，硬套生成任务那 12 个按钮只会出一排禁用态，
+// 所以单开一种行：状态 + 一句摘要 + 这一类真正用得上的三个动作。
+function lightTaskRow(h) {
+  const d = document.createElement("div");
+  d.className = "hist-item";
+  const isScore = h.kind === "score";
+  // 聚合端点给分离条目带的是 assets（文件名），不是 parts（产物键名）：
+  // 两边都认，否则任务管理里的分离行会一个下载按钮都不长
+  const parts = (h.parts && h.parts.length) ? h.parts : Object.keys(h.assets || {});
+  const title = isScore ? ("乐谱 " + (h.cot ? "[" + h.cot + "]" : " ") + (h.time || h.ts || h.id))
+                        : (h.task_name || h.src_name || h.id);
+  const stMap = { done: "✓ 成功", error: "✕ 失败", cancelled: "⏹ 已终止", pending: "⏳ 排队中" };
+  const stTxt = stMap[h.status] || "⏳ 进行中";
+  const stColor = h.status === "done" ? "var(--ok)" : (h.status === "error" || h.status === "cancelled") ? "var(--err)" : "var(--acc-text)";
+  const preview = isScore ? String(h.abc_preview || "").replace(/\s+/g, " ").slice(0, 70)
+    : (parts.length
+        ? (parts.length + " 份产物：" + parts.map((x) => ((SEP_PARTS.find((sp) => sp.key === x) || {}).label || x)).join("、"))
+        : (h.step || ""));
+  const col = document.createElement("div");
+  col.className = "h-col";
+  col.innerHTML = '<div class="h-title">' + escapeHtml((isScore ? "🎼 乐谱提取 · " : "✂ 分离 · ") + String(title)) + "</div>"
+    + '<div class="h-sub">' + [h.ts || h.time ? timeAgo(h.ts || h.time) : "", idTag(h.id)].filter(Boolean).join(" ") + "</div>"
+    + '<div class="h-sub" style="font-size:12px;">' + escapeHtml(preview || "—") + "</div>"
+    + (h.error ? '<div class="h-sub" style="color:var(--err);">' + escapeHtml(String(h.error).slice(0, 160)) + "</div>" : "");
+  const st = document.createElement("div");
+  st.className = "h-col h-col-st"; st.style.color = stColor; st.textContent = stTxt;
+  const acts = document.createElement("div");
+  acts.className = "h-col";
+  const mk = (t, fn, cls) => {
+    const b = document.createElement("button");
+    b.className = cls || "ghost"; b.type = "button"; b.textContent = t;
+    b.style.cssText = "padding:3px 10px;font-size:11.5px;";
+    b.onclick = (e) => { e.stopPropagation(); fn(b); };
+    acts.appendChild(b);
+    return b;
+  };
+  if (isScore) {
+    mk("↩ 载入到 ③", async () => {
+      try {
+        const rec = await (await fetchT("/api/scores/" + encodeURIComponent(h.id), {}, 25000)).json();
+        $("abc").value = rec.abc || "";
+        if (rec.analysis && rec.analysis.cot_suggested) $("cot").value = rec.analysis.cot_suggested;
+        if (typeof renderAbcAnalysis === "function") renderAbcAnalysis(rec.analysis);
+        LabStore.set({ abc: (rec.abc || "").trim(), scoreId: h.id, from: "history" });
+        switchTab("score");
+        toast("已载入乐谱到 ③", "ok");
+      } catch (e) { toast("载入失败：" + e.message, "err"); }
+    });
+    mk("⬇ MIDI", () => exportScoreById(h.id, "mid"));
+    mk("⬇ ABC", () => exportScoreById(h.id, "abc"));
+    mk("✕ 删除", async (b) => {
+      if (!confirm("删除这份乐谱？\n\n转谱时归档的 MIDI 等中间文件会一起删除（原音频不受影响），本机不可恢复。")) return;
+      b.disabled = true;
+      try {
+        const r = await fetch("/api/scores/" + encodeURIComponent(h.id), { method: "DELETE" });
+        if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || "删除失败"); }
+        toast("已删除（含归档目录）", "ok"); renderHistory();
+      } catch (e) { toast(e.message, "err"); b.disabled = false; }
+    }, "danger");
+  } else {
+    parts.forEach((part) => {
+      mk("⬇ " + (((SEP_PARTS.find((x) => x.key === part) || {}).label) || part), () =>
+        downloadRemoteAudio("/api/audio/separate/audio/" + encodeURIComponent(h.id) + "?part=" + encodeURIComponent(part), h.id + "_" + part + ".wav"));
+    });
+    if (parts.includes("vocals") || parts.includes("vocals_noharmony")) {
+      mk("→⑪ 换声", () => {
+        sepCurrent = h.id;
+        const part = parts.includes("vocals_noharmony") ? "vocals_noharmony" : "vocals";
+        handoffAudio(part, "convert");
+      });
+    }
+    mk("→⑦ 打开", () => { sepCurrent = h.id; switchTab("sep"); loadSepList(); });
+    mk("✕ 删除", async (b) => {
+      if (!confirm("删除这条分离记录与它的产物文件？\n\n人声/伴奏的 wav 会一起从 output/ 清掉，本机不可恢复。")) return;
+      b.disabled = true;
+      try {
+        const r = await fetch("/api/generate/" + encodeURIComponent(h.id), { method: "DELETE" });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(r.status === 409 ? (j.detail || "任务进行中，不能删除") : (j.detail || "删除失败"));
+        toast("已删除（含产物）", "ok"); renderHistory();
+      } catch (e) { toast(e.message, "err"); b.disabled = false; }
+    }, "danger");
+  }
+  d.appendChild(col); d.appendChild(st); d.appendChild(acts);
+  return d;
+}
+async function exportScoreById(id, fmt) {
+  try {
+    const r = await fetchT("/api/scores/" + encodeURIComponent(id) + "/export?format=" + encodeURIComponent(fmt));
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || ("HTTP " + r.status)); }
+    const blob = await r.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "score-" + id + "." + (fmt === "mid" ? "mid" : "abc");
+    a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    toast("已开始下载 " + a.download, "ok");
+  } catch (e) { toast("导出失败：" + e.message, "err"); }
+}
+
+// ---------- ② 成片出口 ----------
+// 出片以后真正会做的事有五种：试听、拿 WAV、拿 LRC、拿逐字 eLRC、送去换声。
+// 以前只有播放坞那一条，剩下四样都要绕去 ⑨ 把刚跑完的那条找回来。
+function renderGenResult(job) {
+  const box = $("genResult"), acts = $("genResultActs"), note = $("genResultNote"), idg = $("genResultId");
+  if (!box || !job || !job.id) return;
+  box.hidden = false;
+  if (idg) idg.innerHTML = idTag(job.id);
+  acts.innerHTML = "";
+  if (note) note.textContent = "";
+  const mk = (t, fn, cls) => {
+    const b = document.createElement("button");
+    b.className = cls || "ghost"; b.type = "button"; b.textContent = t;
+    b.style.cssText = "padding:4px 11px;font-size:12px;";
+    b.onclick = () => { Promise.resolve(fn(b)).catch((e) => toast(e.message || String(e), "err")); };
+    acts.appendChild(b);
+    return b;
+  };
+  mk("▶ 试听", async () => {
+    const r = await fetchT("/api/generate/audio/" + job.id);
+    if (!r.ok) throw new Error("音频文件取不到（HTTP " + r.status + "）");
+    loadAudio(await r.blob(), job.id + ".wav", job.task_name || (job.style || "").split(",")[0]);
+  });
+  mk("⬇ WAV", () => {
+    const a = document.createElement("a");
+    a.href = "/api/generate/audio/" + encodeURIComponent(job.id);
+    a.download = dlName(job.task_name || (job.style || "").split(",")[0] || job.id) + ".wav";
+    document.body.appendChild(a); a.click(); a.remove();
+  });
+  mk("⬇ LRC", (b) => grabTimeline(job.id, "lrc", b, job.task_name || (job.style || "").split(",")[0]));
+  mk("⬇ 逐字 eLRC", (b) => grabTimeline(job.id, "elrc", b, job.task_name || (job.style || "").split(",")[0]));
+  mk("🎙 送去 ⑪ 换声", (b) => forwardToConvert(job, b));
+  mk("↩ 改曲风重跑", () => switchTab("style"), "primary");
+}
+// 时间轴是后台异步构建的：没构建完就先提交构建再等，别把"还没有"说成"失败"
+async function grabTimeline(rid, fmt, btn, nameForFile) {
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = "查询中…";
+  try {
+    let r = await fetch("/api/generate/lrc/" + encodeURIComponent(rid));
+    let j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.detail || "状态查询失败");
+    if (j.status === "none") {
+      btn.textContent = "对齐中…";
+      const pr = await fetch("/api/generate/lrc/" + encodeURIComponent(rid), { method: "POST" });
+      if (!pr.ok) { const pj = await pr.json().catch(() => ({})); throw new Error(pj.detail || "提交对齐失败"); }
+      j = { status: "running" };
+    }
+    if (j.status !== "done") {
+      btn.textContent = "对齐中…";
+      for (let i = 0; i < 120; i++) {
+        await new Promise((res) => setTimeout(res, 2000));
+        const rr = await fetch("/api/generate/lrc/" + encodeURIComponent(rid));
+        const jj = await rr.json().catch(() => ({}));
+        if (jj.status === "done") { j = jj; break; }
+        if (jj.status === "error") throw new Error(jj.error || "对齐失败");
+      }
+      if (j.status !== "done") throw new Error("对齐超时（4 分钟），稍后再点一次即可");
+    }
+    const text = fmt === "elrc" ? j.elrc : j.lrc;
+    if (!text) throw new Error(fmt === "elrc"
+      ? "这份对齐结果没有逐字版本（当前语言/引擎只产出行级时间轨），可下载 LRC"
+      : "没有可用的行级歌词文本");
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = dlName(nameForFile || rid) + (fmt === "elrc" ? ".elrc" : ".lrc");
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    toast("已开始下载 " + (fmt === "elrc" ? "逐字 eLRC" : "LRC"), "ok");
+  } finally { btn.disabled = false; btn.textContent = old; }
+}
+// 服务端直接从 output/ 取这份歌去换声，不需要用户重新上传一遍
+function forwardToConvert(job, btn) {
+  let models = [];
+  const sel = $("rvcModel");
+  if (sel) models = [...sel.options].map((o) => o.value);
+  const open = () => {
+    const pitchDefault = (typeof rvcReco !== "undefined" && rvcReco && rvcReco.pitch !== null)
+      ? rvcReco.pitch : (parseInt($("rvcPitch").value, 10) || 0);
+    inlineForm(btn, {
+      anchor: btn.parentElement, title: "🎤 送去换声：" + (job.task_name || (job.style || "").split(",")[0] || job.id),
+      okText: "开始换声", busyText: "提交中…",
+      hint: "变调半音：男转女 +12 / 女转男 -12 / 不变 0；其余档位沿用 ⑪ 页当前设置。",
+      fields: [
+        { id: "model", label: "音色", kind: "select", options: models.map((m) => ({ v: m, t: m.replace(/\.pth$/i, "") })), value: models[0] },
+        { id: "pitch", label: "变调", kind: "number", value: pitchDefault, min: -36, max: 36, maxlen: 4 },
+      ],
+      validate: (v) => {
+        if (!models.length) return { msg: "音色库是空的：先去 ⑤ 训练或 ⑥ 导入一个音色" };
+        if (!/^[+-]?\d{1,3}$/.test(v.pitch)) return { msg: "变调要填整数半音（例如 12、-12、0）", focus: "pitch" };
+        const p = Number(v.pitch);
+        if (p < -36 || p > 36) return { msg: "变调超出 ±36 半音，确认没填错", focus: "pitch" };
+        return null;
+      },
+    }, async (v) => {
+      const r = await fetch("/api/rvc/convert/" + encodeURIComponent(job.id), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: v.model,
+          task_name: (((job.task_name || (job.style || "").split(",")[0] || "")) + "·" + v.model.replace(/\.pth$/i, "")).slice(0, 100),
+          ...rvcParamValues(Number(v.pitch)),
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.detail || "提交失败");
+      rvcJobs.unshift({ model: v.model, ...(j.job || {}), id: j.id });
+      renderRvcList();
+      pollRvc(j.id);
+      const ahead = Math.max(0, Number(j.position || 1) - 1);
+      toast(ahead ? "已排队（第 " + j.position + " 位，前面还有 " + ahead + " 个）" : "已送入换声", "ok");
+      switchTab("convert");
+    });
+  };
+  if (!models.length) { renderRvc().then(open); } else open();
+}
+
+// ---------- ⑧ 会话侧条与产出回填 ----------
+// 会话里真正能无损接进创作链的是 feed 卡（后端 ai_tools.feed_card 产出的
+// {type:'generate', style, lyrics, cot}）；对话正文是给人看的，抽词会抽错，
+// 所以只做"取回给你确认"，不自动改写用户的歌词框。
+async function loadAiSessions() {
+  const box = $("aiSessList");
+  if (!box) return;
+  try {
+    const j = await (await fetchT("/api/ai/sessions", {}, 20000)).json();
+    const items = j.items || j.sessions || j || [];
+    const cnt = $("aiSessCount");
+    if (cnt) cnt.textContent = items.length ? items.length + " 条" : "";
+    if (!items.length) { box.innerHTML = '<div class="empty">还没有会话：在右边工作台里聊一轮词曲，产出会出现在这里。</div>'; return; }
+    box.innerHTML = "";
+    items.slice(0, 30).forEach((it) => {
+      const d = document.createElement("div");
+      d.className = "ai-sess-item";
+      d.textContent = (it.title || it.id || "会话").slice(0, 34);
+      d.title = (it.title || "") + "\n" + (it.updated || it.ts || "") + "\n" + (it.id || "");
+      d.onclick = () => loadAiSession(it.id);
+      box.appendChild(d);
+    });
+  } catch (e) { box.innerHTML = '<div class="empty">会话读不到：' + escapeHtml(e.message) + "</div>"; }
+}
+// 从助手正文里抠 Style / 歌词。真机实测的写法是「**Style:**」+ ``` 代码块，
+// 老正则只认行首裸 `Style:`，一条都抓不到——标签两侧可能各有 0~2 个星号，冒号可能在星号内也可能在外。
+function aiExtractStyleLyrics(body) {
+  const b = String(body || "");
+  const fence = (label) => {
+    const m = b.match(new RegExp("(?:^|\\n)[^\\n]*\\*{0,2}(?:" + label + ")[^\\n]{0,3}\\*{0,2}\\s*[:：][^\\n]*\\n+\\s*```[^\\n]*\\n([\\s\\S]*?)```", "i"));
+    return m ? m[1].trim() : "";
+  };
+  const inline = (label) => {
+    const m = b.match(new RegExp("^\\s*\\*{0,2}(?:" + label + ")\\s*\\*{0,2}\\s*[:：]\\s*\\*{0,2}([^\\n`]{12,})$", "im"));
+    return m ? m[1].replace(/[*`]/g, "").trim() : "";
+  };
+  const style = (fence("Style|风格") || inline("Style|风格")).replace(/\s*\n\s*/g, " ").trim();
+  let lyrics = fence("Lyrics|歌词");
+  if (!lyrics) {
+    const m = b.match(/\[[A-Z][a-z][^\]]*\][\s\S]+$/);
+    if (m) {
+      const lines = m[0].split("\n");
+      const stop = lines.findIndex((l, i) => i > 0
+        && (/^\s*-{3,}\s*$/.test(l) || /^\s*(?:\*\*|【|`{3})/.test(l)));
+      lyrics = lines.slice(0, stop === -1 ? lines.length : stop).join("\n").trim();
+    }
+  }
+  return { style, lyrics };
+}
+// 下拉列表和回填必须走同一份派生数据：以前一边按下标取全量 messages、另一边取过滤后的数组，
+// 结果永远错位——选得到条目，填出来的却是空的。
+function aiFeedList(j) {
+  const feeds = (j.feeds || []).filter((f) => f && (f.style || f.lyrics)).map((f) => ({
+    style: f.style || "", lyrics: f.lyrics || "",
+    note: f.job_id ? "这条产出对应任务 " + f.job_id + (f.cot ? " · 档位 " + f.cot : "")
+                   : (f.cot ? "档位 " + f.cot : ""),
+    label: "产出卡：" + String(f.style || "").slice(0, 26),
+  }));
+  const msgs = (j.messages || [])
+    .filter((m) => m && m.role === "assistant" && /\[[A-Z][a-z]+\]/.test(String(m.content || "")))
+    .slice().reverse().map((m) => {
+      const body = String(m.content || "");
+      const ex = aiExtractStyleLyrics(body);
+      return {
+        style: ex.style, lyrics: ex.lyrics,
+        note: (ex.style && ex.lyrics) ? "从对话正文里抓的（标签后的代码块优先）——送出前自己扫一眼"
+                                      : "从对话正文里只抓到一半，请回右边让它按格式重交",
+        label: "对话消息：" + body.replace(/\s+/g, " ").slice(0, 24) + "…",
+      };
+    });
+  return feeds.concat(msgs);
+}
+async function loadAiSession(sid) {
+  $("aiFeedPick").dataset.sid = sid;
+  try {
+    const j = await (await fetchT("/api/ai/session/" + encodeURIComponent(sid), {}, 25000)).json();
+    const list = aiFeedList(j);
+    const pick = $("aiFeedPick");
+    if (!list.length) {
+      pick.innerHTML = '<option value="">这条会话里没有可回填的产出</option>';
+      $("aiFeedStyle").value = ""; $("aiFeedLyrics").value = "";
+      $("aiFeedLint").textContent = "这条会话没交出结构化产出（Style / 歌词）。回到右边工作台让它把词曲交出来再来取。";
+      return;
+    }
+    pick.innerHTML = list.map((it, i) =>
+      '<option value="' + i + '">' + escapeHtml(it.label) + "</option>").join("");
+    await fillAiFeed(pick.value);
+  } catch (e) { toast("读会话失败：" + e.message, "err"); }
+}
+async function fillAiFeed(key) {
+  if (key === "" || key === null || key === undefined) return;
+  const cur = $("aiFeedPick").dataset.sid;
+  if (!cur) { $("aiFeedLint").textContent = "先从左边点一条会话。"; return; }
+  const j = await (await fetchT("/api/ai/session/" + encodeURIComponent(cur), {}, 25000)).json();
+  const it = aiFeedList(j)[Number(key)];
+  if (!it) { $("aiFeedLint").textContent = "这条产出读不到了：会话可能已被删除，点「↻」刷新列表。"; return; }
+  $("aiFeedStyle").value = it.style;
+  $("aiFeedLyrics").value = it.lyrics;
+  $("aiFeedLint").textContent = it.note;
+}
+$("aiSessReload").onclick = () => loadAiSessions();
+$("aiFeedPick").onchange = () => fillAiFeed($("aiFeedPick").value);
+$("aiFeedCheck").onclick = async () => {
+  const ly = $("aiFeedLyrics").value;
+  if (!ly.trim()) { toast("歌词框是空的", "err"); return; }
+  const btn = $("aiFeedCheck");
+  btn.disabled = true;
+  try {
+    const j = await (await fetchT("/api/lyrics/validate", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lyrics: ly }),
+    }, 20000)).json();
+    const errs = j.errors || [], warns = j.warnings || [];
+    $("aiFeedLint").textContent = errs.length
+      ? "⚠ " + errs.slice(0, 4).join("；")
+      : "✓ 结构合格" + (j.sections ? "（" + j.sections + " 段）" : "") + (warns.length ? "；提示：" + warns.slice(0, 2).join("；") : "");
+  } catch (e) { $("aiFeedLint").textContent = "校验失败：" + e.message; }
+  finally { btn.disabled = false; }
+};
+$("aiFeedTo1").onclick = () => {
+  const st = $("aiFeedStyle").value.trim();
+  if (!st) { toast("这条产出里没有 Style", "err"); return; }
+  writeStyleBox(st);
+  styleDirty = true; updateStyleChecks(); updateAsmHint();
+  LabStore.set({ style: st, from: "ailab" });
+  switchTab("style");
+  toast("AI 的 Style 已填进 ① 产出框（可继续手改）", "ok");
+};
+$("aiFeedTo2").onclick = () => {
+  const st = $("aiFeedStyle").value.trim(), ly = $("aiFeedLyrics").value.trim();
+  if (!st && !ly) { toast("这条产出既没 Style 也没歌词", "err"); return; }
+  if (st) { writeStyleBox(st); styleDirty = true; updateStyleChecks(); updateAsmHint(); }
+  if (ly) { pushLyricUndo("⑧ AI 工作台回填"); $("lyrics").value = ly; }
+  LabStore.set({ style: st || undefined, lyrics: ly || undefined, from: "ailab" });
+  switchTab("sing");
+  toast("已填入 ②：" + (st ? "Style " : "") + (ly ? "歌词" : "") + "——检查结构后就能生成", "ok");
+};
+// 会话条目点击时记住 sid（fillAiFeed 要按它再取一次详情）
+{
+  const mo = new MutationObserver(() => {
+    const box = $("aiSessList");
+    if (!box) return;
+    box.querySelectorAll(".ai-sess-item").forEach((el) => {
+      el.addEventListener("click", () => {
+        box.querySelectorAll(".ai-sess-item").forEach((x) => x.classList.remove("active"));
+        el.classList.add("active");
+        const t = el.title || "";
+        const sid = (t.split("\n").pop() || "").trim();
+        if (sid) $("aiFeedPick").dataset.sid = sid;
+      });
+    });
+  });
+  mo.observe($("aiSessList") || document.documentElement, { childList: true, subtree: true });
+}
 // ---------- boot ----------
 // 创作页表单取值/回填：供下面的 localStorage 持久化调用。
 // 字段清单必须与下方监听白名单一致，否则改了控件却悄悄不再保存。
@@ -5787,10 +7660,14 @@ const _hashTab = (location.hash || "").replace("#", "");
 if (new URLSearchParams(location.search).has("embed")) {
   document.documentElement.classList.add("embed");
 }
-if (_hashTab && document.querySelector(`[data-tab="${_hashTab}"]`)) switchTab(_hashTab);
+// 旧页签名兼容：v1.x 的 hash（#compose / #rvc / #rvcTrain / #voice）和 dsh 侧栏可能仍带着用，
+// 直接喂给 switchTab 会找不到面板（页面停在 ①，hash 却写着旧值）。一次映射，不改历史链接。
+const LEGACY_TAB = { compose: "sing", rvc: "convert", rvcTrain: "train", voice: "voices" };
+function resolveTab(t) { return LEGACY_TAB[t] || t; }
+if (_hashTab && document.querySelector(`[data-tab="${resolveTab(_hashTab)}"]`)) switchTab(resolveTab(_hashTab));
 // dsh 侧栏页签切换时只改 hash，不重载页面——监听后续变化
 window.addEventListener("hashchange", () => {
-  const t = (location.hash || "").replace("#", "");
+  const t = resolveTab((location.hash || "").replace("#", ""));
   if (t && document.querySelector(`[data-tab="${t}"]`)) switchTab(t);
 });
 

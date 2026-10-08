@@ -628,6 +628,108 @@ def backend_mode_set(payload: dict):
     }
 
 
+# --------------------------------------------------------------------------- #
+# 系统信息（v2.0 §四-⑩ / §六 P1：GET /api/system/info）
+#
+# 设置页只读展示用：版本、三个端口、目录、磁盘、显存、两个引擎的就绪状态。
+# 两条硬规矩：① 只读——不改端口、不切目录、不动并发策略（规划 §十-5：改了会与
+# 启动脚本/看门狗不一致）；② 不回任何密钥——AI 工作台只报"是否已配好密钥"这个布尔。
+# 本端点是普通 def（FastAPI 丢线程池跑）：里面全是 nvidia-smi 子进程、socket 探测
+# 与磁盘 stat 这类会阻塞的活，写成 async def 会把整个网关钉住（3081 假死）。
+# --------------------------------------------------------------------------- #
+def _version_from_changelog() -> str:
+    """版本号：CHANGELOG 顶部条目（该文件自己声明"宣传文案里要写的版本号从本文件顶部条目取"）。
+    真源是 git 附注标签，但网关不该为读一个版本号去起 git 子进程。"""
+    try:
+        with (ROOT / "CHANGELOG.md").open(encoding="utf-8", errors="replace") as fh:
+            head = fh.read(8192)
+        m = re.search(r"^## \[(v[^\]]+)\]", head, re.M)
+        if m:
+            return m.group(1)
+    except Exception as e:
+        print(f"[system/info] CHANGELOG 版本号读取失败：{e}", flush=True)
+    return "unknown"
+
+
+def _tcp_open(host: str, port: int, timeout: float = 1.0) -> bool:
+    """端口是否有人监听（只做 connect 探测，不发消息、不拉起任何进程）。"""
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _sheetsage_ready() -> bool:
+    """SheetSage2 权重是否就绪（与 /api/score/status 同一判据，不另立一套）。"""
+    try:
+        import sheetsage_pt
+        return bool(sheetsage_pt.mert_cached() or sheetsage_pt.resolve_checkpoint().is_dir())
+    except FileNotFoundError:
+        return False          # 未下载权重是新装环境常态，不是错误
+    except Exception as e:
+        print(f"[system/info] SheetSage2 就绪探测异常：{e}", flush=True)
+        return False
+
+
+def _ai_ready() -> dict:
+    """AI 工作台就绪：只报布尔与模型名，密钥本身绝不出现在返回值里。"""
+    out = {"ready": False, "key_configured": False, "runner_exists": False,
+           "model": "", "dsh_listening": False}
+    try:
+        import ai_lab
+        import ai_router
+        out["key_configured"] = bool(ai_lab.ai_key())
+        out["ready"] = bool(ai_lab.ai_ready())
+        out["model"] = ai_lab.MODEL
+        out["runner_exists"] = ai_router.DSH_RUNNER.is_file()
+    except Exception as e:
+        out["error"] = f"AI 工作台状态探测失败：{type(e).__name__}: {str(e)[:120]}"
+        print(out["error"], flush=True)
+    out["dsh_listening"] = _tcp_open("127.0.0.1", settings.dsh_port)
+    return out
+
+
+@router.get("/system/info")
+def system_info():
+    """版本号 / 端口 / 目录 / 磁盘 / 显存 / 引擎就绪——全本地，不联网，不回密钥。"""
+    import ports as _ports
+    p = _ports.load()
+    vram_total = _gpu_total_mb()
+    vram_free = _gpu_free_mb()
+    out_dir = Path(OUTPUT_DIR)
+    return {
+        "version": _version_from_changelog(),
+        "ports": {"gateway": p.get("gateway"), "dsh": p.get("dsh"),
+                  "audiocpp": p.get("audiocpp"), "ports_file": str(_ports.PORTS_FILE),
+                  "ports_file_exists": _ports.PORTS_FILE.is_file()},
+        "paths": {"root": str(ROOT), "output_dir": str(out_dir),
+                  "runtime_dir": str(ROOT / "runtime"),
+                  "scores_dir": str(SCORES_DIR), "records_dir": str(HIST_DIR),
+                  "rvc_weights_dir": str(RVC_MODELS_DIR),
+                  "model_dir": str(MODEL_DIR),
+                  "log_dir": str(ROOT / "runtime" / "data" / "logs")},
+        "disk": {"output_free_mb": _free_bytes(out_dir) // (1024 * 1024),
+                 "output_total_mb": _disk_total_bytes(out_dir) // (1024 * 1024),
+                 "output_files": _output_file_count(out_dir),
+                 "upload_floor_mb": _DISK_FLOOR_BYTES // (1024 * 1024)},
+        "gpu": {"mode": backend_mode(), "total_mb": vram_total, "free_mb": vram_free,
+                "used_mb": (None if vram_total is None or vram_free is None
+                            else max(0, vram_total - vram_free)),
+                "headroom_mb": _VRAM_HEADROOM_MB,
+                "query_failed": vram_total is None and vram_free is None},
+        "engines": {
+            "audiocpp_alive": _audiocpp_alive(),
+            "vocal_separation_ready": _sep_available()[0],
+            "sheetsage2_ready": _sheetsage_ready(),
+            "ai_workbench": _ai_ready(),
+        },
+        "read_only": ("端口/输出目录/并发策略在本页只读展示，不支持在线修改："
+                      "改了会与启动脚本和看门狗各持一套口径，风险大于收益（规划 §十-5）"),
+    }
+
+
 # ---------- 谱面提取（SheetSage2 音频 → ABC 记谱，供"改词翻唱"工作流） ----------
 # 异步任务模式：真实歌曲转谱常超 1 分钟，超出 dsh 反代超时上限，
 # 因此提交后立即返回 job_id，前端轮询 /api/score/result 取结果。
@@ -667,11 +769,26 @@ def _new_id() -> str:
     raise HTTPException(status_code=503, detail="任务 ID 连续冲突，请稍后重试")
 
 
-def _score_save(job_id: str, abc: str) -> dict:
-    """乐谱入库（JSON 文件），返回记录（含 id、时间、ABC、分析摘要）。"""
+def _score_archive_dir(score_id: str) -> Path:
+    """转谱中间产物归档目录：runtime/data/scores/<score_id>/（与 <score_id>.json 同层同名）。
+
+    score_id 一律来自 _new_id 或服务端 basename 校验，这里再自查一次形状，
+    免得日后有人拿它拼 URL 参数直接传进来。"""
+    sid = os.path.basename(str(score_id or "").strip().replace("\\", "/"))
+    if not re.fullmatch(r"\d{8}_\d{6}_[0-9a-f]{8}|[A-Za-z0-9_\-]{1,64}", sid):
+        raise HTTPException(status_code=400, detail=f"非法乐谱 ID：{score_id!r}")
+    return SCORES_DIR / sid
+
+
+def _score_save(job_id: str, abc: str, artifacts: list[str] | None = None) -> dict:
+    """乐谱入库（JSON 文件），返回记录（含 id、时间、ABC、分析摘要、已归档产物清单）。
+
+    artifacts 是这一首歌在 data/scores/<id>/ 里归档到的文件名（MIDI/lab/events.json…）；
+    空列表就是真的没归档（老记录或上游没产出）——导出接口据此回明确错误，不返回 200 空体。"""
     SCORES_DIR.mkdir(parents=True, exist_ok=True)
     rec = {"id": job_id, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-           "abc": abc, "analysis": _abc_analyze(abc)}
+           "abc": abc, "analysis": _abc_analyze(abc),
+           "artifacts": sorted(artifacts or [])}
     (SCORES_DIR / f"{job_id}.json").write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
     return rec
 
@@ -877,11 +994,18 @@ def _score_run(job_id: str, src: Path, melody_only: bool):
     try:
         import sheetsage_pt
         with _SCORE_ENGINE_LOCK:
-            abc = sheetsage_pt.transcribe_abc(str(src), melody_only=melody_only)
-        rec = _score_save(job_id, abc)  # 落盘：刷新/重启不丢，可复用回填
+            # 归档必须与转谱同一段锁内完成：上游把所有中间产物写死在共享目录
+            # sheetsage2-output/，锁一放的下一次转谱就把这一首的 MIDI/lab 覆盖掉了
+            archive = _score_archive_dir(job_id)
+            abc = sheetsage_pt.transcribe_abc(str(src), melody_only=melody_only,
+                                              archive_dir=str(archive))
+            archived = sorted(p.name for p in archive.iterdir() if p.is_file()) \
+                if archive.is_dir() else []
+        rec = _score_save(job_id, abc, archived)  # 落盘：刷新/重启不丢，可复用回填
         with _SCORE_LOCK:
             _SCORE_JOBS[job_id].update({"done": True, "abc": abc,
-                                        "analysis": rec.get("analysis"), "score_id": rec["id"]})
+                                        "analysis": rec.get("analysis"), "score_id": rec["id"],
+                                        "artifacts": archived})
         _win_toast("🎼 乐谱提取完成", f"耗时 {int(time.time()-started)//60} 分 {int(time.time()-started)%60} 秒，已入库可回填")
     except Exception as e:
         with _SCORE_LOCK:
@@ -948,9 +1072,13 @@ def scores_list():
         try:
             rec = json.loads(p.read_text(encoding="utf-8"))
             an = rec.get("analysis") or {}
+            arts = rec.get("artifacts") or []
             out.append({"id": rec.get("id"), "time": rec.get("time"),
                         "cot": an.get("cot_suggested"),
-                        "abc_preview": (rec.get("abc") or "")[:120]})
+                        "abc_preview": (rec.get("abc") or "")[:120],
+                        # 前端据此决定导出按钮给不给（没有归档的 MIDI 就点了也是错）
+                        "artifacts": arts, "has_midi": any(
+                            str(a).lower().endswith(".mid") for a in arts)})
         except Exception:
             continue
     out.sort(key=lambda r: r.get("id") or "", reverse=True)
@@ -967,13 +1095,91 @@ def scores_get(score_id: str):
     return json.loads(p.read_text(encoding="utf-8"))
 
 
+# 乐谱导出（v2.0 §六 P1）：只做 mid 与 abc，MusicXML 本期不做（规划 §十-4）。
+_SCORE_EXPORT_FORMATS = ("mid", "abc")
+# format=mid 时的取用优先级：整曲谱 > 主旋律 > 和弦轨
+_SCORE_MIDI_PREFERRED = ("transcription.mid", "melody.mid", "chords.mid",
+                         "melody_vocal.mid", "melody_instrumental.mid")
+
+
+def _score_record(score_id: str) -> dict:
+    score_id = os.path.basename(str(score_id or "").replace("\\", "/"))
+    p = (SCORES_DIR / f"{score_id}.json").resolve()
+    if p.parent != SCORES_DIR.resolve() or not p.is_file():
+        raise HTTPException(status_code=404, detail="乐谱不存在")
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"乐谱记录读不出来：{e}")
+
+
+@router.get("/scores/{score_id}/export")
+def scores_export(score_id: str, format: str = "mid"):
+    """下载转谱归档产物：format=mid|abc。
+
+    abc 有记录里的字符串兜底（转谱成功就一定有谱）；mid 只认转谱时归档到
+    data/scores/<id>/ 的文件——没归档就明确报错，绝不 200 空体，也不回读
+    sheetsage2-output/ 那个共享目录（里面很可能是别人那首歌的 MIDI）。"""
+    if format not in _SCORE_EXPORT_FORMATS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的导出格式：{format}（本期只做 {', '.join(_SCORE_EXPORT_FORMATS)}；"
+                   "MusicXML/PDF 谱面不在 v2.0 范围）")
+    rec = _score_record(score_id)
+    sid = os.path.basename(str(rec.get("id") or ""))
+    if format == "abc":
+        archived = _score_archive_dir(sid) / "score.abc"
+        if archived.is_file():
+            return FileResponse(str(archived), media_type="text/plain; charset=utf-8",
+                                filename=f"{sid}.abc")
+        abc = str(rec.get("abc") or "")
+        if not abc.strip():
+            raise HTTPException(status_code=404, detail="该乐谱没有 ABC 内容，无法导出")
+        return Response(content=abc.encode("utf-8"),
+                        media_type="text/plain; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="{sid}.abc"'})
+    # MIDI：只在归档目录里找，且必须是记录里登记过的那个名字
+    arts = {str(a) for a in (rec.get("artifacts") or [])}
+    archive = _score_archive_dir(sid)
+    if not archive.is_dir() or not arts:
+        raise HTTPException(
+            status_code=404,
+            detail="该乐谱没有归档 MIDI（转谱时未归档，或它早于归档功能上线）——"
+                   "请对该歌曲重新转谱一次，新的转谱会把 MIDI 一起存进 data/scores/<id>/")
+    for name in _SCORE_MIDI_PREFERRED:
+        if name not in arts:
+            continue
+        f = (archive / name).resolve()
+        if f.parent != archive.resolve():
+            raise HTTPException(status_code=400, detail="非法归档路径")
+        if f.is_file() and f.stat().st_size > 0:
+            return FileResponse(str(f), media_type="audio/midi", filename=f"{sid}_{name}")
+    got = sorted(n for n in arts if str(n).lower().endswith(".mid"))
+    raise HTTPException(
+        status_code=404,
+        detail=("归档里没有可用 MIDI（存在但为空的文件不算）；已归档的 MIDI："
+                + (", ".join(got) if got else "无") + "——重新转谱一次可补齐"))
+
+
 @router.delete("/scores/{score_id}")
 def scores_delete(score_id: str):
     score_id = os.path.basename(score_id.replace("\\", "/"))
     p = (SCORES_DIR / f"{score_id}.json").resolve()
+    removed: list[str] = []
     if p.parent == SCORES_DIR.resolve() and p.is_file():
         p.unlink()
-    return {"ok": True}
+        removed.append(f"{score_id}.json")
+    # 归档目录跟着乐谱一起走：只删 .json 会把 MIDI/lab/events.json 全留在盘上，
+    # 而且下次同名（不可能，但目录孤儿会一路攒下去）就是几十个没人认领的谱面目录
+    if re.fullmatch(r"\d{8}_\d{6}_[0-9a-f]{8}|[A-Za-z0-9_\-]{1,64}", score_id):
+        d = _score_archive_dir(score_id)
+        try:
+            if d.is_dir() and d.resolve().parent == SCORES_DIR.resolve():
+                shutil.rmtree(str(d))
+                removed.append(d.name + "/")
+        except OSError as e:
+            print(f"[scores] {score_id} 归档目录清理失败（记录已删，目录留着）：{e}", flush=True)
+    return {"ok": True, "removed": removed}
 
 
 # --------------------------------------------------------------------------- #
@@ -1037,6 +1243,168 @@ def history_active():
 
 
 # --------------------------------------------------------------------------- #
+# 统一任务视图（v2.0 §六 P0：GET /api/tasks/unified，五类任务一次返回）
+#
+# 历史口径（规划 §十一-2 已裁定）：runtime/output/*.json 是主源——生成/换声/训练/分离
+# 四类任务无论成败都会在这里落一份 meta；runtime/data/records/history.json 只是
+# "外部导入记录"的补充源，去重时主源优先（同一个 id 两边都有时只输出 output 那份）。
+# 转谱是例外：它落在 data/scores/（转谱没有 output 产物），批量队列是例外中的例外：
+# 排队条目只有队列 id，等它开跑才会写进 output meta，所以队列里未被主源收录的
+# 条目要补成 pending 项，否则任务管理页看不见正在排队的批量任务。
+# --------------------------------------------------------------------------- #
+TASK_KINDS = ("generate", "rvc", "train", "score", "separate", "external")
+
+
+def _task_display_name(m: dict, kind: str) -> str:
+    """任务卡标题：各源字段名不统一（task_name / name / 文件名），这里收敛成一个。"""
+    for k in ("task_name", "name", "src_name", "model"):
+        v = str(m.get(k) or "").strip()
+        if v:
+            return v[:100]
+    if kind == "generate":
+        return (str(m.get("style") or "").strip() or m.get("id") or "")[:60]
+    if kind == "external":
+        return (str(m.get("style") or "").strip() or m.get("id") or "")[:60]
+    return str(m.get("id") or "")
+
+
+def _task_progress(m: dict, kind: str) -> int | None:
+    """百分比估算；拿不准就返回 None，绝不编一个看起来很像的数（规划 §2.2：
+    stage1/stage2 对前端不可见，歌曲生成没有真进度）。"""
+    st = m.get("status")
+    if st == "done":
+        return 100
+    if st in ("error", "cancelled", "failed"):
+        return None
+    if kind == "train":
+        total = int(m.get("epochs_total") or m.get("epochs") or 0)
+        cur = int(m.get("epoch") or 0)
+        if total > 0 and cur > 0:
+            return max(1, min(99, round(cur * 100 / total)))
+        return 0 if st == "pending" else None
+    if kind == "separate":
+        # 分离的 stage 是自己写的、粒度够：排队 0 / PyMSS 40 / 去和声 70 / 落盘 90
+        stage = str(m.get("step") or m.get("sep_stage") or "")
+        if st == "pending":
+            return 0
+        if "去和声" in stage:
+            return 70
+        if "落盘" in stage or "复制" in stage:
+            return 90
+        if "PyMSS" in stage or "分离" in stage:
+            return 40
+        return 10
+    if st == "pending":
+        return 0
+    return None
+
+
+def _unified_task(m: dict, kind: str) -> dict:
+    """把各源五花八门的任务字典压成前端统一渲染的那一份。"""
+    out = {
+        "kind": kind,
+        "id": m.get("id"),
+        "name": _task_display_name(m, kind),
+        "status": m.get("status") or ("done" if kind in ("score", "external") else "unknown"),
+        "step": str(m.get("step") or m.get("sep_stage") or ""),
+        "progress": _task_progress(m, kind),
+        "ts": m.get("ts") or m.get("time") or "",
+    }
+    err = str(m.get("error") or "").strip()
+    if err:
+        out["error"] = err[:500]
+    # 页面要按这些字段画下载/播放按钮与位次提示：缺一个就要多打一次详情接口
+    for k in ("sec", "queue_pos", "assets", "file", "model", "name_cn",
+              "epoch", "epochs_total", "src_name", "bytes", "strip_harmony"):
+        if m.get(k) not in (None, "", {}, []):
+            out[k] = m[k]
+    return out
+
+
+@router.get("/tasks/unified")
+def tasks_unified(kind: str = "", limit: int = 300):
+    """五类任务（歌曲生成 / 换声 / 音色制作 / 转谱 / 人声伴奏分离）的统一列表。"""
+    if kind and kind not in TASK_KINDS:
+        raise HTTPException(status_code=400,
+                            detail=f"未知任务类型：{kind}（可用：{', '.join(TASK_KINDS)}）")
+    limit = max(1, min(int(limit or 300), 2000))
+    items: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(m: dict, k: str) -> None:
+        rid = str(m.get("id") or "")
+        if not rid or rid in seen:
+            return                  # 主源优先：同一 id 只认第一条（先到先得）
+        seen.add(rid)
+        items.append(_unified_task(m, k))
+
+    # 主源：output/*.json —— kind 字段区分四类（老记录没有 kind，按生成算）
+    if OUTPUT_DIR.is_dir():
+        for p in sorted(OUTPUT_DIR.glob("*.json"), reverse=True):
+            m = _output_read_meta(p.stem)
+            if not m:
+                continue
+            k = m.get("kind") or "generate"
+            _add(m, k if k in TASK_KINDS else "generate")
+
+    # 换声：内存队列里有排队中的条目（还没写 meta），必须也看得见
+    with _RVC_LOCK:
+        for j in _RVC_JOBS.values():
+            _add(j, "rvc")
+
+    # 音色制作：落盘在 trains/<rid>/job.json
+    if RVC_TRAIN_DIR.is_dir():
+        for d in sorted(RVC_TRAIN_DIR.iterdir(), reverse=True):
+            job = _rvc_train_read(d.name)
+            if job:
+                _add(job, "train")
+
+    # 批量队列里尚未开跑的条目：只有 qid，output meta 要等它轮到才写
+    try:
+        for it in _batch_snapshot().get("items") or []:
+            if it.get("status") in ("pending", "running"):
+                _add(it, "generate")
+    except Exception as e:
+        print(f"[tasks/unified] 批量队列读取失败（不影响其余四类）：{e}", flush=True)
+
+    # 转谱：data/scores/<id>.json（成功的）+ 内存任务表（进行中与失败的，重启即失）
+    if SCORES_DIR.is_dir():
+        for p in sorted(SCORES_DIR.glob("*.json"), reverse=True):
+            try:
+                rec = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if rec.get("id"):
+                _add({"id": rec["id"], "ts": rec.get("time"), "status": "done",
+                      "name": rec.get("name") or "", "artifacts": rec.get("artifacts") or []},
+                     "score")
+    with _SCORE_LOCK:
+        for sid, job in list(_SCORE_JOBS.items()):
+            raw_ts = job.get("ts")
+            # 转谱任务表存的是 time.time() 浮点，与其余四类的 ISO 串不同口径：
+            # 不换算的话统一列表按字符串排序会把浮点排到最前/最后，页面顺序全乱
+            ts = (datetime.fromtimestamp(raw_ts).isoformat(timespec="seconds")
+                  if isinstance(raw_ts, (int, float)) else str(raw_ts or ""))
+            if job.get("done"):
+                _add({"id": sid, "ts": ts,
+                      "status": "error" if job.get("error") else "done",
+                      "error": job.get("error")}, "score")
+            else:
+                _add({"id": sid, "ts": ts, "status": "running",
+                      "step": "转谱中（SheetSage2，串行）"}, "score")
+
+    # 补充源：records/history.json —— 只补主源没有的外部导入记录
+    if not kind or kind == "external":
+        for it in _hist_read():
+            _add(it, "external")
+
+    if kind:
+        items = [i for i in items if i["kind"] == kind]
+    items.sort(key=lambda i: str(i.get("ts") or ""), reverse=True)
+    return {"total": len(items), "items": items[:limit]}
+
+
+# --------------------------------------------------------------------------- #
 # 上传流式写盘：分块写、边写边判限额，不再整读进内存
 # （旧写法 await file.read() 会让 200MB 上传先吃光内存再判超限）
 #
@@ -1058,6 +1426,25 @@ def _free_bytes(path: Path) -> int:
         return shutil.disk_usage(str(probe)).free
     except Exception:
         return 1 << 62
+
+
+def _disk_total_bytes(path: Path) -> int:
+    """所在磁盘分区总容量（字节）；探测失败返回 0（设置页显示"未知"而不是瞎编一个）。"""
+    probe = path
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    try:
+        return shutil.disk_usage(str(probe)).total
+    except Exception:
+        return 0
+
+
+def _output_file_count(out_dir: Path) -> int:
+    """输出目录里的文件个数（设置页的"占了多少产物"）；目录不存在返回 0，不 glob 递归。"""
+    try:
+        return sum(1 for p in out_dir.iterdir() if p.is_file())
+    except OSError:
+        return 0
 
 
 async def _stream_upload_to(file: UploadFile, dest: Path, limit: int,
@@ -3104,6 +3491,18 @@ async def rvc_pitch_advice(file: UploadFile, model: str = Form(...),
         shutil.rmtree(work, ignore_errors=True)
 
 
+def _rvc_has_train_f0(stem: str) -> bool:
+    """该音色是否有本机训练素材的 f0 实测（2b-f0nsf / 2a_f0 任一目录有 npy）。
+    两个都判是因为 40k 训练两个都写、老产物可能只剩一个。"""
+    return any(
+        (RVC_DIR / "logs" / stem / d).is_dir() and any((RVC_DIR / "logs" / stem / d).glob("*.npy"))
+        for d in ("2b-f0nsf", "2a_f0"))
+
+
+def _rvc_ref_sidecar(stem: str) -> Path:
+    return RVC_DIR / "logs" / stem / "f0_stats.json"
+
+
 @router.post("/rvc/models/{name}/f0-reference")
 async def rvc_model_f0_reference(name: str, file: UploadFile):
     """给外部下载音色建"参考音域"档案（评审 J1）。本机 4 个现役音色全是下载的、
@@ -3119,11 +3518,7 @@ async def rvc_model_f0_reference(name: str, file: UploadFile):
         raise HTTPException(status_code=404,
                             detail=f"音色模型不存在：{name}（可用：{_rvc_models()}）")
     stem = name.removesuffix(".pth")
-    # 两个 f0 目录任一有货都算"已有训练实测"（40k 训练两个都写，老产物可能只剩一个）
-    _has_train_f0 = any(
-        (RVC_DIR / "logs" / stem / d).is_dir() and any((RVC_DIR / "logs" / stem / d).glob("*.npy"))
-        for d in ("2b-f0nsf", "2a_f0"))
-    if _has_train_f0:
+    if _rvc_has_train_f0(stem):
         raise HTTPException(status_code=409, detail=(
             f"「{stem}」已有本机训练素材的音域实测，不用也不许用参考音频建档覆盖"))
     ext = Path(file.filename or "in.wav").suffix.lower()
@@ -3137,7 +3532,7 @@ async def rvc_model_f0_reference(name: str, file: UploadFile):
         await _stream_upload_to(file, probe, 60 * 1024 * 1024, "参考音频")
         # 同上：f0 建档丢线程池，别冻事件循环（有声帧太少会在里面直接 422，不编数）
         stats = await run_in_threadpool(_rvc_f0_of_audio, probe)
-        sidecar = RVC_DIR / "logs" / stem / "f0_stats.json"
+        sidecar = _rvc_ref_sidecar(stem)
         sidecar.parent.mkdir(parents=True, exist_ok=True)
         # _stamp 用参考音频文件的 mtime（评审方案）：与训练 2a_f0 的 npy 戳共用一把尺，
         # 换一段参考文件重建档会自然失效旧的 sidecar 缓存判定。
@@ -3151,6 +3546,137 @@ async def rvc_model_f0_reference(name: str, file: UploadFile):
                 "stats": {k: v for k, v in record.items() if not k.startswith("_")}}
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------- #
+# 外部音色入库（v2.0 §六 P1：POST /api/rvc/models/import）
+#
+# 下载来的 .pth（+可选 .index）放进 runtime/rvc/assets/weights/ 就能在换声页选到。
+# 关键约束：**入库必须同时有音域数据**，否则变调建议对这个音色永远是空的（评审 J1
+# 的同一件事）。所以外部音色（无训练 2a_f0/2b-f0nsf、也无旧 sidecar）不带参考音频
+# 就直接拒绝——不是"导入后再说"，是"没有音域档案就还没导完"。建档复用
+# rvc_model_f0_reference 的实现：2a_f0 是量化 mel bin 不是 Hz，自己另算会把音域
+# 建议飞两个八度，只有已验证的那条链可信。
+# --------------------------------------------------------------------------- #
+_RVC_IMPORT_MAX_PTH = 2 * 1024 ** 3      # 40k 音色 pth 实测约 600MB，给到 2GB
+_RVC_IMPORT_MAX_INDEX = 2 * 1024 ** 3    # faiss 索引常常比模型还大
+
+
+def _rvc_import_stem(name: str, filename: str) -> str:
+    """入库后的音色名（不含 .pth）：只允许纯文件名形状，且必须是下拉框能列出来的那种。"""
+    raw = str(name or "").strip() or Path(str(filename or "")).name
+    raw = raw.removesuffix(".pth").removesuffix(".PTH").strip()
+    if any(sep in raw for sep in ("/", "\\", "\0")) or ".." in raw:
+        raise HTTPException(status_code=400, detail="音色名不得包含路径分隔符或 '..'")
+    if Path(raw).is_absolute() or re.match(r"^[A-Za-z]:", raw):
+        raise HTTPException(status_code=400, detail="音色名不得是绝对路径")
+    if any(ord(c) < 32 for c in raw):
+        raise HTTPException(status_code=400, detail="音色名不得包含控制字符")
+    # G_*/D_* 是训练检查点、. 开头是临时/备份中途货——_rvc_models() 会把它们过滤掉，
+    # 让用户传进去却在下拉框里永远看不见，比直接拒绝更坏
+    if raw.startswith((".", "G_", "D_")) or not raw:
+        raise HTTPException(status_code=400,
+                            detail="音色名不能以 '.'/'G_'/'D_' 开头（那些是检查点与临时文件，"
+                                   "不会被列为可选音色）")
+    raw = re.sub(r'[<>:"|?*]', "_", raw)[:80]
+    if not raw:
+        raise HTTPException(status_code=400, detail="音色名为空")
+    return raw
+
+
+@router.post("/rvc/models/import")
+async def rvc_model_import(model: UploadFile = File(...),
+                           name: str = Form(""),
+                           overwrite: str = Form("off"),
+                           index: UploadFile | None = File(None),
+                           ref_audio: UploadFile | None = File(None)):
+    """上传外部 RVC 音色入库，并强制建好音域档案。
+
+    字段：model=必需的 .pth；index=可选 .index；ref_audio=外部音色必需的建档参考音频
+    （该歌手本人 10~30 秒干声）；name=入库名（缺省取上传文件名）；overwrite=on 才允许同名替换。"""
+    fname = str(model.filename or "")
+    if Path(fname).suffix.lower() != ".pth":
+        raise HTTPException(status_code=400,
+                            detail=f"只接受 .pth 音色文件，收到：{Path(fname).suffix or '(无扩展名)'}"
+                                   f"（{fname[:60] or '(未命名)'}）")
+    stem = _rvc_import_stem(name, fname)
+    dest = RVC_MODELS_DIR / f"{stem}.pth"
+    if dest.resolve().parent != RVC_MODELS_DIR.resolve():
+        raise HTTPException(status_code=400, detail="非法入库路径")
+    # 同名不许静默覆盖：几百 MB 的既有音色被一次误传换掉，事后既查不回来也不知道是谁
+    if dest.is_file() and overwrite != "on":
+        st = dest.stat()
+        raise HTTPException(status_code=409, detail=(
+            f"音色「{stem}.pth」已存在（{st.st_size / 1e6:.1f}MB，"
+            f"改于 {datetime.fromtimestamp(st.st_mtime).isoformat(timespec='seconds')}）。"
+            f"确认要替换就带 overwrite=on 重传，或换个 name"))
+    if index is not None and Path(str(index.filename or "")).suffix.lower() != ".index":
+        raise HTTPException(status_code=400,
+                            detail=f"索引文件只接受 .index，收到：{index.filename!r}")
+    has_train = _rvc_has_train_f0(stem)
+    has_sidecar = _rvc_ref_sidecar(stem).is_file()
+    if not has_train and not has_sidecar and ref_audio is None:
+        raise HTTPException(status_code=400, detail=(
+            f"外部音色「{stem}」没有本机训练素材，也没有旧的参考音域档案——"
+            "必须同时上传 ref_audio（该歌手本人 10~30 秒干净人声）来建档，"
+            "否则这个音色的变调建议与音域提示全为空。建档只在入库这一刻做一次。"))
+
+    RVC_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    replaced = dest.is_file()          # 只有真的顶掉了旧文件才算"覆盖"
+    size = await _stream_upload_to(model, dest, _RVC_IMPORT_MAX_PTH, "音色模型")
+
+    # 索引落在 assets/indices（推理侧先看这里，再看 logs），文件名必须"严格属于本音色"：
+    # 查找规则允许子串匹配，名字不精确的话 王菲 会把 王菲V6 的检索库抢走（音色串台）
+    index_name = None
+    if index is not None:
+        # 用 _rvc_index_dirs()[0]（生产即 assets/indices）而不是自己拼路径：
+        # 查找侧与入库侧必须同源，否则测试沙箱与换根部署都会把索引写到没人看的地方
+        idx_dir = _rvc_index_dirs()[0]
+        idx_dir.mkdir(parents=True, exist_ok=True)
+        raw_idx = os.path.basename(str(index.filename or "").replace("\\", "/"))
+        target = (raw_idx if _rvc_index_owned(stem, raw_idx)
+                  else f"{stem}_added_{stem}_v2.index")
+        ipath = idx_dir / target
+        if ipath.is_file() and overwrite != "on":
+            raise HTTPException(status_code=409,
+                                detail=f"索引 {target} 已存在，确认替换请带 overwrite=on 重传")
+        await _stream_upload_to(index, ipath, _RVC_IMPORT_MAX_INDEX, "检索索引")
+        index_name = target
+
+    # 强制建档：已有训练实测的音色不许被参考音频降级（f0-reference 自己会 409，这里直接跳过）
+    f0: dict = {"attempted": False, "ok": True, "source": "training"}
+    if has_train:
+        f0["note"] = "该音色已有本机训练素材的音域实测，不用也不许用参考档案覆盖"
+    elif ref_audio is not None:
+        f0["attempted"] = True
+        try:
+            r = await rvc_model_f0_reference(f"{stem}.pth", ref_audio)
+            f0.update({"ok": True, "source": "reference", "stats": r.get("stats")})
+        except HTTPException as e:
+            # 模型已经落盘，只是档案没建成：如实说清，并给出重试路径，绝不装作建好了
+            f0.update({"ok": False, "error": f"HTTP {e.status_code}：{str(e.detail)[:300]}"})
+            print(f"[rvc-import] {stem} 音域建档失败：{e.status_code} {e.detail}", flush=True)
+        except Exception as e:
+            f0.update({"ok": False, "error": f"{type(e).__name__}: {str(e)[:300]}"})
+            print(f"[rvc-import] {stem} 音域建档异常：{e}", flush=True)
+    else:
+        # 覆盖重传的场景：旧 sidecar 还在，沿用并说明来源，不谎称"刚建过档"
+        f0.update({"source": "reference", "ok": True,
+                   "note": "本次未带参考音频，沿用已有的参考音域档案（不是新测的）"})
+
+    return {
+        "ok": True,
+        "name": f"{stem}.pth",
+        "path": str(dest),
+        "size_mb": round(size / 1e6, 1),
+        "overwritten": bool(replaced),
+        "index": index_name,
+        "f0_reference": f0,
+        "warning": ("" if f0.get("ok") else
+                    f"音色已入库可用，但音域建档失败：{f0.get('error')}——"
+                    f"变调建议对这个音色暂时不可用，可重试 "
+                    f"POST /api/rvc/models/{stem}.pth/f0-reference"),
+    }
 
 
 # 换声参数的"推荐档"：**唯一真源**。页面默认值、一键套用、历史页送去换声，
@@ -3346,17 +3872,51 @@ def _rvc_model_in_use(model: str) -> bool:
 
 
 @router.get("/rvc/models")
-def rvc_models():
+def rvc_models(src_median_hz: float | None = None, src_p5_hz: float | None = None,
+               src_p95_hz: float | None = None):
+    """音色列表（换声页下拉直显）。
+
+    v2.0 §六 P2：每项补齐音域摘要与"变调安全区间"。安全区间是**源唱 → 该音色**的关系量，
+    没有源唱音高就无从谈起——所以给 src_median_hz/src_p5_hz/src_p95_hz（前端先从音频
+    分析面板拿到）时才算，不给就老实返回 null，绝不拿"这个音色自己的 p5–p95"冒充区间
+    （那是绝对音域，已经在 f0_range 里，两者混起来页面就会显示自相矛盾的数字）。"""
+    src = {"p5_hz": src_p5_hz, "p95_hz": src_p95_hz, "median_hz": src_median_hz}
+    has_src = bool(src_median_hz and src_median_hz > 0)
     items = []
     for p in sorted(RVC_MODELS_DIR.glob("*.pth")) if RVC_MODELS_DIR.is_dir() else []:
-        items.append({
+        rng = _rvc_f0_stats(p.name)
+        item = {
             "name": p.name,
             "size_mb": round(p.stat().st_size / 1e6, 1),
             "mtime": datetime.fromtimestamp(p.stat().st_mtime).isoformat(timespec="seconds"),
             # 音域卡片（评审 C4）：只有本机练过的音色有；None 时页面显示"无音域数据"
-            "f0_range": _rvc_f0_stats(p.name),
-        })
-    return {"models": [i["name"] for i in items], "items": items}
+            "f0_range": rng,
+            # 摘要与来源：下拉框直显要的是"中位 + p5–p95 + 这数字是实测还是建档"
+            "range_summary": None,
+            "f0_source": (rng or {}).get("source") if rng else None,
+            "recommend": dict(_RVC_RECO_BASE),
+            "pitch": None,
+            "safe_range": None,
+            "range_note": ("" if rng else
+                           "无音域数据（外部下载且未建档）——变调建议对这个音色不可用"),
+        }
+        if rng:
+            item["range_summary"] = (
+                f"中位 {rng.get('median_hz', 0):.0f}Hz · "
+                f"舒适区 {rng.get('p5_hz', 0):.0f}–{rng.get('p95_hz', 0):.0f}Hz")
+            if has_src:
+                sug = _rvc_pitch_suggestion(src_median_hz, rng["median_hz"], 0,
+                                            src_p95_hz, rng.get("p99_hz"),
+                                            src_p5_hz, rng.get("p5_hz"))
+                if not sug["suspicious"]:
+                    item["pitch"] = sug["suggested_pitch"]
+                else:
+                    item["range_note"] = _RVC_SUSPECT_HINT
+                if src_p5_hz and src_p95_hz:
+                    item["safe_range"] = _rvc_pitch_safe_range(src, rng)
+        items.append(item)
+    return {"models": [i["name"] for i in items], "items": items,
+            "src_f0": src if has_src else None}
 
 
 _RVC_CHECK_LOCK = threading.Lock()  # 体检串行化：大模型加载费内存，防连点叠加
@@ -4546,6 +5106,312 @@ def rvc_audio(rid: str, part: str = ""):
     if not wav.is_file():
         raise HTTPException(status_code=404, detail="结果不存在")
     return FileResponse(str(wav), media_type="audio/wav", filename=wav.name)
+
+
+# --------------------------------------------------------------------------- #
+# 人声伴奏分离（v2.0 §四-⑦ / §六 P0）
+#
+# 独立入口，底层完全复用 _run_vocal_separation / _run_harmony_strip（不新写推理）：
+#   主链路 PyMSS BS-Roformer-Resurrection → <stem>_vocals.wav（含和声）+ <stem>_other.wav（伴奏）
+#   strip_harmony=on 时人声再过 HP5 只留主唱 → 第三种产物
+#   PyMSS 不可用/失败 → GPT-SoVITS 两步链降级（路径可用 YUE2_GSV_ROOT 覆盖）
+# 约束：走 _GPU_SEM 与生成/换声/训练互斥；子进程沿用 _pymss_creationflags
+# （BELOW_NORMAL_PRIORITY_CLASS）与 _pymss_env；legacy VR 路径的 PYMSS_DISABLE_CUDNN=1
+# 由 _pymss_env_cudnn_off 负责，本入口不改动这套开关。
+# 产物落 runtime/output/<id>_*.wav 并登记 meta（kind="separate"），任务管理页可见。
+# 失败绝不静默：每个失败分支都写日志（print）并把可读原因回传到 meta.error。
+# --------------------------------------------------------------------------- #
+_SEP_JOBS: dict[str, dict] = {}
+_SEP_LOCK = threading.Lock()
+_SEP_AUDIO_EXTS = (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".wma")
+_SEP_MAX_BYTES = 200 * 1024 * 1024
+# 产物 part 白名单（闭集）：URL 里的 part 只认这三个，别的直接 400
+_SEP_PARTS = {"vocals": ("vocals", "人声-含和声"),
+              "vocals_noharmony": ("vocals_noharmony", "人声-去和声"),
+              "accompaniment": ("accompaniment", "伴奏")}
+
+
+def _sep_task_name(raw: str) -> str:
+    """任务名校验：它同时是下载文件名的一部分，必须挡住路径穿越与超长串。"""
+    name = str(raw or "").strip()
+    if not name:
+        return ""
+    # 反斜杠在 Windows 下不分段，os.path.basename 挡不住 "..\\x"，先按 / 与 \ 切一刀
+    if any(sep in name for sep in ("/", "\\", "\0")) or ".." in name:
+        raise HTTPException(status_code=400, detail="任务名不得包含路径分隔符或 '..'")
+    if Path(name).is_absolute() or re.match(r"^[A-Za-z]:", name):
+        raise HTTPException(status_code=400, detail="任务名不得是绝对路径")
+    if any(ord(c) < 32 for c in name):
+        raise HTTPException(status_code=400, detail="任务名不得包含控制字符")
+    # 只清掉文件系统保留字符，不做截断式静默改写（除长度上限外原样保留）
+    name = re.sub(r'[<>:"|?*]', "_", name)[:100]
+    return name
+
+
+def _sep_rid(raw: str) -> str:
+    """任务 ID 校验：纯文件名 + 与 _new_id 同形状，杜绝 '..' / 绝对路径 / 意外写到 runtime 之外。"""
+    rid = os.path.basename(str(raw or "").strip().replace("\\", "/"))
+    if not re.fullmatch(r"\d{8}_\d{6}_[0-9a-f]{8}", rid):
+        raise HTTPException(status_code=400, detail=f"非法任务 ID：{raw!r}")
+    return rid
+
+
+def _sep_dir_of(rid: str) -> Path:
+    """分离任务的工作目录（存上传原曲与 PyMSS 中间产物）。"""
+    return RVC_JOB_DIR / f"sep_{rid}"
+
+
+def _sep_write(job: dict) -> None:
+    """任务状态双写：内存表给轮询用，output/<id>.json 给历史与重启后用。
+
+    落盘失败绝不让它静默——任务管理页看不见这条任务、用户以为丢了，
+    比一次慢响应严重得多，所以这里显式打日志。"""
+    with _SEP_LOCK:
+        _SEP_JOBS[job["id"]] = job
+    try:
+        _output_write_meta(job)
+    except Exception as e:
+        print(f"[separate] {job.get('id')} meta 落盘失败（任务管理页将看不到这条）：{e}", flush=True)
+
+
+def _sep_update(rid: str, **patch) -> dict:
+    with _SEP_LOCK:
+        job = dict(_SEP_JOBS.get(rid) or _output_read_meta(rid) or {"id": rid})
+    job.update(patch)
+    _sep_write(job)
+    return job
+
+
+def _sep_available() -> tuple[bool, str]:
+    """分离能力预检：PyMSS 与旧降级链都没有就在提交时拒掉，不创建注定失败的任务。"""
+    if vocal_sep_available():
+        return True, ""
+    if _gsv_chain_available():
+        return True, ""
+    return False, (f"本机未找到可用的分离引擎：PyMSS（runtime/rvc/tools/pymss）未安装，"
+                   f"且旧分离链 GPT-SoVITS 也不可用（当前指向 {GSV_ROOT}；"
+                   "装过 GPT-SoVITS 的机器设环境变量 YUE2_GSV_ROOT 指过去）")
+
+
+def _sep_guard_peaks(files: dict[str, Path]) -> str:
+    """静音守卫：任一产物峰值 < 1e-4（≈-80dBFS）判为数字静音，整条任务按失败处理。
+
+    为什么必须逐产物判而不是只判人声：v1.3.1 的事故是 cuDNN 整批吐 NaN →
+    nan_to_num → 数字静音，坏起来是"文件都在、大小也正常、里面全是零"。
+    返回 ""=通过，否则为可读原因。"""
+    for part, path in files.items():
+        if not path.is_file():
+            return f"产物缺失：{part}（{path.name}）"
+        peak = _rvc_clean_wav_peak(path)
+        if peak is None:
+            return f"产物无法读取：{part}（{path.name}）"
+        if peak < _RVC_CLEAN_SILENT_PEAK:
+            return (f"静音守卫触发：{part} 峰值仅 {peak:.1e}（数字静音，"
+                    "疑 GPU cuDNN 吐 NaN→0；这条产物不能当结果给你）")
+    return ""
+
+
+def _sep_worker(rid: str, src: Path, strip_harmony: bool) -> None:
+    """后台线程：等 GPU → 分离 → 静音守卫 → 产物落 output/ → 写 meta。"""
+    started: float | None = None
+    work = _sep_dir_of(rid)
+    try:
+        if not src.is_file():
+            raise RuntimeError(f"上传的原曲不见了：{src.name}")
+        with _GPU_SEM:      # 与生成/批量/换声/训练互斥，防止并发打满显存
+            started = time.time()
+            # 锁到手才改 step：提交时写的是"排队中（等待 GPU 空闲）"，
+            # 等锁的那几十分钟不能被画成分离进度（与 _rvc_mark_running 同一口径）
+            _sep_update(rid, status="running",
+                        started_ts=datetime.now().isoformat(timespec="seconds"),
+                        step="人声分离中（PyMSS BS-Roformer-Resurrection，约 1.5 分钟/3.5 分钟歌）")
+            job = {"sep_stage": ""}
+
+            def _stage() -> str:
+                return str(job.get("sep_stage") or "")
+
+            # 分离是子进程重活：本 worker 已经是线程，直接阻塞跑，不占事件循环
+            try:
+                main_vocal, artifacts = _run_vocal_separation(src, work, job, strip_harmony)
+            except Exception as e:
+                reason = f"人声分离失败（{type(e).__name__}）：{str(e)[:400]}"
+                if "PyMSS" in _stage():
+                    reason += "｜阶段：" + _stage()
+                print(f"[separate] {rid} {reason}", flush=True)
+                raise RuntimeError(reason) from e
+            stage_after = _stage()
+
+            sep_dir = work / "sep"
+            vocals_name = artifacts.get("vocals_raw")
+            acc_name = artifacts.get("accompaniment")
+            if not vocals_name or not acc_name:
+                reason = (f"分离没有产出完整产物（vocals={vocals_name}，"
+                          f"accompaniment={acc_name}）：{stage_after[:200]}")
+                print(f"[separate] {rid} {reason}", flush=True)
+                raise RuntimeError(reason)
+            vocals = sep_dir / vocals_name
+            accompaniment = sep_dir / acc_name
+            produced: dict[str, Path] = {"vocals": vocals, "accompaniment": accompaniment}
+            # HP5 去和声成功时 _run_vocal_separation 返回的是主唱，含和声那份仍在 vocals_raw
+            noharmony: Path | None = None
+            if strip_harmony and Path(main_vocal) != Path(vocals):
+                noharmony = Path(main_vocal)
+                produced["vocals_noharmony"] = noharmony
+
+            reason = _sep_guard_peaks(produced)
+            if reason:
+                print(f"[separate] {rid} {reason}", flush=True)
+                raise RuntimeError(reason)
+
+            _sep_update(rid, step="产物落盘")
+            assets: dict[str, str] = {}
+            sizes: dict[str, int] = {}
+            for part, path in produced.items():
+                dest = OUTPUT_DIR / f"{rid}_{part}.wav"
+                shutil.copyfile(str(path), str(dest))
+                assets[part] = dest.name
+                sizes[part] = dest.stat().st_size
+        meta = {"status": "done", "step": "分离完成", "sep_stage": stage_after,
+                "assets": assets, "sizes": sizes, "sec": round(time.time() - (started or time.time()), 1)}
+        if strip_harmony and noharmony is None:
+            # 开了去和声却没拿到主唱：HP5 不可用/失败，如实标注，不静默少给一个文件
+            meta["harmony_note"] = ("已勾「去和声」但 HP5 未产出主唱（sep_hp5.py 缺失或失败），"
+                                    "本次只有含和声人声与伴奏两份产物")
+            print(f"[separate] {rid} {meta['harmony_note']}", flush=True)
+        _sep_update(rid, **meta)
+        _win_toast("🎤 人声分离完成", f"{rid}，已保存到 output/")
+    except Exception as e:
+        err = str(e)[:500] or repr(e)
+        _sep_update(rid, status="error", error=err, step="分离失败",
+                    sec=round(time.time() - (started or time.time()), 1))
+        _win_toast("✕ 人声分离失败", err[:120])
+    finally:
+        try:
+            if work.is_dir():
+                shutil.rmtree(work, ignore_errors=True)   # 原曲 + 中间产物可达几十 MB
+        except Exception as e:
+            print(f"[separate] {rid} 工作目录清理失败（不阻断）：{e}", flush=True)
+        with _SEP_LOCK:
+            if len(_SEP_JOBS) > 200:
+                for k in sorted(_SEP_JOBS.keys())[:-200]:
+                    _SEP_JOBS.pop(k, None)
+
+
+@router.post("/audio/separate")
+async def audio_separate_submit(audio: UploadFile = File(...),
+                                strip_harmony: str = Form("off"),
+                                task_name: str = Form("")):
+    """上传一首歌 → 异步分离为人声 / 伴奏 /（可选）去和声人声，返回 {ok, id}。
+
+    strip_harmony=on：分离出的人声再过 HP5 只留主唱（翻唱/训练素材建议开，多约 1 分钟）。"""
+    ok, why = _sep_available()
+    if not ok:
+        raise HTTPException(status_code=503, detail=why)
+    name = _sep_task_name(task_name)
+    ext = Path(audio.filename or "in.wav").suffix.lower()
+    if ext not in _SEP_AUDIO_EXTS:
+        raise HTTPException(status_code=400,
+                            detail=f"不支持的音频格式：{ext or '(无扩展名)'}"
+                                   f"（支持：{', '.join(_SEP_AUDIO_EXTS)}）")
+    rid = _new_id()
+    work = _sep_dir_of(rid)
+    work.mkdir(parents=True, exist_ok=True)
+    src = work / f"src{ext}"
+    try:
+        size = await _stream_upload_to(audio, src, _SEP_MAX_BYTES, "音频")
+    except BaseException:
+        shutil.rmtree(work, ignore_errors=True)   # 校验/限额没过就别留残目录
+        raise
+    _sep_write({
+        "id": rid, "kind": "separate", "status": "pending",
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "task_name": name, "step": "排队中（等待 GPU 空闲）",
+        "strip_harmony": strip_harmony == "on",
+        "src_name": (audio.filename or "")[:120], "src_bytes": size,
+        "device": backend_mode(),
+    })
+    threading.Thread(
+        target=_sep_worker, args=(rid, src, strip_harmony == "on"), daemon=True).start()
+    # 只"看一眼"锁此刻是否被占（页面据此提示排队而不是静默等待）：探完立刻放回去，
+    # 绝不能把许可吃掉——_GPU_SEM 是全局唯一的 GPU 串行闸门，吃掉一个就永久少一个。
+    busy = not _GPU_SEM.acquire(blocking=False)
+    if not busy:
+        _GPU_SEM.release()
+    return {"ok": True, "id": rid, "strip_harmony": strip_harmony == "on",
+            "task_name": name, "gpu_busy": busy,
+            "gpu_note": ("GPU 正被生成/换声/训练占用，本任务排队等锁（位次不保证）"
+                         if busy else "")}
+
+
+@router.get("/audio/separate/status/{rid}")
+def audio_separate_status(rid: str):
+    rid = _sep_rid(rid)
+    with _SEP_LOCK:
+        job = _SEP_JOBS.get(rid)
+    if job is None:
+        meta = _output_read_meta(rid)
+        if meta and meta.get("kind") == "separate":
+            job = meta          # 服务重启后内存表已空，落盘 meta 就是唯一凭据
+    if job is None:
+        raise HTTPException(status_code=404, detail="分离任务不存在或服务已重启且无记录")
+    out = dict(job)
+    out["progress"] = _task_progress(out, "separate")
+    if out.get("status") == "running":
+        # 实时耗时：进度条靠它估算（分离约 1.5 分钟/3.5 分钟歌，见规划 §四-⑦）
+        try:
+            started = datetime.fromisoformat(str(job["started_ts"]))
+            out["elapsed_sec"] = round((datetime.now() - started).total_seconds(), 1)
+        except Exception:
+            out["elapsed_sec"] = None
+    return out
+
+
+@router.get("/audio/separate/audio/{rid}")
+def audio_separate_audio(rid: str, part: str = "vocals"):
+    """三种产物分别下载：part=vocals|vocals_noharmony|accompaniment。"""
+    rid = _sep_rid(rid)
+    if part not in _SEP_PARTS:
+        raise HTTPException(status_code=400,
+                            detail=f"非法产物名：{part}（可用：{', '.join(sorted(_SEP_PARTS))}）")
+    meta = _output_read_meta(rid)
+    if meta is None:
+        with _SEP_LOCK:
+            job = _SEP_JOBS.get(rid)
+        if job and job.get("kind") == "separate":
+            meta = job
+    if not meta or meta.get("kind") != "separate":
+        raise HTTPException(status_code=404, detail="分离任务不存在")
+    if meta.get("status") != "done":
+        raise HTTPException(status_code=409,
+                            detail=f"任务尚未完成（{meta.get('status')}）："
+                                   f"{str(meta.get('error') or meta.get('step') or '')[:200]}")
+    fname = (meta.get("assets") or {}).get(part)
+    if not fname:
+        raise HTTPException(status_code=404,
+                            detail=f"该任务没有这份产物：{_SEP_PARTS[part][1]}"
+                                   "（未勾「去和声」时不会有 vocals_noharmony）")
+    wav = (OUTPUT_DIR / fname).resolve()
+    if wav.parent != OUTPUT_DIR.resolve():        # 路径穿越：meta 被改坏也不能跳出 output/
+        raise HTTPException(status_code=400, detail="非法产物路径")
+    if not wav.is_file():
+        raise HTTPException(status_code=404, detail="产物文件已丢失（可能随任务删除）")
+    return FileResponse(str(wav), media_type="audio/wav",
+                        filename=f"{meta.get('task_name') or rid}_{_SEP_PARTS[part][1]}.wav")
+
+
+@router.get("/audio/separate/list")
+def audio_separate_list(limit: int = 200):
+    """历史分离记录（新→旧）：直接扫 output/ 里 kind=separate 的 meta，重启不丢。"""
+    limit = max(1, min(int(limit or 200), 1000))
+    items = []
+    if OUTPUT_DIR.is_dir():
+        for p in sorted(OUTPUT_DIR.glob("*.json"), reverse=True):
+            m = _output_read_meta(p.stem)
+            if not m or m.get("kind") != "separate":
+                continue
+            items.append({**m, "progress": _task_progress(m, "separate"),
+                          "parts": sorted((m.get("assets") or {}).keys())})
+    return {"total": len(items), "items": items[:limit]}
 
 
 # --------------------------------------------------------------------------- #

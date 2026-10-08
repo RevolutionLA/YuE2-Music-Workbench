@@ -14,11 +14,16 @@ window.__ModuleLoader__.load({
     // 实验室页签（与原版 data-tab 一致，点击经 hash 直达对应页）
     // ------------------------------------------------------------------ //
     var LAB_TABS = [
-      { id: "compose",   name: "创作",  glyph: "♪", short: "创作" },
-      { id: "rvc",       name: "歌曲换声",  glyph: "⇄", short: "换声" },
-      { id: "rvcTrain",  name: "音色制作",  glyph: "🎨", short: "制作" },
-      { id: "voice",     name: "音色库", glyph: "🎙", short: "音色" },
-      { id: "history",   name: "任务管理",  glyph: "🕘", short: "任务" },
+      { id: "style",     name: "Style 组装",     glyph: "♪", short: "曲风" },
+      { id: "sing",      name: "歌词生成歌曲",   glyph: "✎", short: "作词成歌" },
+      { id: "score",     name: "参考歌曲提取乐谱", glyph: "♫", short: "转谱" },
+      { id: "scoreSing", name: "乐谱生成歌曲",   glyph: "♬", short: "按谱成歌" },
+      { id: "train",     name: "音色制作",       glyph: "🎨", short: "制作" },
+      { id: "voices",    name: "音色库",         glyph: "🎙", short: "音色" },
+      { id: "convert",   name: "歌曲换声",       glyph: "⇄", short: "换声" },
+      { id: "sep",       name: "人声伴奏分离",   glyph: "✂", short: "分离" },
+      { id: "history",   name: "任务管理",       glyph: "🕘", short: "任务" },
+      { id: "settings",  name: "设置",           glyph: "⚙", short: "设置" },
     ];
 
     // ------------------------------------------------------------------ //
@@ -367,7 +372,7 @@ window.__ModuleLoader__.load({
         if (!ref.current) return;
         // 装载即带 pending 页签（侧栏在 iframe 装载前点过页签也不丢）；
         // 无 pending 时默认「创作」（compose）。
-        var tab = window.__yue2LabTab || "compose";
+        var tab = window.__yue2LabTab || "style";
         ref.current.src = "/lab/?embed=1" + (tab ? "#" + tab : "");
       }, []);
       // 跟随 dsh 深浅色：写实验室页的 html[data-theme] + postMessage 通知其重算派生色
@@ -428,7 +433,7 @@ window.__ModuleLoader__.load({
           react.createElement("div", { style: { fontSize: "13px", opacity: 0.75 } }, "网络或服务恢复后，点击下方按钮重新连接"),
           react.createElement("button", {
             className: "primary",
-            onClick: function () { setOffline(false); var tab = window.__yue2LabTab || "compose"; if (ref.current) ref.current.src = "/lab/?embed=1&reloaded=" + Date.now() + (tab ? "#" + tab : ""); },
+            onClick: function () { setOffline(false); var tab = window.__yue2LabTab || "style"; if (ref.current) ref.current.src = "/lab/?embed=1&reloaded=" + Date.now() + (tab ? "#" + tab : ""); },
           }, "重新连接"));
       }
       return react.createElement("iframe", {

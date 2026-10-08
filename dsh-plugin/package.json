@@ -1,9 +1,9 @@
 {
   "name": "yue2-lab-plugin",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
-  "description": "音乐工作台 dsh 一体化插件：创作/批量/换声/历史/音色/模型，原生侧栏 + 主面板融合",
+  "description": "音乐工作台 dsh 一体化插件：11 页（创作 5 / 声音 4 / 系统 2），原生侧栏 + 主面板融合",
   "main": "src/ui-panel.mjs",
   "exports": {
     ".": "./src/ui-panel.mjs",
