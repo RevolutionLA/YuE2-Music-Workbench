@@ -2226,6 +2226,36 @@ def _style_yield_to_abc(style: str, abc: str) -> tuple[str, str]:
     return style, ""
 
 
+_KNOWN_SECTIONS = ("intro", "verse", "chorus", "bridge", "pre-chorus", "outro",
+                   "hook", "interlude", "refrain", "end")
+
+
+def _ensure_song_ending(lyrics: str) -> tuple[str, str]:
+    """歌词没有收尾结构时补一段器乐/渐出的结尾标记，防止模型在最后一个
+    副歌唱完后自己"发挥"出说话、独白、ad-lib 人声（用户实测两首都在尾声
+    出现没写过的说话声；两首歌词都止于 [Chorus 2]，没有 outro/end 收尾）。
+
+    YuE2 的 AR 规划器按段落标签规划曲式：没有收尾段，规划器不知道歌在哪
+    结束，NAR/声码器在尾段自由发挥时最常见的就是把"训练数据里的口播/独白"
+    幻觉进来。补 [Outro]（器乐渐出段）给规划器一个明确的"这里收"。
+    返回 (调整后歌词, 说明)；已有 outro/end 收尾则原样返回。"""
+    lines = [l.rstrip() for l in (lyrics or "").splitlines()]
+    # 找**最后一个**结构标签行（不看标签后的正文/空行——[Outro] 下面
+    # 常有"（器乐渐弱收尾）"这类说明行，只看末行会把它误判成正文）
+    last_tag = None
+    for line in reversed(lines):
+        s = line.strip().lower()
+        if s.startswith("[") and any(k in s for k in _KNOWN_SECTIONS):
+            last_tag = s
+            break
+    if last_tag and ("outro" in last_tag or "end" in last_tag):
+        return lyrics, ""        # 已有收尾结构，不动
+    if not "".join(lines).strip():
+        return lyrics, ""        # 空歌词不补（校验层会拦，这里不该替它编内容）
+    out = "\n".join(lines) + "\n\n[Outro]\n（器乐渐弱收尾）\n"
+    return out, "歌词没有收尾段，已补 [Outro]（器乐渐出）防止模型在尾声自由发挥出说话声"
+
+
 @router.post("/generate/start")
 async def generate_start(payload: dict):
     global _ORPHAN_SWEEP_DONE, _GEN_JOB
@@ -2236,6 +2266,10 @@ async def generate_start(payload: dict):
     _limit_text("曲风描述", style, _MAX_STYLE)
     _limit_text("歌词", payload.get("lyrics"), _MAX_LYRICS)
     _limit_text("乐谱", payload.get("abc"), _MAX_ABC)
+    # 歌词缺收尾结构时补 [Outro]：防止模型在最后副歌后自由发挥出说话/独白声
+    lyrics_eff, ending_note = _ensure_song_ending(str(payload.get("lyrics") or ""))
+    if ending_note:
+        payload["lyrics"] = lyrics_eff
     # 有谱即按谱：乐谱框非空就必须走消费乐谱的路线，不能让它滑到 off / 形态不符的 full
     cot_eff, cot_note = _resolve_cot(str(payload.get("cot") or "full"),
                                      str(payload.get("abc") or ""))
@@ -2245,6 +2279,8 @@ async def generate_start(payload: dict):
     if tempo_note:
         payload["style"] = style
         cot_note = (cot_note + "；" + tempo_note) if cot_note else tempo_note
+    if ending_note:
+        cot_note = (cot_note + "；" + ending_note) if cot_note else ending_note
     # check-and-set 原子化：先占位再放线程，防止并发请求双双通过检查（TOCTOU）
     with _GEN_LOCK:
         cur = _GEN_JOB
@@ -2689,6 +2725,10 @@ def batch_start(payload: dict):
         abc_t = str(t.get("abc") or "")[:_MAX_ABC]
         # 同单首生成：缺省仍是 off（批量以快为先），但只要带了谱就不能让谱子落空
         cot_t, cot_note = _resolve_cot(str(t.get("cot") or "off"), abc_t)
+        # 与单首生成同一道防线：歌词缺收尾结构时补 [Outro]，防尾声幻觉说话声
+        lyrics, ending_note = _ensure_song_ending(lyrics)
+        if ending_note:
+            cot_note = (cot_note + "；" + ending_note) if cot_note else ending_note
         items.append({
             "id": rid,
             "qid": qid,
