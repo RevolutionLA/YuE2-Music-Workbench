@@ -2192,6 +2192,40 @@ def generate_stop():
             "message": "已终止当前任务" + ("，引擎将自动恢复" if cancelled_any else "")}
 
 
+def _style_yield_to_abc(style: str, abc: str) -> tuple[str, str]:
+    """⑤ 页「歌词+style+乐谱」同时给了节奏信息时，以乐谱为准（用户裁定）。
+
+    style 里的节奏表达主要有两类：BPM 数字（"88 BPM"）与拍号（"4/4"）。
+    乐谱带 Q:（默认速度）或 M:（拍号）时，style 里对应的那份描述会被引擎当成
+    又一份节奏条件——两份不一致时生成结果漂在两者之间，谱面等于白给。
+    这里把 style 中与乐谱冲突的部分剥掉（不冲突的原样保留），
+    返回 (调整后 style, 用户可见的说明)。"""
+    an = _abc_analyze(abc or "")
+    bpm = an.get("bpm")
+    meter = an.get("meter")
+    notes: list[str] = []
+    eff = style
+    if bpm:
+        # "88 BPM" / "88bpm" / "tempo 88"
+        pat = re.compile(r"(?:\b\d{2,3}(?:\.\d+)?\s*BPM\b|\bBPM\s*[:=]?\s*\d{2,3}\b|\btempo\s*:?\s*\d{2,3}\b)", re.I)
+        if pat.search(eff):
+            eff = pat.sub("", eff)
+            notes.append(f"style 里的 BPM 已让位给乐谱的 {bpm} BPM")
+    if meter:
+        # "4/4"（含 "4/4 time"）
+        pat_m = re.compile(rf"\b{re.escape(meter)}(?:\s*(?:time|meter))?\b", re.I)
+        if pat_m.search(eff):
+            eff = pat_m.sub("", eff)
+            notes.append(f"style 里的拍号已让位给乐谱的 {meter}")
+    if notes:
+        # 清理剥离后残留的双空格与悬挂逗号
+        eff = re.sub(r"\s{2,}", " ", eff)
+        eff = re.sub(r"(,\s*){2,}", ", ", eff)
+        eff = re.sub(r"[,\s]+$", "", eff).strip()
+        return eff, "；".join(notes) + "（节奏以乐谱为准）"
+    return style, ""
+
+
 @router.post("/generate/start")
 async def generate_start(payload: dict):
     global _ORPHAN_SWEEP_DONE, _GEN_JOB
@@ -2206,6 +2240,11 @@ async def generate_start(payload: dict):
     cot_eff, cot_note = _resolve_cot(str(payload.get("cot") or "full"),
                                      str(payload.get("abc") or ""))
     payload["cot"] = cot_eff
+    # 节奏冲突以乐谱为准：style 里写了 BPM/拍号、乐谱也有 Q:/M: 时，剥掉 style 那份
+    style, tempo_note = _style_yield_to_abc(style, str(payload.get("abc") or ""))
+    if tempo_note:
+        payload["style"] = style
+        cot_note = (cot_note + "；" + tempo_note) if cot_note else tempo_note
     # check-and-set 原子化：先占位再放线程，防止并发请求双双通过检查（TOCTOU）
     with _GEN_LOCK:
         cur = _GEN_JOB
