@@ -1524,6 +1524,12 @@
     box-shadow: 0 8px 24px rgba(0,0,0,.14), 0 2px 6px rgba(0,0,0,.08);
   }
   .h-more.open { display: flex; }
+  /* ★ 展开菜单的行必须抬到兄弟行之上：.hist-item:hover 的 transform 会在 hover 时
+     给每行创建独立堆叠上下文，.h-more 的 z-index:30 只在行内生效——后面的行
+     按 DOM 顺序盖在菜单上（用户报的"更多菜单被其他任务遮挡"）。
+     :has 把展开菜单的行整体抬到列表顶部，菜单随之浮出所有兄弟行。 */
+  #histList .hist-item:has([data-more-menu].open),
+  #histList .hist-item:has([data-dl-menu].open) { z-index: 40; }
   .h-more button { justify-content: flex-start; text-align: left; height: 30px; padding: 0 10px;
     width: 100%; font: var(--fs-sm) var(--sans); flex: none; }
 
