@@ -977,6 +977,73 @@ def abc_analyze_post(payload: dict):
     return {"analysis": _abc_analyze(abc[:200_000])}
 
 
+# ---------- ④ 乐谱加工：移调 / 大小调 / 速度 / 去和弦（纯符号变换，不调用 GPU） ----------
+_ABC_EDIT_MODES = {"keep", "major_to_minor", "minor_to_major",
+                   "major_to_relative_minor", "minor_to_relative_major"}
+
+
+@router.post("/abc/edit")
+def abc_edit(payload: dict):
+    """对一份 ABC 谱做确定性加工，返回加工后的谱面与新的分析摘要。
+
+    这一路不碰 GPU、不调模型、不联网——纯字符串变换，所以同步返回即可，
+    前端每次拖动滑块都能立刻看到新谱。save=1 时把结果另存进乐谱库（不覆盖原谱）。
+
+    诚实边界：和弦记号只在"移调"时跟着走（根音挪半音）。调式转换不动原有和弦——
+    重新配和声是作曲决策，不是符号变换，做不了就说做不了；想要和弦一起变，
+    先勾「去掉和弦记号」，让模型在 full 路线下按新调重新规划。"""
+    import abc_edit
+    abc = payload.get("abc") or ""
+    if not abc.strip():
+        raise HTTPException(status_code=400, detail="谱面是空的，先载入或粘贴一份 ABC")
+    if len(abc) > 400_000:
+        raise HTTPException(status_code=400, detail="谱面过长（上限 40 万字符）")
+    mode = str(payload.get("mode") or "keep")
+    if mode not in _ABC_EDIT_MODES:
+        raise HTTPException(status_code=400, detail=f"未知的调式操作：{mode}")
+    try:
+        transpose = int(payload.get("transpose") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="移调必须是整数半音数")
+    if not -36 <= transpose <= 36:
+        raise HTTPException(status_code=400, detail="移调范围 ±36 半音（±3 个八度）")
+    tempo = payload.get("tempo")
+    if tempo not in (None, "", 0):
+        try:
+            tempo = int(tempo)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="速度必须是数字（BPM）")
+        if not 20 <= tempo <= 300:
+            raise HTTPException(status_code=400, detail="速度范围 20-300 BPM")
+    else:
+        tempo = None
+    scale = payload.get("tempo_scale")
+    if scale not in (None, "", 0):
+        try:
+            scale = float(scale)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="速度倍数必须是数字")
+        if not 0.25 <= scale <= 4:
+            raise HTTPException(status_code=400, detail="速度倍数范围 0.25-4")
+    else:
+        scale = None
+
+    try:
+        res = abc_edit.transform(abc, transpose=transpose, mode=mode, tempo=tempo,
+                                 tempo_scale=scale,
+                                 strip_chords=bool(payload.get("strip_chords")))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    out = {"ok": True, "abc": res["abc"], "changed": res["changed"], "note": res["note"],
+           "key": res["key"], "analysis": _abc_analyze(res["abc"][:200_000])}
+    if payload.get("save"):
+        sid = _new_id()
+        rec = _score_save(sid, res["abc"], [])
+        out["score_id"] = rec["id"]
+        out["saved_note"] = (payload.get("name") or "")[:80] or "乐谱加工结果"
+    return out
+
+
 @router.get("/score/status")
 def score_status():
     """SheetSage2 就绪状态（权重/HF 缓存是否已下载），供前端决定是否显示入口。"""
@@ -1569,19 +1636,26 @@ def history_delete(rid: str):
 
 @router.post("/models/switch")
 def models_switch(payload: dict):
-    path = (payload.get("path") or "").strip().replace("\\", "/")
-    if path.startswith("model/"):
-        path = path[len("model/"):]
-    if not path:
+    rel = (payload.get("path") or "").strip().replace("\\", "/")
+    # 允许前端带 server_path 原样回传（"model/..."），去前缀后按 model/ 下的相对路径解析
+    if rel.startswith("model/"):
+        rel = rel[len("model/"):]
+    rel = rel.strip("/")
+    if not rel:
         raise HTTPException(status_code=400, detail="path is required")
-    # 蓝军 S11：写进 server.json 的必须是**参与校验的那个值**。以前校验用 safe、回写用原始 path，
-    # 于是 "../../x" 能带着未校验的路径逃逸引擎工作目录（现在也顺带修掉了重复的 model/ 前缀）。
-    safe = Path(path).name
-    if safe != path:
-        raise HTTPException(status_code=400, detail="只接受 model/ 目录下的纯文件名")
-    target = MODEL_DIR / safe
-    if not target.is_file():
-        raise HTTPException(status_code=404, detail=f"model file not found: {safe}")
+    # 蓝军 S11 + 嵌套目录修正：模型实际可能放在子目录里（如 yue2-q4_k_m/yue2-3b-q4_k_m.gguf），
+    # 早先只允许「纯文件名」会把所有嵌套路径一律 400，导致 ⑤ 页一换模型就失败。
+    # 现改为：接受 model/ 下的相对路径，但必须解析后仍落在 MODEL_DIR 内（挡住 ".."/绝对路径）。
+    target = (MODEL_DIR / rel).resolve()
+    try:
+        target.relative_to(MODEL_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="路径必须位于 model/ 目录内")
+    if not target.is_file() or target.suffix.lower() != ".gguf":
+        raise HTTPException(status_code=404, detail=f"model file not found: {rel}")
+    if "vae" in target.name.lower():
+        raise HTTPException(status_code=400, detail="该文件是 vae，不是主模型")
+    rel = target.relative_to(MODEL_DIR.resolve()).as_posix()
     cfg = _read_server_json()
     # session_options：纯文件名，由后端相对 path 所在目录解析
     model_gguf = target.name
@@ -1593,6 +1667,8 @@ def models_switch(payload: dict):
         # 模型目录内没有 vae 时，退回 cpp/model 根的公共 vae（同目录文件用纯文件名）
         if (target.parent / "yue2-vae-f16.gguf").is_file():
             vae = "yue2-vae-f16.gguf"
+        elif (MODEL_DIR / "yue2-vae-f16.gguf").is_file():
+            vae = "yue2-vae-f16.gguf"
         else:
             raise HTTPException(
                 status_code=400,
@@ -1600,18 +1676,21 @@ def models_switch(payload: dict):
             )
     model_entry = cfg["models"][0]
     # path 相对后端工作目录 cpp\ —— 必须带 model/ 前缀
-    model_entry["path"] = "model/" + path
+    model_entry["path"] = "model/" + rel
     model_entry["session_options"] = {
         "yue2.model_gguf": model_gguf,
         "yue2.vae_gguf": vae,
     }
+    # 子目录里的模型：vae 若落在 model/ 根，session_options 仍按纯文件名给；否则同目录名。
+    if (target.parent / vae).is_file():
+        model_entry["session_options"]["yue2.vae_gguf"] = vae
     _write_server_json(cfg)
     # 重启后端加载新模型
     _restart_audiocpp(str(SERVER_JSON))
     return {
         "ok": True,
         "message": f"已切换到 {model_gguf}，后端已重启加载。",
-        "path": path,
+        "path": rel,
     }
 
 
@@ -5161,6 +5240,65 @@ def _sep_dir_of(rid: str) -> Path:
     return RVC_JOB_DIR / f"sep_{rid}"
 
 
+# 自定义输出目录的禁区：往这些地方落成百 MB 的 wav 只会把系统搞乱，
+# 干脆在提交时挡掉并说清楚原因，而不是等写到一半报权限错误。
+_SEP_DIR_FORBIDDEN = ("c:\\windows", "c:\\program files", "c:\\program files (x86)",
+                      "c:\\programdata", "c:\\system32", "c:\\$recycle.bin")
+
+
+def _sep_out_dir(raw: str) -> tuple[Path | None, str]:
+    """校验用户填的输出目录 → (目录, 错误)。空串表示"用默认 output/"。
+
+    为什么必须自己校验而不是照单全收：这是本机单机应用，用户就是管理员，
+    但手滑填个 C:\\ 或 C:\\Windows 仍然会把几百 MB 的 wav 撒在系统目录里。
+    所以：绝对路径、禁 ..、禁系统目录、禁盘根、建不出来就报错、能建还要实测写一次。"""
+    s = str(raw or "").strip()
+    if not s:
+        return None, ""
+    if len(s) > 200:
+        return None, "输出路径过长（上限 200 字符）"
+    if any(seg == ".." for seg in re.split(r"[\\/]", s)) or ".." in s:
+        return None, "输出路径不能包含 '..'（不接受上级目录跳转）"
+    if any(ord(c) < 32 for c in s):
+        return None, "输出路径含有非法字符"
+    p = Path(s)
+    if not p.is_absolute():
+        return None, "请填完整路径（例如 E:\\我的音乐\\分离 或 D:/separated）"
+    try:
+        rp = Path(os.path.abspath(str(p)))
+    except Exception:
+        return None, f"输出路径无法解析：{s[:80]}"
+    low = str(rp).lower()
+    for bad in _SEP_DIR_FORBIDDEN:
+        if low == bad or low.startswith(bad + "\\") or low.startswith(bad + "/"):
+            return None, f"不能把产物写到系统目录（{bad}）—— 换一个自己的文件夹"
+    # 盘根（E:\）与"只剩盘符+空"都不收
+    if len(rp.parts) <= 1 or (len(rp.parts) == 2 and not rp.parts[1]):
+        return None, "不能把磁盘根目录当输出路径，请指定一个具体文件夹"
+    try:
+        rp.mkdir(parents=True, exist_ok=True)
+        probe = rp / ".yue2_write_probe"
+        probe.write_bytes(b"1")
+        probe.unlink(missing_ok=True)
+    except Exception as e:
+        return None, f"这个目录建不出来或写不进去：{str(e)[:160]}"
+    return rp, ""
+
+
+def _sep_out_dir_of(job: dict | None) -> Path:
+    """取任务的输出目录：没指定就用默认 output/。目录若中途被删则回退默认，
+    免得落盘阶段整条任务失败——产物宁可在默认目录里，也不能丢。"""
+    raw = str((job or {}).get("out_dir") or "").strip()
+    if raw:
+        try:
+            p = Path(os.path.abspath(raw))
+            if p.is_dir():
+                return p
+        except Exception:
+            pass
+    return OUTPUT_DIR
+
+
 def _sep_write(job: dict) -> None:
     """任务状态双写：内存表给轮询用，output/<id>.json 给历史与重启后用。
 
@@ -5264,10 +5402,12 @@ def _sep_worker(rid: str, src: Path, strip_harmony: bool) -> None:
                 raise RuntimeError(reason)
 
             _sep_update(rid, step="产物落盘")
+            # 输出目录：用户指定的优先（提交时已校验过可写），否则落默认 output/
+            outdir = _sep_out_dir_of(_SEP_JOBS.get(rid) or _output_read_meta(rid))
             assets: dict[str, str] = {}
             sizes: dict[str, int] = {}
             for part, path in produced.items():
-                dest = OUTPUT_DIR / f"{rid}_{part}.wav"
+                dest = outdir / f"{rid}_{part}.wav"
                 shutil.copyfile(str(path), str(dest))
                 assets[part] = dest.name
                 sizes[part] = dest.stat().st_size
@@ -5300,14 +5440,20 @@ def _sep_worker(rid: str, src: Path, strip_harmony: bool) -> None:
 @router.post("/audio/separate")
 async def audio_separate_submit(audio: UploadFile = File(...),
                                 strip_harmony: str = Form("off"),
-                                task_name: str = Form("")):
+                                task_name: str = Form(""),
+                                out_dir: str = Form("")):
     """上传一首歌 → 异步分离为人声 / 伴奏 /（可选）去和声人声，返回 {ok, id}。
 
-    strip_harmony=on：分离出的人声再过 HP5 只留主唱（翻唱/训练素材建议开，多约 1 分钟）。"""
+    strip_harmony=on：分离出的人声再过 HP5 只留主唱（翻唱/训练素材建议开，多约 1 分钟）。
+    out_dir：产物落地目录（留空=默认 runtime/output）。校验不过一律 400 并说明原因，
+    绝不"先跑 1.5 分钟再告诉你目录写不进去"。"""
     ok, why = _sep_available()
     if not ok:
         raise HTTPException(status_code=503, detail=why)
     name = _sep_task_name(task_name)
+    outdir, why = _sep_out_dir(out_dir)
+    if why:
+        raise HTTPException(status_code=400, detail=why)
     ext = Path(audio.filename or "in.wav").suffix.lower()
     if ext not in _SEP_AUDIO_EXTS:
         raise HTTPException(status_code=400,
@@ -5329,6 +5475,8 @@ async def audio_separate_submit(audio: UploadFile = File(...),
         "strip_harmony": strip_harmony == "on",
         "src_name": (audio.filename or "")[:120], "src_bytes": size,
         "device": backend_mode(),
+        # 记录实际落盘目录：页面要能告诉用户"文件在这儿"，下载端点也靠它找产物
+        "out_dir": (str(outdir) if outdir else ""),
     })
     threading.Thread(
         target=_sep_worker, args=(rid, src, strip_harmony == "on"), daemon=True).start()
@@ -5339,6 +5487,7 @@ async def audio_separate_submit(audio: UploadFile = File(...),
         _GPU_SEM.release()
     return {"ok": True, "id": rid, "strip_harmony": strip_harmony == "on",
             "task_name": name, "gpu_busy": busy,
+            "out_dir": (str(outdir) if outdir else str(OUTPUT_DIR)),
             "gpu_note": ("GPU 正被生成/换声/训练占用，本任务排队等锁（位次不保证）"
                          if busy else "")}
 
@@ -5390,8 +5539,11 @@ def audio_separate_audio(rid: str, part: str = "vocals"):
         raise HTTPException(status_code=404,
                             detail=f"该任务没有这份产物：{_SEP_PARTS[part][1]}"
                                    "（未勾「去和声」时不会有 vocals_noharmony）")
-    wav = (OUTPUT_DIR / fname).resolve()
-    if wav.parent != OUTPUT_DIR.resolve():        # 路径穿越：meta 被改坏也不能跳出 output/
+    # 产物可能在用户指定的目录里：base 跟着 meta 的 out_dir 走，
+    # 但仍然强制"文件名必须在 base 里、不许往上跳"——自定义目录不等于放开穿越。
+    base = _sep_out_dir_of(meta)
+    wav = (base / os.path.basename(fname)).resolve()
+    if os.path.normcase(str(wav.parent)) != os.path.normcase(str(Path(os.path.abspath(base)))):
         raise HTTPException(status_code=400, detail="非法产物路径")
     if not wav.is_file():
         raise HTTPException(status_code=404, detail="产物文件已丢失（可能随任务删除）")

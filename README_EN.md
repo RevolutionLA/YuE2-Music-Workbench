@@ -41,10 +41,10 @@ _No cloud. No queue. No subscription. 100% offline._
 | 🩺 | **Watchdog self-healing** | Gateway + workbench stuck-detection and auto-restart, tolerant of token-auth 401 probes. Before killing anything it fires one 90 s deep probe: if the service answers, it's *slow*, not dead, and the failure counter just resets. Evidence: 09-26 watchdog log shows two kills (21:40, 21:50) that landed **while the user's own batch was computing** — on a 6 GB card saturated by llama-server, `/api/health` legitimately takes tens of seconds. Respawned gateway stdout/stderr now goes to `runtime/data/logs/gateway.{out,err}.log` instead of the bit bucket, so self-healing stops erasing the scene. |
 | 🖥 | **VRAM adaptive** | GPU when it fits, CPU fallback when it doesn't, automatic switch-back |
 
-## 🧭 The 11 pages of the workbench
+## 🧭 The 13 pages of the workbench
 
 v2.0 split the old single "Create" page — which had four jobs crammed into it — into one page per step,
-so "which step am I on" is self-evident. The sidebar has three groups:
+so "which step am I on" is self-evident. v10.9 added ⑫ Settings and ⑬ About. The sidebar has three groups:
 
 | Group | Page | What this step does |
 |:---|:---|:---|
@@ -58,7 +58,8 @@ so "which step am I on" is self-evident. The sidebar has three groups:
 | | ⑪ Voice conversion | Pick voice + pitch + params → RVC conversion (the only route that keeps the original melody and arrangement) |
 | | ⑦ Vocal / accompaniment separation | Upload a song → vocals / harmony-stripped vocals / accompaniment, downloadable and sendable to ⑤⑪③ |
 | **System** | ⑨ Task manager | One view over all five task kinds (generate / convert / train / transcribe / separate) + queues |
-| | ⑩ Settings | Version / ports / paths / disk & VRAM / model & engine maintenance (read-only; change config in files) |
+| | ⑫ Settings | Service & model verification, model-tier switch, engine mode, accent colour, maintenance (prefer editing files for config) |
+| | ⑬ About | System info (ports / paths / disk & VRAM / engine readiness, read-only) + credits, license and honest notes |
 
 **② and ④ share one generation panel; ③ and ④ share one ABC editor** — switching pages just moves the
 same DOM node into the target page (`static/index.html: switchTab` / `moveInto`), so there is no second
@@ -122,8 +123,12 @@ Browser ── 3081 integrated workbench (dsh-plugin)
 
 ## 🗂 Versioning & releases
 
-Versions follow semver `vMAJOR.MINOR.PATCH`; **the single source of truth is the git annotated tag**
-(`git tag -l -n`), and [CHANGELOG.md](CHANGELOG.md) explains what each one contains. Current baseline:
+**Version rule (from v10 on, date-based)**: `MAJOR.DAY.SEQ` — `MAJOR` is fixed at `10`, the second
+field is the **day of month of the release**, and the third is the **release index within that day**
+(starting at `0`). Example: first release on 2026-10-09 → `10.9.0`; a second release the same day →
+`10.9.1`; the next day → `10.10.0`. `v2.0.0` and earlier used semver (`vMAJOR.MINOR.PATCH`).
+**The single source of truth is the git annotated tag** (`git tag -l -n`), and
+[CHANGELOG.md](CHANGELOG.md) explains what each one contains. Current baseline:
 
 | Tag | Meaning |
 | --- | --- |
@@ -137,6 +142,7 @@ Versions follow semver `vMAJOR.MINOR.PATCH`; **the single source of truth is the
 | `v1.7.0` | RVC training keeps real checkpoints + an "electro/artifact" attribution metric + a retrain channel + long-run interruption / watchdog fixes (v1.5.0 and v1.6.0 shipped inside it) |
 | `v1.7.1` | Vocal checkup gains a "consonant onsets per second" axis (mumbled diction is a second disease that spectral flatness cannot see) |
 | `v2.0.0` | **Workbench split into 11 pages**: ②④ share one generation panel, ③④ share one ABC editor; new ⑦ separation page, ⑩ settings page, ⑥ voice import, ⑨ unified task view, ⑧ result back-fill; 325 tests green |
+| `v10.9.0` | **Data-dense redesign (13 pages)**: whole UI moved to the GitHub data-dense palette (de-AI-flavored), module boundaries and component recognizability rebuilt, new ⑬ About page (system info + credits), fixed the ⑤ "only plain filenames under model/" model-switch bug; 394 tests green |
 
 **Release checklist** — skip one and you may only claim "the code changed", not "it's live":
 

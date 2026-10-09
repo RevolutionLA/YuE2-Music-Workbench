@@ -13,17 +13,21 @@ window.__ModuleLoader__.load({
     // ------------------------------------------------------------------ //
     // 实验室页签（与原版 data-tab 一致，点击经 hash 直达对应页）
     // ------------------------------------------------------------------ //
+    // v2.1：与 static/index.html 的 12 页一一对应（去掉 ailab —— dsh 壳本身就是 AI 工作台，
+    // 侧栏再给一个入口会自嵌套）。序号与页面里的带圈数字同一套，用户在两处看到的是同一个号。
     var LAB_TABS = [
-      { id: "style",     name: "Style 组装",     glyph: "♪", short: "曲风" },
-      { id: "sing",      name: "歌词生成歌曲",   glyph: "✎", short: "作词成歌" },
-      { id: "score",     name: "参考歌曲提取乐谱", glyph: "♫", short: "转谱" },
-      { id: "scoreSing", name: "乐谱生成歌曲",   glyph: "♬", short: "按谱成歌" },
-      { id: "train",     name: "音色制作",       glyph: "🎨", short: "制作" },
-      { id: "voices",    name: "音色库",         glyph: "🎙", short: "音色" },
-      { id: "convert",   name: "歌曲换声",       glyph: "⇄", short: "换声" },
-      { id: "sep",       name: "人声伴奏分离",   glyph: "✂", short: "分离" },
-      { id: "history",   name: "任务管理",       glyph: "🕘", short: "任务" },
-      { id: "settings",  name: "设置",           glyph: "⚙", short: "设置" },
+      { id: "style",     name: "① Style 设计",           glyph: "♪", short: "曲风" },
+      { id: "sing",      name: "② 歌词+style生成歌曲",   glyph: "✎", short: "作词成歌" },
+      { id: "score",     name: "③ 参考歌曲提取乐谱",     glyph: "♫", short: "转谱" },
+      { id: "scoreEdit", name: "④ 乐谱加工",             glyph: "♯", short: "加工乐谱" },
+      { id: "scoreSing", name: "⑤ 歌词+style+乐谱生成歌曲", glyph: "♬", short: "按谱成歌" },
+      { id: "train",     name: "⑦ 音色制作",             glyph: "🎨", short: "制作" },
+      { id: "voices",    name: "⑧ 音色库",               glyph: "🎙", short: "音色" },
+      { id: "convert",   name: "⑨ 歌曲换声",             glyph: "⇄", short: "换声" },
+      { id: "sep",       name: "⑩ 人声伴奏分离",         glyph: "✂", short: "分离" },
+      { id: "history",   name: "⑪ 任务管理",             glyph: "🕘", short: "任务" },
+      { id: "settings",  name: "⑫ 设置",                 glyph: "⚙", short: "设置" },
+      { id: "about",     name: "⑬ 关于",                 glyph: "ⓘ", short: "关于" },
     ];
 
     // ------------------------------------------------------------------ //

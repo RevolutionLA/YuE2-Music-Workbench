@@ -516,14 +516,21 @@ class TestLanBind(unittest.TestCase):
 
 
 class TestModelSwitchPath(Sandbox):
-    """蓝军 S11：校验用的变量与写进 server.json 的变量必须是同一个。"""
+    """蓝军 S11：校验用的变量与写进 server.json 的变量必须是同一个。
+
+    2026-10-09 修正：模型真实布局允许子目录（如 yue2-q4_k_m/yue2-3b-q4_k_m.gguf），
+    早先「只接受纯文件名」会把所有嵌套路径一律 400（⑤ 页一换模型就失败）。
+    现在：接受 model/ 下的相对路径，但解析后必须仍在 MODEL_DIR 内。
+    """
 
     def setUp(self):
         super().setUp()
         self.model_dir = self.tmp / "model"
-        self.model_dir.mkdir()
+        (self.model_dir / "sub").mkdir(parents=True)
         (self.model_dir / "yue2-q4.gguf").write_bytes(b"G")
         (self.model_dir / "yue2-vae-f16.gguf").write_bytes(b"V")
+        (self.model_dir / "sub" / "nested.gguf").write_bytes(b"G")
+        (self.model_dir / "sub" / "nested-vae.gguf").write_bytes(b"V")
         self.saved = {}
         for name, value in (("MODEL_DIR", self.model_dir),
                             ("_read_server_json", lambda: {"models": [{}]}),
@@ -540,7 +547,8 @@ class TestModelSwitchPath(Sandbox):
         super().tearDown()
 
     def test_traversal_is_rejected_before_any_write(self):
-        for bad in ("../../Windows/win.ini", "model/../../../etc/passwd", "sub/dir/x.gguf"):
+        for bad in ("../../Windows/win.ini", "model/../../../etc/passwd",
+                    "../../../etc/passwd", "model/../../x.gguf"):
             with self.assertRaises(app.HTTPException, msg=bad):
                 app.models_switch({"path": bad})
         self.assertEqual(self.written, {})          # 拒绝必须发生在落盘之前
@@ -549,6 +557,25 @@ class TestModelSwitchPath(Sandbox):
         app.models_switch({"path": "model/yue2-q4.gguf"})   # 前端回传的带前缀写法
         self.assertEqual(self.written["models"][0]["path"], "model/yue2-q4.gguf")  # 不再叠成 model/model/
         self.assertEqual(self.written["models"][0]["session_options"]["yue2.model_gguf"], "yue2-q4.gguf")
+
+    def test_nested_model_dir_is_accepted(self):
+        """回归：子目录模型必须能切（这是 ⑤ 页报错的根因）。"""
+        app.models_switch({"path": "sub/nested.gguf"})
+        self.assertEqual(self.written["models"][0]["path"], "model/sub/nested.gguf")
+        self.assertEqual(self.written["models"][0]["session_options"]["yue2.model_gguf"], "nested.gguf")
+
+    def test_nested_path_returned_is_relative(self):
+        res = app.models_switch({"path": "model/sub/nested.gguf"})
+        self.assertEqual(res["path"], "sub/nested.gguf")
+
+    def test_vae_file_rejected_as_main_model(self):
+        with self.assertRaises(app.HTTPException):
+            app.models_switch({"path": "yue2-vae-f16.gguf"})
+
+    def test_missing_file_is_404(self):
+        with self.assertRaises(app.HTTPException) as cm:
+            app.models_switch({"path": "sub/nope.gguf"})
+        self.assertEqual(cm.exception.status_code, 404)
 
 
 class TestRvcCheckCache(Sandbox):
