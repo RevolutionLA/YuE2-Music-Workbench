@@ -143,6 +143,7 @@ field is the **day of month of the release**, and the third is the **release ind
 | `v1.7.1` | Vocal checkup gains a "consonant onsets per second" axis (mumbled diction is a second disease that spectral flatness cannot see) |
 | `v2.0.0` | **Workbench split into 11 pages**: ②④ share one generation panel, ③④ share one ABC editor; new ⑦ separation page, ⑩ settings page, ⑥ voice import, ⑨ unified task view, ⑧ result back-fill; 325 tests green |
 | `v10.9.0` | **Data-dense redesign (13 pages)**: whole UI moved to the GitHub data-dense palette (de-AI-flavored), module boundaries and component recognizability rebuilt, new ⑬ About page (system info + credits), fixed the ⑤ "only plain filenames under model/" model-switch bug; 394 tests green |
+| `v10.9.1` | **Layout & alignment polish**: ⑪ Task Manager unified onto a five-column skeleton (row height collapsed from two values 72/168 to a single 72), ② Style box 540→78px, lyrics box 100→394px, ⑬ system info flattened from 33 rows to 4 grouped two-column blocks, `scrollbar-gutter: stable` removing the 5px jump when switching tabs; plus two real fixes — a `#tab-ailab` magic number that was 26px off, and silent truncation of footer hints; 410 tests green |
 
 **Release checklist** — skip one and you may only claim "the code changed", not "it's live":
 

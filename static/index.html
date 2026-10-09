@@ -58,11 +58,55 @@
     --line-strong: #b6bfc9;
     /* 颗粒噪点已移除：纸质拟物残留，现代屏幕上像"显示器脏了"。保留空值以免引用报错。 */
     --grain: none;
+    /* ===== 侧栏 / 底栏（常驻外壳）专用令牌 =====
+       ★ 这组令牌存在的理由本是"外壳可以跟主区用不同的面"，但**查证下来的事实是**：
+         深色下 --shell(#161b22) 本来就**等于** --panel(#161b22) —— 侧栏、播放坞和卡片
+         是同一层面，只有页面底 --bg(#0d1117) 比它们深一档。用户说"深色模式三块差不多"，
+         正因为它们真的是同一层面。
+         浅色下却把外壳单独画成了另一套深色（先 #1c2128 后 #3c4149），
+         相对明度 0.015 / 0.052 压在主区 #e9edf2(0.843) 旁边，差 16～56 倍 —— 等于黑白同框。
+         这就是"浅色模式三块明显不统一"的真正来源：**不是三块彼此不同色
+         （它们早就同色了），而是外壳被划到了主区的另一个世界里。**
+       ★ 结论：**外壳不该是"另一套颜色"，它就是主区的同一层面。**
+         所以这里不再写死色值，直接指向主区令牌 —— 明暗两套自动同构，
+         以后改主题色外壳会跟着走，不会再出现"三块不统一"。
+         外壳内的半透明叠加一律写 color-mix(var(--shell-text), N%)：
+         文字在浅色是墨、在深色是白，叠加自动跟着翻，不必再维护明暗两套数值。 */
+    --shell: var(--panel);
+    --shell-2: var(--panel-2);
+    --shell-line: var(--line);
+    --shell-text: var(--text);
+    --shell-muted: var(--muted);
+    --shell-dim: var(--dim);
+    /* ★ 用 --acc-text 而不是 --acc 本体：--acc 是强调色系统（applyAccent）按用户选色
+       写进内联样式的**原色**，在深色下依旧是浅色那支值（实测 --acc 两套主题都是
+       #0969da），压在 #161b22 上只有 3.33:1。--acc-text 是主题感知的"可读档"
+       （浅 #074fa4 = 7.88:1，深 #5f9ee7 = 6.21:1），才是外壳该用的那一支。 */
+    --shell-acc: var(--acc-text);
+    /* 压在 --shell-acc 色块上的墨色。★ 曾经写死 #0d1117：深色下压提亮蓝是 9.1:1，
+       浅色下压 #0969da 只有 3.64:1，掉出 AA。必须跟着主题翻，不能写死。 */
+    --shell-acc-ink: #ffffff;
+    --shell-acc-hi: var(--acc-btn-hi);
+    /* 外壳上的状态灯点。★ 主区那套 --ok/#3fb950、--warn/#d29922、--err/#f85149 是
+       为"深底"调的亮色，压在浅色外壳（现在是 #ffffff）上只有 2.5:1，
+       连"非文本图形 3:1"都够不到。浅色下换 GitHub Light 那支深底变体（4.87～5.36:1），
+       深色下沿用主区亮色即可。 */
+    --shell-ok: #1a7f37;
+    --shell-warn: #9a6700;
+    --shell-err: #cf222e;
+    --side-w: 216px;        /* 侧栏宽：唯一真源，dock 的 left 与内嵌模式都引用它 */
     --mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", "PingFang SC", "Microsoft YaHei", Helvetica, Arial, system-ui, sans-serif;
     --radius: 12px;
   }
   * { box-sizing: border-box; }
+  /* [hidden] 必须真的隐藏。HTML 的 hidden 只是 UA 样式 `display:none`，
+     任何 author 规则里的 `display: flex/block/…`（如 .flow{display:flex}）
+     都会把它盖掉 —— 实测：② 页上 #flowBar 明明 hidden=true，
+     却因为 .flow 的 display:flex 照常渲染出 136px 的三段流程条，
+     把左栏白白顶长 136px。加 !important 是这里唯一稳妥的写法：
+     组件作者写 display 时不该被迫惦记 hidden 属性。 */
+  [hidden] { display: none !important; }
   /* ============ 深色模式：GitHub Dark 中性炭 ============ */
   html[data-theme="dark"] {
     --bg: #0d1117;
@@ -99,15 +143,28 @@
     --card-shadow: 0 1px 0 rgba(0,0,0,.3);
     --card-shadow-hover: 0 1px 3px rgba(0,0,0,.36), 0 8px 24px -8px rgba(0,0,0,.5);
     --line-strong: #484f58;
+    /* 深色外壳（侧栏 / 播放坞）：同样指向主区令牌 —— 外壳就是卡片那一层，
+       页面底 --bg(#0d1117) 比它深一档。与浅色是同一条规则，只是方向相反。 */
+    --shell: var(--panel);
+    --shell-2: var(--panel-2);
+    --shell-line: var(--line);
+    --shell-text: var(--text);
+    --shell-muted: var(--muted);
+    --shell-dim: var(--dim);
+    --shell-acc: var(--acc-text);
+    /* 深色下强调色块是亮蓝（#5f9ee7），必须压墨字（6.78:1）；白字只有 3.10:1。 */
+    --shell-acc-ink: #0d1117;
+    --shell-acc-hi: #a5d0ff;
+    --shell-ok: var(--ok);
+    --shell-warn: var(--warn);
+    --shell-err: var(--err);
   }
-  html[data-theme="dark"] .tab:hover { background: rgba(255,255,255,.05); }
-  html[data-theme="dark"] .tab .badge { background: rgba(255,255,255,.07); }
   html[data-theme="dark"] .chip:hover { border-color: #484f58; background: #21262d; }
   html[data-theme="dark"] .ghost:hover:not(:disabled) { background: #21262d; }
   html[data-theme="dark"] .hist-item:hover { background: #1c2128; }
-  html[data-theme="dark"] .toast { background: rgba(28,33,40,.97); }
   html[data-theme="dark"] .spinner { border-color: rgba(255,255,255,.2); border-top-color: currentColor; }
   html[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #30363d; }
+  /* 深色下 toast 用 --panel 本体即可（.toast 已走 color-mix(--panel)），无需单独覆盖 */
 
   /* ============================================================================
      设计令牌层（v2.2 · 品质基线）
@@ -195,7 +252,7 @@
 
   ::selection { background: var(--acc-soft); }
   /* 键盘操作必须看得见焦点：鼠标点按不会留下描边（:focus-visible），
-     只有 Tab / 方向键走到控件上才出现铜色环，输入框沿用凹槽焦点。 */
+     只有 Tab / 方向键走到控件上才出现强调色环，输入框沿用同色描边焦点。 */
   button, .chip, .pcard, .subtab, .tab, summary, [role="button"], input[type="checkbox"], input[type="file"] {
     outline: none;
   }
@@ -219,79 +276,130 @@
   ::-webkit-scrollbar-track { background: transparent; }
 
   /* ============ 侧栏：中性深色导航条（GitHub 侧栏语言）============ */
+  /* ★ 滚动条必须"永远占位"（scrollbar-gutter: stable）。
+     实测：⑥ AI 实验室这一页内容比视口高，会拉出纵向滚动条；其余 12 页不会。
+     滚动条在 Windows 上宽 10px，一出现就把整页可用宽度从 1920 压到 1910 ——
+     而 main 里的 .page-head / .grid 都是 `max-width:1680px; margin:0 auto` 的居中块，
+     容器窄 10px ⇒ 左右各内收 5px ⇒ ⑥ 的标题在 x=115、别的页在 x=120。
+     用户翻页时看到的就是"标题横向跳一下"。滚动条的**有无是被内容决定的**，
+     布局绝不能依赖它 —— 固定预留这条通道，则宽度恒定，跳变从根上消失。 */
+  html { scrollbar-gutter: stable; }
   body { display: flex; min-height: 100vh; }
   .side {
-    width: 216px; flex-shrink: 0; display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh;
+    width: var(--side-w); flex-shrink: 0; display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh;
     padding: var(--sp-5) var(--sp-4) var(--sp-4);
     /* 纯中性深灰面（无暖色、无渐变光晕、无纹理）。专业工具侧栏就是一块安静的面，
        层级靠右侧一条 1px 分隔线表达，不靠投影和材质。 */
-    background: #1c2128;
-    border-right: 1px solid #30363d;
-    color: #e6edf3;
+    background: var(--shell);
+    border-right: 1px solid var(--shell-line);
+    color: var(--shell-text);
   }
   .side::before { content: none; }
   .side .brand, .side nav, .side .side-foot { position: relative; z-index: 1; }
   .brand { display: flex; align-items: center; gap: 10px; padding: 0 6px; }
   .mark {
-    width: 34px; height: 34px; color: #fff; display: grid; place-items: center; border-radius: var(--r-md); flex-shrink: 0;
-    background: var(--acc);
+    width: 34px; height: 34px; color: var(--shell-acc-ink); display: grid; place-items: center; border-radius: var(--r-md); flex-shrink: 0;
+    background: var(--shell-acc);
     box-shadow: none;
   }
   .mark svg { width: 18px; height: 18px; }
-  .brand-name { font: 600 var(--fs-lg)/var(--lh-tight) var(--sans); color: #e6edf3; letter-spacing: .01em; }
-  .brand-sub { font: var(--fs-xs)/var(--lh-snug) var(--sans); color: #9198a1; margin-top: 2px; letter-spacing: .01em; }
+  .brand-name { font: 600 var(--fs-lg)/var(--lh-tight) var(--sans); color: var(--shell-text); letter-spacing: .01em; }
+  .brand-sub { font: var(--fs-xs)/var(--lh-snug) var(--sans); color: var(--shell-muted); margin-top: 2px; letter-spacing: .01em; }
   .side nav { display: flex; flex-direction: column; gap: 2px; margin-top: var(--sp-6); }
-  .side-foot { margin-top: auto; border-top: 1px solid #30363d; padding-top: var(--sp-4); display: flex; flex-direction: column; gap: 3px; }
-  .foot-row { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 32px; padding: 5px 10px; border: 0; border-radius: var(--r-sm); background: none; font: var(--fs-sm) var(--sans); color: #9198a1; text-align: left; transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease); box-sizing: border-box; }
+  .side-foot { margin-top: auto; border-top: 1px solid var(--shell-line); padding-top: var(--sp-4); display: flex; flex-direction: column; gap: 3px; }
+  .foot-row { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 32px; padding: 5px 10px; border: 0; border-radius: var(--r-sm); background: none; font: var(--fs-sm) var(--sans); color: var(--shell-muted); text-align: left; transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease); box-sizing: border-box; }
   .foot-row svg { width: 14px; height: 14px; flex-shrink: 0; }
   .foot-row .fr-label { flex: 1; }
-  .foot-row .fr-value { font: var(--fs-xs) var(--mono); color: #9198a1; max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .foot-row .fr-value { font: var(--fs-xs) var(--mono); color: var(--shell-muted); max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   button.foot-row { cursor: pointer; }
-  button.foot-row:hover { background: rgba(255,255,255,.06); color: #e6edf3; }
-  .foot-row .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex-shrink: 0; margin-left: auto; box-shadow: none; }
-  .foot-row.ok .dot { background: #3fb950; box-shadow: none; }
-  .foot-row.err .dot { background: #f85149; box-shadow: none; }
+  button.foot-row:hover { background: color-mix(in srgb, var(--shell-text) 7%, transparent); color: var(--shell-text); }
+  .foot-row .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--shell-warn); flex-shrink: 0; margin-left: auto; box-shadow: none; }
+  .foot-row.ok .dot { background: var(--shell-ok); box-shadow: none; }
+  .foot-row.err .dot { background: var(--shell-err); box-shadow: none; }
   .foot-row.loading .dot { animation: pulse 1.2s infinite; }
-  /* 侧栏是深色面板（明暗两套都一样），这里的字色全部按 4.5:1 以上重新定过：
+  /* 外壳内的字色全部走 --shell-* 三级（浅色=墨、深色=白），实测都 ≥4.5:1。
      原来 #8d8270 的次级读数只有 2.7:1，11px 的"点击切换"基本看不清。
-     mode-pill/badge 同时把 10px 提到 11px、把 18px 的命中高度撑到 24px。 */
-  .foot-row .mode-pill { font: var(--fs-xs) var(--mono); padding: 3px 9px; min-height: 24px; border-radius: var(--r-full); background: rgba(255,255,255,.06); border: 1px solid #30363d; color: #c9d1d9; margin-left: auto; }
-  .foot-row .mode-pill:hover { background: var(--acc); color: #fff; border-color: var(--acc); }
+     mode-pill/badge 同时把 10px 提到 11px、把 18px 的命中高度撑到 24px。
+     ★ 半透明叠加一律用 color-mix(var(--shell-text), N%)：--shell-text 跟着主题翻色，
+       叠加就自动翻成"墨的淡影"或"白的淡影"，不用再写明暗两套 rgba(255,255,255,x)。 */
+  .foot-row .mode-pill { font: var(--fs-xs) var(--mono); padding: 3px 9px; min-height: 24px; border-radius: var(--r-full); background: color-mix(in srgb, var(--shell-text) 11%, transparent); border: 1px solid var(--shell-line); color: var(--shell-text); margin-left: auto; }
+  .foot-row .mode-pill:hover { background: var(--shell-acc); color: var(--shell-acc-ink); border-color: var(--shell-acc); }
   .theme-btn { display: none; }
-  .theme-btn:hover { background: rgba(255,255,255,.06); }
-  .theme-btn .ico-sun { display: block; }
-  .theme-btn .ico-moon { display: none; }
+  .theme-btn:hover { background: color-mix(in srgb, var(--shell-text) 11%, transparent); }
+  /* 明暗图标二选一。★ 选择器原来写的是 `.theme-btn .ico-sun`，但按钮的类名是
+     `foot-row`（没有 .theme-btn）—— 规则从来没匹配上，于是太阳和月亮**同时可见**。
+     这里挂到按钮 id 上，不再依赖一个不存在的类。 */
+  #themeBtn .ico-sun { display: block; }
+  #themeBtn .ico-moon { display: none; }
+  html[data-theme="dark"] #themeBtn .ico-sun { display: none; }
+  html[data-theme="dark"] #themeBtn .ico-moon { display: block; }
 
   /* 导航项沿用 .tab / data-tab 契约。
      选中态：左侧一条强调色指示条 + 极淡的面 —— 指示条是当代导航最清晰的
      "你在这里"信号，且不依赖颜色对比也能读。 */
-  .tab { position: relative; display: flex; align-items: center; gap: 9px; padding: 7px 10px; min-height: 34px; border-radius: var(--r-sm); color: #9198a1; font: var(--fs-base) var(--sans); cursor: pointer; border: 0; background: none; text-align: left; width: 100%;
+  .tab { position: relative; display: flex; align-items: center; gap: 9px; padding: 7px 10px; min-height: 34px; border-radius: var(--r-sm); color: var(--shell-muted); font: var(--fs-base) var(--sans); cursor: pointer; border: 0; background: none; text-align: left; width: 100%;
     transition: color var(--dur-1) var(--ease), background var(--dur-1) var(--ease); }
   .tab svg { width: 16px; height: 16px; flex-shrink: 0; opacity: .9; }
-  .tab:hover { color: #e6edf3; background: rgba(255,255,255,.055); }
+  .tab:hover { color: var(--shell-text); background: color-mix(in srgb, var(--shell-text) 6%, transparent); }
   .tab::after { content: ""; position: absolute; left: -12px; top: 50%; width: 3px; height: 0; border-radius: 0 3px 3px 0;
-    background: var(--acc); transform: translateY(-50%); transition: height var(--dur-2) var(--ease); }
+    background: var(--shell-acc); transform: translateY(-50%); transition: height var(--dur-2) var(--ease); }
   .tab.active {
-    color: #e6edf3; font-weight: 600;
-    background: rgba(255,255,255,.07);
+    color: var(--shell-text); font-weight: 600;
+    background: color-mix(in srgb, var(--shell-text) 11%, transparent);
   }
   .tab.active::after { height: 18px; }
-  .tab.active svg { color: var(--acc); opacity: 1; }
-  .tab .badge { margin-left: auto; font: var(--fs-xs) var(--mono); color: #c9d1d9; background: rgba(255,255,255,.08); border-radius: var(--r-full); padding: 2px 7px; min-width: 22px; min-height: 18px; text-align: center; }
+  .tab.active svg { color: var(--shell-acc); opacity: 1; }
+  .tab .badge { margin-left: auto; font: var(--fs-xs) var(--mono); color: var(--shell-text); background: color-mix(in srgb, var(--shell-text) 14%, transparent); border-radius: var(--r-full); padding: 2px 7px; min-width: 22px; min-height: 18px; text-align: center; }
 
   .health { display: flex; align-items: center; gap: 7px; font:  var(--fs-xs) var(--sans); color: var(--muted); }
-  .health .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex-shrink: 0; }
-  .health.ok .dot { background: var(--ok); }
-  .health.err .dot { background: var(--err); }
+  .health .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--shell-warn); flex-shrink: 0; }
+  .health.ok .dot { background: var(--shell-ok); }
+  .health.err .dot { background: var(--shell-err); }
   .foot-row.startable { cursor: pointer; }
-  .foot-row.startable:hover .fr-label { color: var(--acc-text, var(--acc)); text-decoration: underline; }
+  .foot-row.startable:hover .fr-label { color: var(--shell-acc); text-decoration: underline; }
   .health.loading .dot { animation: pulse 1.2s infinite; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
 
   /* ============ 主区 ============ */
-  main { flex: 1; min-width: 0; padding: var(--sp-6) var(--sp-7) calc(var(--dock-h) + var(--sp-8)); }
+  /* ★ 纵向预算只有一个真源：main 的上下内边距。
+     旧写法：main 底部 padding = dock-h + sp-8 = 82px，而 .grid.compose .pane 的高度
+     却按 `100vh - sp-6 - pagehead - dock-h - pane-gap` 算 —— 两侧对"底部到底留多少"
+     各持一套口径，结果 1103 + 82 = 1185 > 1174 视口，**每张 compose 页都多出 11px**，
+     凭空长出一条滚动条；更糟的是滚动条吃掉 10px 宽，把整页内容推偏 5px
+     （同一屏里 ①②③④⑤ 的标题在 x=115、⑦⑧⑫⑬ 在 x=120，用户看到的正是"没对齐"）。
+     现在收口：底部留白 = dock 高度 + --main-pad-b，pane 高度直接减掉 main 的真实内边距，
+     "视口 − 上边距 − 页头 − 栏高 − 下边距 = 0"。 */
+  main { flex: 1; min-width: 0; padding: var(--sp-6) var(--sp-7) calc(var(--dock-h) + var(--sp-4)); }
   .panel-tab { display: block; }
   .grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: var(--sp-5); width: 100%; max-width: 1680px; margin: 0 auto; }
+  /* ★ 关于页的左列（33 项系统信息）天然比右列重得多。用 1.05/.95 会让左列被压窄、
+     内部再多列流式又挤；把左列放宽到 1.35fr，右侧"关于/许可"这种短文列反而更从容。 */
+  .grid.grid-about { grid-template-columns: 1.35fr .65fr; }
+  /* ★ ⑫ 设置 / ⑬ 关于 / ⑦ 音色制作 / ⑧ 音色库 都是"内容偏短"的页面：卡片高度由内容决定，
+     内容写完后页面就断在半空 —— 实测 ⑬ 内容底在 439px，视口 1174px，
+     **底下 685px 全是空的**，整页像没做完；⑫ 空 547px、⑧ 空 417px、⑦ 空 385px 同理。
+     奖级版式的通行做法是"短内容页也把版面撑满"：卡片高度至少占满可视区，
+     多出来的部分成为卡片内的留白（留白在框内是设计，在框外是没内容）。
+     高度用同一套纵向令牌算，别再写 `calc(100vh - 245px)` 这类魔法数。
+     ★ 只对这几个"短页"生效（:not(.compose)，compose 页有自己的 pane 高度规则）。 */
+  .grid.settings:not(.compose), .grid.page-fill:not(.compose) {
+    min-height: calc(100vh - var(--sp-6) - var(--pagehead-h) - var(--dock-h) - var(--sp-4));
+  }
+  /* ★ 关于页例外：它的内容分布是"左列 646px / 右列 317px"，撑满规则会把两张卡片
+     一起拉到 1000px，于是左卡底部 210px、右卡底部 540px 全是空的 ——
+     同一个规则在别的页（⑫⑧⑦，内容接近满高）是"把版面撑满"，在这页却变成"卡片内一大片空"。
+     撑满的本意是"别让页面在半空断掉"，而这里卡片已经够到折线，再从内部拉长就没意义了。 */
+  .grid.grid-about:not(.compose) { min-height: 0; align-items: start; }
+  /* 关于页的整块内容在剩余竖高里居中：短页最忌讳"内容贴顶、底下空一大片"，
+     居中后上下留白对称 —— 空的那部分是"版心外的余白"，而不是"没写完的下半页"。
+     只给 #tab-about 这一个 id 写，不动 .panel-tab 的通用显示规则
+     （switchTab 用 inline style.display 控制显隐，这里只管"显示时怎么排"）。 */
+  #tab-about { display: flex; flex-direction: column; justify-content: center;
+    min-height: calc(100vh - var(--sp-6) - var(--sp-6) - var(--pagehead-h) - var(--dock-h) - var(--sp-4)); }
+  @media (max-width: 1180px) {
+    .grid.settings:not(.compose), .grid.page-fill:not(.compose) { min-height: 0; }
+    #tab-about { min-height: 0; justify-content: flex-start; }
+  }
   @media (max-width: 960px) { .grid { grid-template-columns: 1fr; } }
   /* 中窄窗口降级：网格提前单列、播放坞换行、参数网格并排转单列随 620px 断点 */
   @media (max-width: 1180px) {
@@ -299,7 +407,7 @@
     .dock { flex-wrap: wrap; }
     .dock .dock-file { width: 100%; max-width: none; }
     .dock-transport { min-width: 0; width: 100%; }
-    main { padding: var(--sp-5) var(--sp-5) calc(var(--dock-h) + var(--sp-8)); }
+    main { padding: var(--sp-5) var(--sp-5) calc(var(--dock-h) + var(--sp-4)); }
   }
 
   /* 区块标题（.sec）：数据密集界面里，区块标题要能"压住"下方内容——
@@ -339,6 +447,15 @@
     padding: 9px 12px; font: var(--fs-base) var(--sans); outline: none;
     transition: border-color var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
   }
+  /* ★ 单行控件（input / select）的高度必须**与字号解耦**。
+     旧写法靠 `padding:9px` + 行盒累加，而行盒跟着 font-size 走 ——
+     select 被 UA 加了一档内边距变 39px、12px 的 number 输入变 34px、13px 的变 37px，
+     同一排"标签 + 输入 + 按钮"三个控件三种高度，一眼就是没对齐。
+     这里用 height 钉死 36px（与 .primary/.ghost 主要档同高），
+     textarea 是**多行**控件，必须保留 padding 累加（它是"这里要写多少"的表达），
+     所以用 :not(textarea) 排除。 */
+  input:not([type="checkbox"]):not([type="file"]):not([type="range"]), select { height: 36px; box-sizing: border-box; }
+  textarea { box-sizing: border-box; }
   /* 占位提示：用弱化灰，和已填内容（--text 深色）明确区分 */
   textarea::placeholder, input::placeholder { color: var(--dim); opacity: 1; }
   textarea:hover, input:hover, select:hover { border-color: var(--line-strong, #b6bfc9); }
@@ -347,9 +464,13 @@
     box-shadow: 0 0 0 3px var(--acc-soft);
   }
   textarea { min-height: 84px; resize: vertical; line-height: var(--lh-base); }
+  /* ★ 240px 只在窄屏/无 .pane-out 上下文时生效（那时没有 flex 拉伸，
+     240px 就是一个"够写两段歌词"的固定高度）。宽屏下由下面 .pane-out #lyrics
+     的 flex 规则接管（起点 200px、随窗口长高）。两处都要改，别只改一处。 */
   #lyrics { min-height: 240px; }
+  @media (min-width: 1181px) { #lyrics { min-height: 200px; } }
   textarea.abc { min-height: 64px; font: var(--fs-sm) var(--mono); }
-  select { cursor: pointer; }
+  select { cursor: pointer; height: 36px; padding-top: 0; padding-bottom: 0; }
   input[type="file"] { font: var(--fs-sm) var(--sans); color: var(--muted); padding: 6px 10px; }
   /* 原生文件控件的"选择文件"按钮是浏览器默认外观，是页面上唯一没被主题接管的零件。
      ::file-selector-button 能直接把它改成主题化的胶囊，无需 label 包装。
@@ -392,31 +513,103 @@
   }
   html[data-theme="dark"] .chip.active { color: #1d1003; background: var(--acc-chip-hi); }
   .chip.mini { padding: 3px 9px; min-height: 24px; font: var(--fs-xs) var(--sans); }
+  /* ★ "快捷预设行"：一行「小标题 + 若干一键填充按钮」。
+     以前这段布局在 5 处各写一遍内联样式（display:flex; flex-wrap:wrap; gap:6px…），
+     改一处必漏四处，而且按钮用的是**全尺寸 .ghost**（36px）——
+     夹在 36px 的输入框堆里像一排主操作，抢走了真正主按钮的注意力。
+     定规矩：预设按钮一律次级档（.btn-sm 28px），行本身收成一个类。
+
+     ★ 行首的小标题（"变调快捷："）必须和它后面的芯片**同一条基线/同一行盒**。
+       实测过：`.preset-row` 用 align-items:center 时，19px 的行内 span 与 28px 的按钮
+       是"各自居中"，两段文字的中线差 4~5px —— 肉眼一眼就是没对齐。
+       做法：把行首标签也变成一个 28px 行盒、文字在其中垂直居中，
+       于是它和 .btn-sm 是**同一档高度**，中线天然重合（不靠猜 padding）。 */
+  .preset-row { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .preset-row > .row-label {
+    display: inline-flex; align-items: center; height: 28px; flex: none;
+    font: var(--fs-sm) var(--sans); color: var(--muted);
+  }
   .chip.tag-on { border-color: var(--acc); color: var(--acc-text); background: var(--acc-soft); }
   html[data-theme="dark"] .chip.tag-on { color: var(--acc-text); }
-  /* 候选词芯片：中文是主标签（看得懂），英文是真值（送进 Style 的就是这一串）。
-     两行结构让"点哪个词"这件事不需要先在脑子里翻译一遍；字号都留在 11px 以上。 */
-  .chip.word { flex-direction: column; align-items: center; justify-content: center; gap: 2px;
-               min-height: 42px; padding: 6px 11px; line-height: 1.15; border-radius: var(--r-sm); }
-  .chip.word b { font: 600 var(--fs-sm) var(--sans); color: inherit; }
-  .chip.word i { font: 400 var(--fs-xs) var(--mono); font-style: normal; color: var(--muted); }
-  .chip.word.tag-on i { color: inherit; opacity: .78; }
+  /* 候选词芯片：中文是可见标签（点哪个词不用先翻译一遍），
+     英文真值（送进 Style 的那一串）挂在同一芯片内的 <i> 上，默认隐藏、悬停/聚焦时显示。
+     这样"点选"时界面干净（一行放得下十几个），要核对写进去的到底是什么时也不用点开别处。
+     英文始终在 title 里，读屏也能拿到。
+     宽度随中文自适应（约 33–66px），高度恒定 26px。 */
+  .chip.word { flex-direction: row; align-items: center; gap: 5px;
+               min-height: 26px; padding: 3px 10px; line-height: 1.2; border-radius: var(--r-full); }
+  .chip.word b { font: 600 var(--fs-xs) var(--sans); color: inherit; }
+  .chip.word i { display: none; font: 400 var(--fs-micro) var(--mono); font-style: normal;
+                 color: var(--dim); max-width: 118px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 英文真值的显示时机：**悬停或键盘聚焦时**，而不是"选中就常驻"。
+     原因（实测）：选中常驻会把 chip 从 44px 撑到 175px（"乐句从容 unchurried phrasing"），
+     一行 8 个词 + 一个 175px 长 chip + 140px 尾组必然超过 642px 容器宽 →
+     尾组被顶到第二行，这一格凭空多 32px，而且长得像两个孤儿按钮。
+     已选词的英文在左侧 Style 产出框里本来就是完整可见的，
+     所以这里换成"按需查看"是纯粹的净收益：常态紧凑，想核对时悬停即得。 */
+  .chip.word:hover i, .chip.word:focus-visible i { display: inline; }
+  .chip.word.tag-on i { display: none; color: var(--acc-text); opacity: .8; }
+  .chip.word.tag-on:hover i, .chip.word.tag-on:focus-visible i { display: inline; }
+  html[data-theme="dark"] .chip.word.tag-on i { color: var(--acc-chip-hi); opacity: .9; }
+  /* 「其余 N 个」与「已选 N · 清空」曾经各占一格 .av 的子项，在 flex-wrap 下必然换行——
+     于是每一格底部都多出 24px + 6px gap = 30px 的"第二行按钮带"，
+     六格就是 180px 纯浪费，而且看着像每格都有两个跑题的孤儿按钮。
+     现在两者由 .wtail 包成同一个子项，跟词表同一行、贴着最后一个词、
+     虚线描边（"不是候选词"的语义）。--r-full 保持一致，不换圆角语言。
+     min-height 从 24 提到 26 与 .chip.word 同高：尾组只比词高 2px 也会把整行撑出一档。 */
   .chip.more, .chip.cnt { font: var(--fs-xs) var(--sans); color: var(--muted); background: transparent;
-                          border-style: dashed; }
+                          border-style: dashed; min-height: 26px; }
   .chip.cnt { color: var(--acc-text); border-color: var(--acc-chip-hi); }
 
   /* ============ 曲风装配台 ============ */
   /* 一行的结构：左侧竖排「维度名 + 一句话说明」，右侧该维度的胶囊词表。
      维度名单独占列宽，是为了让六要素从上到下一眼对齐——用户扫一眼就知道还缺哪一格。 */
-  .asm { display: flex; flex-direction: column; gap: 11px; margin-top: 4px; }
-  .arow { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 10px; align-items: start; }
-  .arow > .ak { font: 600  var(--fs-sm) var(--sans); color: var(--text); padding-top: 5px; line-height: 1.35; }
-  .arow > .ak small { display: block; font: 400  var(--fs-xs) var(--sans); color: var(--muted); margin-top: 3px; letter-spacing: 0; }
+  .asm { display: flex; flex-direction: column; gap: 9px; margin-top: 4px; }
+  /* 行标签列 74px 固定 + 控件列自适应。
+     padding-top 4px 是让「1 语言」的基线大约落在右侧 select/chip 首行文字的基线上：
+     原来 5px 是按 28px 高的 chip 调出来的，chip 收到 26px 之后就差 1px，读起来像没对齐。 */
+  .arow { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px; align-items: start; }
+  .arow > .ak { font: 600 var(--fs-sm)/1.3 var(--sans); color: var(--text); padding-top: 4px; }
+  /* 副标题（放最前 / 可多选 / BPM+调性）是这一格的**用法说明**，不是第二行标题：
+     压到 fs-micro(10.5px) 并降低颜色权重，让它退到背景里，行标签本身才立得住。 */
+  .arow > .ak small { display: block; font: 400 var(--fs-micro)/1.3 var(--sans); color: var(--dim); margin-top: 2px; letter-spacing: 0; }
   .arow > .av { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+  /* 一格里的"定宽控件"（BPM 输入 / 调性下拉 / 性别下拉）单独占一行，
+     候选词区另起一行拿满宽。不这样拆的话，定宽控件会与 chips 抢同一行宽度，
+     把每个 chip 挤到只剩两个字宽 → 候选词一格能长到 796px（六格里其它格的两三倍）。
+     这里让 .av 成为纵向容器，.av-lead 与 .chips 各占一行。 */
+  .arow > .av:has(> .av-lead) { flex-direction: column; align-items: stretch; gap: 7px; }
+  /* 首控件行：定宽控件不拉满，但**行高与 chips 行严格一致**（都是 26px 控件 + 6px gap）。
+     之前 select 默认 39px、chip 26px，两种行高交替出现，六格看下来忽高忽低。
+     宽度也统一到 200px：原来 210/150/96+218 三种宽度混排，
+     首控件行的右边缘每格都不一样，下方 chips 却是同一左边界 ——
+     这种"上下两块对不齐、左右两块又各不相同"正是"布局太差"的来源。 */
+  .arow .av-lead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+  .arow .av-lead select, .arow .av-lead input { min-height: 26px; font-size: var(--fs-sm); }
+  .arow .av-lead > select { width: 200px; }
+  /* BPM 是三位数，给 200px 会显得空虚；按"能放下 220"的宽度定 96px，
+     调性下拉补到 200px —— 两者加起来 96+8+200=304px，与上面 chips 的左边界同一起点。 */
+  .arow .av-lead > input[type="number"] { width: 96px; }
   /* 词表不再自带滚动条（用户："这种折叠、滚动方式太呆了"）：
      92px 内滚动条嵌在整页滚动条里，滚轮会抢焦点、看着像页面坏了。
-     现在收起态只露常用词 +「其余 N 个」就地展开，展开后由右栏那一条滚动条接手。 */
-  .arow .chips { margin: 0; gap: 6px; min-width: 0; }
+     现在收起态只露常用词 +「+N ▾」就地展开，展开后由右栏那一条滚动条接手。 */
+  .arow .chips { margin: 0; gap: 6px; min-width: 0; width: 100%; }
+  /* ★ 尾组「+N ▾ / 已选 M · 清空」：**永远贴在词表最后一行的末尾**，绝不单独换行。
+     做法是在尾组前插一个不可见的弹性填充 .wfill（flex: 1 1 auto; min-width: 0），
+     它会吃掉该行剩余的所有空白，把尾组推到行尾；如果这一行真的放不下，
+     填充宽度收到 0，尾组就自然一起移到下一行 —— 但**绝不会出现
+     "只剩尾组孤零零占一行"** 那种断头现象（除非整行只有尾组，那不可能）。
+     为什么不用 JS 算"露几个词"：容器宽度在第 0 帧 / 分栏切换 / 字体加载后
+     是三个不同的值，测一次定下来必然在某个时序算错，且无自愈路径（踩过）。
+     布局的事交给 CSS，JS 只负责给出候选词。 */
+  .arow .chips { align-items: center; }
+  /* 尾组的定位：用 margin-left:auto 吃掉本行余量，把它推到行尾。
+     ★ 不要用 `flex:1` 的填充元素 —— 填充会被分配"整行"的自由空间，
+       于是它自己占满第一行、把尾组顶到第二行（实测正相反）。
+       margin:auto 只在**本行还有余量时**才推动，余量不足就正常换行 ——
+       这正是要的语义：能贴行尾就贴，贴不了就换行，绝不产生"只放一个按钮的空行"。 */
+  .arow .wtail { display: inline-flex; flex-wrap: nowrap; align-items: center; gap: 6px;
+                 margin-left: auto; flex: 0 0 auto; }
   /* 搜索时这一格一个词都没命中：整格压暗，表示"这里没有你要的词"，
      而不是留一个空荡荡的框让人以为还在加载。 */
   .arow.dim { opacity: .42; }
@@ -435,7 +628,7 @@
   .model-now .mn-k { font: 600 var(--fs-xs) var(--sans); color: var(--muted); flex: none; letter-spacing: .02em; }
   .model-now b { font: var(--fs-sm) var(--mono); color: var(--text); flex: 1 1 auto; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .model-now .ghost { flex: none; padding: 3px 11px; min-height: 26px; font-size: var(--fs-xs); }
+  .model-now .ghost { flex: none; padding: 0 11px; height: 28px; font-size: var(--fs-xs); }
   .pcard { text-align: left; border: 1px solid var(--line); background: var(--bg-2);
            border-radius: var(--r-sm); padding: 8px 10px; cursor: pointer;
            transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease), transform var(--dur-1) var(--ease); }
@@ -500,22 +693,45 @@
                margin: -2px 0 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line-soft); }
   .pane-head b { font: 600 var(--fs-base) var(--sans); color: var(--acc-text); letter-spacing: .01em; }
   .pane-head .hint-xs { margin: 0; }
-  /* 主产出列：卡片顶部一条铜色细线。左右两栏视觉权重相同时，用户不知道该先看哪边；
+  /* 主产出列：卡片顶部一条强调色细线。左右两栏视觉权重相同时，用户不知道该先看哪边；
      一条 2px 的强调线就把"这一栏是结果、那一栏是原料"讲清楚了，不需要再多文字。 */
   .pane-out { position: relative; }
   .pane-out::before { content: ""; position: absolute; left: var(--sp-6); right: var(--sp-6); top: 0; height: 2px;
     border-radius: 0 0 2px 2px; background: linear-gradient(90deg, var(--acc), transparent 92%); }
   .pane-body { flex: 1 1 auto; min-height: 0; min-width: 0; }
   .pane-foot { flex: none; margin-top: var(--sp-4); padding-top: var(--sp-4); border-top: 1px solid var(--line-soft); }
-  /* 页脚里的说明文字压到一行内，超长就省略号 + title —— 页脚是"动作区"，
-     不该被 2 行解释文字顶高、挤压上方内容。 */
-  .pane-foot .hint-xs { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+  /* 页脚里的说明文字压到一行内 —— 页脚是"动作区"，不该被 2 行解释文字顶高、挤压上方内容。
+     ★ 但"截断"必须留下痕迹：原来的写法只有 `-webkit-line-clamp:1` + `overflow:hidden`，
+       既没有省略号也没有 title —— 实测它把「复制后到…」那条 38px 的文案压进 19px 的盒子，
+       后半句（"那两页也各自留了曲风输入框…"）**无声消失**，用户看到的是半句话。
+       这正是设计系统明令禁止的"元素莫名消失"。现在补上 `title` 兜底（完整文案仍可悬停查看），
+       并用真正的单行省略号代替 line-clamp —— 单行 + ellipsis 比 line-clamp 更可预测，
+       且不会在"文本节点里含换行"时算出 2 行高度。 */
+  .pane-foot .hint-xs {
+    display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   @media (min-width: 1181px) {
-    /* 104 = 页面上边距 24 + 播放坞 60 + 20 的余量。以前写 132，卡片底部和播放坞之间
-       白留了 48px 空气——在 843px 高的窗口里，这 28px 正好是歌词框能不能整块露出来的差别。 */
-    .grid.compose .pane { height: calc(100vh - var(--sp-6) - var(--pagehead-h) - var(--dock-h) - var(--pane-gap)); }
+    /* ★ 这里必须与 main 的内边距逐项对齐，否则页面会比视口高/矮几像素：
+       视口 − 上边距(sp-6) − 页头(pagehead-h) − 栏间距(pane-gap) − 下边距(dock-h + sp-4) = 栏高。
+       旧公式把下边距当成 sp-6、且漏了 pane-gap，于是每张 compose 页高出视口 11px，
+       逼出一条滚动条，滚动条再吃掉 10px 宽 → 全站标题横向错开 5px。
+       改任何一项（下边距/页头高/坞高）都要同时改这里，所以两者贴在一起写。 */
+    .grid.compose .pane {
+      height: calc(100vh - var(--sp-6) - var(--pagehead-h) - var(--pane-gap) - var(--dock-h) - var(--sp-4));
+    }
     .grid.compose .pane-body { overflow-y: auto; overscroll-behavior: contain; padding-right: 10px; margin-right: -4px; }
     .grid.compose .pane-body::-webkit-scrollbar { width: 9px; }
+    /* 可滚动提示：右栏这类"内容库"在矮窗口里必然会溢出（621px 时右栏 670px 内容），
+       但滚动条只在悬停时出现，用户第一眼看到的是"内容被硬切一刀"。
+       加一条底部渐隐 mask（只在确实可滚、且尚未滚到底时出现，由 JS 打 .can-scroll / .at-end）：
+       内容向下淡出＝"下面还有"，是滚动容器最通用的视觉语言；滚到底就撤掉，不误导。 */
+    .grid.compose .pane-body.can-scroll:not(.at-end) { --pb-fade: 26px; }
+    @supports (mask-image: linear-gradient(#000, transparent)) {
+      .grid.compose .pane-body.can-scroll:not(.at-end) {
+        -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - var(--pb-fade)), transparent 100%);
+                mask-image: linear-gradient(to bottom, #000 calc(100% - var(--pb-fade)), transparent 100%);
+      }
+    }
     /* 左栏内容（含固定高度的输入框）超出可视高度时，整栏可滚——
        兜底保证底部的复制/生成按钮永远到得了，不会被裁在卡片外。 */
     .grid.compose .pane-out .pane-body {
@@ -527,18 +743,77 @@
        现在歌词框吃掉余量：843px 窗口给 100px（5 行），954px 给 213px，1080px 给 339px（实测）。 */
     .pane-out .pane-body { display: flex; flex-direction: column; }
     .pane-out .pane-body > * { flex: none; }
-    /* 歌词框吸收余量，但设上限：超出上限就交给左栏滚动，不把下面的自检/按钮顶出视野 */
-    .pane-out #lyrics { flex: 1 1 100px; min-height: 100px; max-height: 46vh; }
+    /* 歌词框吸收余量，但设上限：超出上限就交给左栏滚动，不把下面的自检/按钮顶出视野。
+       ★ 下限从 100px 提到 200px（≈10 行）：歌词是这页的**主角**，
+       100px 只露 5 行——一首歌至少 [Verse]/[Chorus] 两段十来行，
+       用户刚写完副歌就看不到主歌了，得反复上下滚。**主角框不该比配角框还小**。
+       200px 起步，窗口高就继续长（flex-grow 保留），上限 46vh。 */
+    .pane-out #lyrics { flex: 1 1 200px; min-height: 200px; max-height: 46vh; }
+    /* ① Style 页没有歌词框，只有曲风框——上面那条只喂了 #lyrics，
+       于是 ① 的左栏把余量全留在底部（实测 843px 窗口里空出 200+px，
+       一大片空白让整页看着"没做完"）。
+       ★ 但这套"曲风框吃掉全部余量"的写法直接过头了：实测 1920×1174 下
+       #style 被拉到 **540px**，一屏 27 行 —— 而曲风描述是个 20 词的逗号串，
+       3 行就写完了。一个 540px 的空框把整页权重全吸走，用户看着像个"该填很多字的输入框"，
+       心理负担比实际任务大得多。**输入框的高度应当表达"这里大概要写多少"，
+       不是在栏里分蛋糕。**
+       现在改成封顶 240px（≈12 行，仍够写长 prompt），且不参与拉伸
+       （去掉 flex-grow）：高度由内容量决定 —— 写得多就长到 240 封顶再内部滚动。 */
+    .pane-out .pane-body > #styleSlotAsm { flex: none; display: flex; flex-direction: column; }
+    .pane-out .pane-body > #styleSlotAsm > #styleBox { display: flex; flex-direction: column; flex: none; }
+    .pane-out .pane-body > #styleSlotAsm > #styleBox > #style { flex: none; min-height: 108px; max-height: 240px; }
+    /* 状态行（原 presetNote）：一行一个状态 + 一个预算数字 + 一个「?」。
+       以前这里是三段长句，是左栏高度的最大占用者；现在恒定单行，
+       说明文字收进 <details>，鼠标/键盘都能展开，不展开就不占高度。 */
+    .pn { display: block; }
+    /* 直接让 .pn 自己当 flex 容器，不再套一层 <span class="pn-row">：
+       行内 flex 子元素会落进父级的行盒(line box)，被 .hint-xs 的 line-height
+       再撑高 12px（实测 row 31px / 子元素 19px）。去掉中间层，高度就贴住内容。 */
+    .pn { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; min-width: 0; }
+    .pn > * { flex: none; }
+    /* 状态文字必须能缩到 0（min-width:0 是 flex 里唯一能让 ellipsis 生效的开关），
+       否则它会以内容宽度(427px)把「?」挤到第二行 —— 那正是 40px 双行的来源。 */
+    .pn .pn-state { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+    .pn .pn-bud { flex: none; font-family: var(--mono); font-weight: 600; white-space: nowrap; }
+    .pn .pn-more { flex: none; position: relative; margin-top: 0; }
+    .pn .pn-more > summary { list-style: none; cursor: pointer; user-select: none;
+      width: 15px; height: 15px; min-height: 15px; padding: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+      border: 1px solid var(--line); border-radius: var(--r-full);
+      font: 600 10px var(--sans); color: var(--dim); background: var(--panel-2); }
+    .pn .pn-more > summary::-webkit-details-marker { display: none; }
+    .pn .pn-more[open] > summary { border-color: var(--acc-chip-hi); color: var(--acc-text); background: var(--acc-soft); }
+    .pn .pn-more > div { position: absolute; right: 0; bottom: 130%; z-index: 30; width: 300px;
+      padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--r-sm);
+      background: var(--panel); color: var(--text); font: var(--fs-sm)/1.55 var(--sans);
+      box-shadow: 0 10px 28px rgba(20,30,45,.18); }
+    /* 窄窗：说明气泡改成整宽、钉在本行下方，避免超出左栏被裁 */
+    @media (max-width: 1180px) { .pn .pn-more > div { width: min(340px, 82vw); } }
     .pane-out .pane-body > .lint { flex: 0 1 auto; }
     /* 配合上面那条：把左栏的行距收紧几px（只收左栏，别的页不动），
        省下来的高度全部让给歌词框，843px 的窗口里一屏看完整首。 */
     .pane-out .sec { margin-top: 12px; margin-bottom: 8px; }
+    /* ★ 左栏 label→input 是 4px，别处是全局的 6px。这是**有意**的差异（左栏要省高度），
+       不是漏改：这一栏里同时有 曲风/歌词/任务名/CoT/乐谱 五组"标签+框"，
+       每组省 2px 就是 10px，正好是矮窗口里"最后一个框露不露头"的临界值。
+       记录在此以免后人当 bug 改回 6px。 */
     .pane-out label { margin-top: 9px; margin-bottom: 4px; }
     .pane-out .budgetrow { margin: 4px 0 3px; }
     .pane-out #sixBox { margin-top: 5px; }
     .pane-out .pane-body > .actions { margin-top: 6px; }
-    .pane-out .pane-body > .lint { margin-top: 5px; }
+    /* 左栏底部的三条状态行（自检 / 装配状态 / 当前配方）：每条只占一行，
+       顶到 5px、彼此 4px。之前它们各自带着默认 margin-top(5/7/6)，
+       在只有 232px 可视高的左栏里，光这三条之间的空气就吃掉 18px。 */
+    .pane-out .pane-body > .lint { margin: 5px 0 0; }
+    .pane-out .pane-body > #presetNote { margin: 4px 0 0; }
+    .pane-out .pane-body > #styleRecipe { margin: 4px 0 0; }
     .pane-out .pane-foot { margin-top: 10px; padding-top: 9px; }
+    /* 栏头也压成一行：`.pane-head` 默认 flex-wrap:wrap，右半边那句解释会换行成 57px 高的头，
+       在 621px 的窗口里相当于白送 20px 给空气。改成单行 + 省略号（完整文字进 title）。 */
+    .pane-out .pane-head { flex-wrap: nowrap; margin: -2px 0 8px; padding-bottom: 7px; }
+    .pane-out .pane-head b { flex: none; }
+    .pane-out .pane-head .hint-xs { flex: 1 1 0; min-width: 0; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis; }
   }
   /* 右边点一下、左边文本框闪一下：视线跳过去就知道刚才那一下生效了（手改过 Style 时不闪，
      因为那一下确实没写进去，闪了反而是骗人）。 */
@@ -576,14 +851,25 @@
   .fold.flat > .sec::before { content: none; }
   .fold.flat > .fold-body { padding-top: 2px; }
 
-  /* 六要素自检：装配台的「还缺什么」指示灯。绿=已覆盖，灰=缺（不判死，缺了照样能生成） */
-  .six { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: var(--sp-2); margin-top: 10px; }
-  .six > div { display: flex; align-items: center; gap: 6px; font: var(--fs-xs) var(--sans); color: var(--muted);
-               border: 1px solid var(--line-soft); border-radius: var(--r-sm); padding: 6px 9px; background: var(--panel-2);
-               transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease); }
-  .six > div.hit { color: var(--text); border-color: var(--ok); background: var(--ok-soft); }
-  .six i { font-style: normal; width: 13px; text-align: center; }
-  .six em { font-style: normal; margin-left: auto; font: var(--fs-xs) var(--mono); color: var(--muted); max-width: 74px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 六要素自检：装配台的「还缺什么」指示灯。
+     用户原话是"需要选择、需要输入的组件要易于区分"——这六个**既不是输入也不是按钮**，
+     是只读状态。旧版给每格描边+底色+✓/○，外观和可点的 .chip 几乎一样，用户会去点它。
+     现在改成**无边框的一行状态条**：只在左侧一个语义点（✓ 绿 / ○ 灰）+ 文字，
+     不给任何"可点"的暗示；已覆盖时文字转常规色并加粗一档，未覆盖时降到弱色。 */
+  .six { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--sp-5);
+         margin-top: 9px; padding: 7px 11px; border-radius: var(--r-sm);
+         background: var(--panel-2); border: 1px solid var(--line-soft); }
+  /* 未覆盖那一格用 --muted 而不是 --dim：两者实际是 #59636e / #6e7781（浅）与
+     #9198a1 / #8b949e（深），在 --panel-2 底上的对比度分别是
+     --dim 4.27:1（浅）/ 4.34:1（深）——**都差一点点够不到 AA 的 4.5**，
+     而这是 11–12px 的正常字号文本（非大字号，不能按 3:1 放宽）。
+     --muted 给到 5.7:1 / 5.6:1，同一套视觉里既保持"次级"又不违规。 */
+  .six > div { display: inline-flex; align-items: center; gap: 5px;
+               font: var(--fs-xs) var(--sans); color: var(--muted); white-space: nowrap; }
+  .six > div > i { font-style: normal; font-size: 11px; line-height: 1; color: var(--line-strong); }
+  .six > div.hit { color: var(--text); font-weight: 600; }
+  .six > div.hit > i { color: var(--ok); }
+  .six em { font-style: normal; margin-left: 2px; font: var(--fs-micro) var(--mono); color: var(--muted); max-width: 74px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .lint { font: var(--fs-sm)/var(--lh-base) var(--sans); color: var(--muted); margin-top: 8px; }
   .lint b { color: var(--muted); font-weight: 600; }
   .lint.ok { color: var(--ok); }
@@ -594,9 +880,18 @@
      同属性按钮跨页面统一尺寸（min-height 36）与配色，降低认知门槛。 */
   .actions { display: flex; gap: var(--sp-3); margin-top: var(--sp-5); flex-wrap: wrap; align-items: center; }
   button { font-family: var(--sans); }
+  /* ★ 按钮高度**只能由 height 决定，不能由"字号 + 上下 padding"累加**。
+     旧写法是 `min-height:36px; padding:9px 17px`：内容盒高度 = padding(18) + 行盒，
+     而行盒跟着 font-size 走 —— 于是 13px 的按钮实高 37px、12px 的 36px、
+     带 svg(14px) 的又不同，全站量出 26/36/37/38 四个值。
+     "同区同圆角、高度只分两档"这条规矩要真成立，就必须**用 height 钉死**，
+     再用 flex 居中把 padding 的作用彻底去掉。
+     ★ 两档：次级 28px（.btn-sm / .btn-xs，两者同高不同内边距），主要 36px。 */
   .primary, .ghost, .danger {
-    display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: var(--r-sm); padding: 9px 17px; min-height: 36px;
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: var(--r-sm);
+    height: 36px; padding: 0 17px;
     cursor: pointer; font: 600 var(--fs-base) var(--sans); border: 1px solid transparent;
+    box-sizing: border-box;
     transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
   }
   .primary {
@@ -604,9 +899,19 @@
     background: var(--acc);
     box-shadow: 0 1px 0 rgba(31,35,40,.10);
   }
-  .primary:hover:not(:disabled) { background: var(--acc-hi); box-shadow: 0 1px 0 rgba(31,35,40,.14); }
+  /* ★ 主按钮的 hover 一律**往黑走**（--acc-btn-lo），两套主题都是。
+     原因只有一条，但很容易反着写：**主按钮是白字压强调色底。
+     白字的对比度只由底的明度决定 —— 底越亮，白字越糊。**
+     原实现是 hover 提亮（--acc-hi），实测两套主题都掉出 AA：
+       · 浅色 --acc-hi = 往白混 30%  → 8 个预设色 2.82 ～ 3.71:1 **全部不达标**
+       · 深色 --acc-hi = 往白混 10%  → 5 个不达标（#9a6700 4.05、#0969da 4.37 …）
+     改成往黑混 20% 之后，白字对比度反而上升，
+     而且"悬停时颜色沉下去"本来就是实体按键更自然的反馈。
+     注：**深色 --acc-hi 仍然是亮的，那是给键盘焦点环（:focus-visible）用的**——
+     焦点环画在外侧、不载文字，需要"比底更亮"才看得见，两者用途不同，别一起改。 */
+  .primary:hover:not(:disabled) { background: var(--acc-btn-lo); box-shadow: 0 1px 0 rgba(31,35,40,.14); }
   html[data-theme="dark"] .primary { color: #ffffff; background: var(--acc); font-weight: 600; }
-  html[data-theme="dark"] .primary:hover:not(:disabled) { background: var(--acc-hi); }
+  html[data-theme="dark"] .primary:hover:not(:disabled) { background: var(--acc-btn-lo); }
   .ghost {
     color: var(--text); border-color: var(--line);
     background: var(--panel);
@@ -628,16 +933,41 @@
   .icon-btn:hover { color: var(--text); border-color: var(--line-strong); background: var(--panel-2); }
   .icon-btn.del:hover { color: var(--err); border-color: var(--err); }
   /* 紧凑控件 / 次级文字工具类：把散落的内联 font-size/padding 收进样式表。
-     全站只有这一处定义"小按钮多小、次级文字多大"，改一处全站同步。 */
-  .btn-sm { padding: 4px 11px !important; min-height: 28px !important; font-size: var(--fs-xs) !important; }
-  .btn-xs { padding: 3px 10px !important; min-height: 26px !important; font-size: var(--fs-xs) !important; }
+     全站只有这一处定义"小按钮多小、次级文字多大"，改一处全站同步。
+     ★ 必须设 height 而不是 min-height：基础规则用 height 钉死了主要档，
+       这里若只给 min-height，min-height < height 不生效，按钮还是 36px。
+     ★ 高度**只有两档**：主要 36 / 次级 28。
+       原来还有一档 26（.btn-xs），实测全站只用 2 处，
+       却让"量出来几种高度"从 2 变 3 —— 两档的存在意义就是"一眼能数清"，
+       多出来的那一档把规矩破了。26 与 28 差 2px 谁也看不出，
+       但工具量得出来、后人得重新判断哪个才是对的，不值。 */
+  .btn-sm { padding: 0 11px !important; height: 28px !important; font-size: var(--fs-xs) !important; }
+  .btn-xs { padding: 0 10px !important; height: 28px !important; font-size: var(--fs-xs) !important; }
   .t-sm { font-size: var(--fs-sm); }
   .t-xs { font-size: var(--fs-xs); color: var(--muted); }
 
   /* 状态 / 进度 */
   .status { font: var(--fs-sm)/var(--lh-base) var(--sans); color: var(--muted); min-height: 17px; margin-top: var(--sp-4); white-space: pre-wrap; }
   /* AI 工作台（内嵌 dsh 原生界面） */
-  .ai-frame-wrap { position: relative; height: calc(100vh - 190px); min-height: 480px; border-radius: var(--r-lg); overflow: hidden; box-shadow: var(--card-shadow); background: var(--panel); border: 1px solid var(--line-soft); }
+  /* ★ 这里原来是 `calc(100vh - 190px)` —— 又一个魔法数，而且**算错了 26px**：
+     .page-head 的外框 + 上方那条 .sec（含 24/12 的上下 margin）实测占 134px，
+     再加 main 的底部让位 62px（--dock-h + --sp-4）＝ 216px 才是真实开销。
+     写 190 的后果：整页 1200px > 视口 1174px ⇒ 13 个页签里只有这页强行出滚动条、
+     标题横跳 5px（别的页因为 scrollbar-gutter 不跳，它跳，反而更显眼）。
+     现在不再手算：把 #tab-ailab 变成 flex 列，让 .ailab-grid 吃掉"剩下的高度"，
+     浏览器自己保证 100vh 内落地 —— 加减任何一段 chrome 都不用再改这个数。 */
+  /* ★ 注意 switchTab() 是用**内联** display 切换的（隐藏时写 display:none，
+     显示时写 ""）。所以这里必须写 display:flex —— 显示时内联是空串、
+     回落到这条规则；隐藏时内联 none 覆盖它。写 display:none 会让这页永远出不来。 */
+  #tab-ailab { display: flex; flex-direction: column; min-height: 0;
+    height: calc(100vh - var(--sp-6) - var(--dock-h) - var(--sp-4)); }
+  #tab-ailab .ailab-grid { flex: 1 1 auto; min-height: 0; align-items: stretch; }
+  .ai-frame-wrap {
+    position: relative;
+    height: 100%;
+    min-height: 480px;
+    border-radius: var(--r-lg); overflow: hidden; box-shadow: var(--card-shadow); background: var(--panel); border: 1px solid var(--line-soft);
+  }
   .ai-frame-wrap iframe { width: 100%; height: 100%; border: 0; display: block; }
   .ai-frame-wrap .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
   .ai-layout { display: flex; gap: 14px; align-items: stretch; }
@@ -680,7 +1010,7 @@
   .ai-inputrow .primary { border-radius: var(--r-md); padding: 8px 18px; }
   .status.err { color: var(--err); }
   .status.ok { color: var(--ok); }
-  /* 进度条：凹槽轨道 + 铜色液柱（顶端带高光） */
+  /* 进度条：浅槽轨道 + 强调色液柱 */
   .progress { height: 6px; background: var(--panel-2); border-radius: var(--r-full); margin-top: 12px; display: none; overflow: hidden; }
   .progress.show { display: block; }
   .progress > div {
@@ -725,7 +1055,7 @@
   .m-badge.nof0 { color: var(--warn); }
   .m-actions { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr);
                gap: 6px; margin-top: 9px; }
-  .m-actions button { min-height: 28px; padding: 4px 8px; font:  var(--fs-sm) var(--sans);
+  .m-actions button { height: 28px; padding: 0 8px; font:  var(--fs-sm) var(--sans);
                       white-space: nowrap; width: 100%; }
   .m-note { font: var(--fs-sm)/var(--lh-base) var(--mono); color: var(--text); margin-top: 8px;
             padding: 8px 10px; border-radius: var(--r-sm); background: var(--bg-2);
@@ -739,6 +1069,17 @@
      如果空状态只有 100px 高，下面会留一大片死白，整页看着像没做完。 */
   .row-list > .empty:only-child, .empty.fill { display: flex; align-items: center; justify-content: center; min-height: 220px; }
 
+  /* ★ ⑪ 任务管理的列表：它是"这页的主角"，必须占满剩下的高度、自身滚动。
+     旧实现让列表自然生长（30 条 = 2430px），页面整体滚 —— 于是筛选栏一滚就没了，
+     想换筛选条件要先滚回顶部。现在列表封顶到剩余视口高、自己滚，
+     筛选栏永远钉在上面（实测列表高 636px 死白 → 0）。
+     ★ 上限用 max() 兜底：窗口很矮时也至少给 240px，不会压成一条缝。 */
+  .row-list.page-fill-list {
+    max-height: max(240px, calc(100vh - var(--sp-6) - var(--pagehead-h) - var(--dock-h) - var(--sp-4) - 156px));
+    overflow-y: auto; padding-right: 4px; scrollbar-width: thin;
+    overscroll-behavior: contain;
+  }
+
   /* 历史页子页签 */
   .subtabs { display: flex; gap: 6px; flex-wrap: wrap; }
   .subtab { display: inline-flex; align-items: center; min-height: 30px; font: var(--fs-sm) var(--sans); color: var(--muted); background: var(--panel-2); border: 1px solid transparent; border-radius: var(--r-sm); padding: 5px 13px; cursor: pointer;
@@ -748,27 +1089,113 @@
   .subtab span { color: var(--muted); margin-left: 2px; }
   .subtab.active span { color: var(--acc-text); }
 
+  /* ★ 筛选区：两个维度（状态 / 类型）各自一行，行首一个固定宽度的维度标签。
+     标签宽度固定 → 两行的页签左边界在同一条竖线上，视觉上"归成一栏"；
+     两行之间一条横线把"这是两个维度"说清楚（旧实现用 1px 竖线分隔并排的两组，
+     反而像"一行七个标签中间插了个怪东西"）。 */
+  .hist-filter { width: 100%; max-width: 1680px; margin: var(--sp-2) auto 0; }
+  .hf-row { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; padding: 2px 0; min-height: 34px; }
+  .hf-row + .hf-row { border-top: 1px solid var(--line-soft); }
+  .hf-label { flex: none; width: 30px; font: 600 var(--fs-xs) var(--sans); color: var(--muted); letter-spacing: .06em; }
+  .hf-right { display: flex; align-items: center; gap: var(--sp-3); margin-left: auto; flex-wrap: wrap; }
+  .hf-right #histSearch { width: 240px; max-width: 46vw; padding: 6px 11px; }
+  .hf-queue { font: var(--fs-xs) var(--mono); color: var(--muted); }
+
+  /* ★ 列轨道是这张表的骨架，必须像 <table> 一样"逐行一致"。
+     旧实现用 `minmax(140px,1.4fr) … minmax(120px,2fr)` —— 那两个 fr 是**按内容分配**的：
+     每行的任务名长短不同 → 每行的 fr 解出不同宽度 → 同一列在第 1 行 x=649、第 8 行 x=816，
+     五种列位置各飘了 3~5 个值。眼睛识别不了"哪一格是状态"，这就是"乱"的根源。
+     现在：列宽**只由容器宽度决定**，与行内容无关 —— 用 var() 定义在一处，
+     行与列头共用同一份模板，改宽度只改一处。 */
+  :root {
+    --hcol-task: minmax(180px, 1fr);
+    --hcol-state: 96px;
+    --hcol-lyric: minmax(160px, 1.05fr);
+    --hcol-meta: 172px;
+    --hcol-act: 236px;
+    --hcol-gap: var(--sp-4);
+  }
+  /* ★ 列轨道只属于**任务管理这张表**，不能写在 .hist-item 这个共享类上：
+     换声任务列表(#rvcList)、音色训练列表、分离列表都复用 .hist-item，
+     它们要的是「内容纵向铺满」而不是五列网格 —— 写在共享类上会把这几个列表也扭成表。
+     所以选择器收口到 #histList 里，.h-head 也跟着 #histList。 */
+  #histList .hist-item, #histList .h-head {
+    display: grid; align-items: center;
+    grid-template-columns: var(--hcol-task) var(--hcol-state) var(--hcol-lyric) var(--hcol-meta) var(--hcol-act);
+    gap: var(--hcol-gap);
+  }
   .hist-item {
-    display: grid; align-items: center; padding: 11px 16px; border-radius: var(--r-md);
-    /* 列式均匀布局：任务名 | 状态 | 第一句歌词 | 时长/耗时 | 操作（窄屏自动换行） */
-    grid-template-columns: minmax(140px, 1.4fr) 92px minmax(120px, 2fr) 150px auto;
-    gap: 12px; background: var(--bg-2); border: 1px solid var(--line-soft);
+    padding: 11px 16px; border-radius: var(--r-md);
+    background: var(--bg-2); border: 1px solid var(--line-soft);
+    position: relative;   /* 「⋯ 更多」下拉面板的定位参照 */
     cursor: pointer; transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
   }
   .hist-item:hover { background: var(--panel-2); border-color: var(--line-strong); }
+  /* ★ 列表尾巴（"加载更多"）：不是数据行，所以**不挂 .hist-item**——
+     一挂就会继承它的 padding / 边框 / 五列网格，看起来像第 61 条任务，
+     还会多出一种行高（实测 67px vs 数据行 72px）。这里单独一个类：
+     顶部分隔线说明"表格到此为止"，按钮与提示居中，是表格之后的一个动作。 */
+  .hist-more {
+    display: flex; align-items: center; justify-content: center; gap: var(--sp-3);
+    padding: var(--sp-4) 16px 2px; margin-top: 2px;
+    border-top: 1px solid var(--line-soft);
+  }
   .hist-item .h-col { min-width: 0; display: flex; flex-direction: column; justify-content: center; }
   .hist-item .h-title { font-size: var(--fs-base); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .hist-item .h-sub { font: var(--fs-xs) var(--mono); color: var(--muted); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .hist-item .h-time { font: var(--fs-xs) var(--sans); color: var(--muted); white-space: nowrap; }
+  /* 列头：五列各是什么，一眼可读。以前整张表没有表头，用户要靠内容猜"这列是状态吗"。
+     它和行共用同一份列模板 → 列头文字正好压在它所描述的那一列上面。 */
+  .h-head {
+    padding: 0 16px 8px; margin-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+    font: var(--fs-xs) var(--sans); color: var(--muted); letter-spacing: .04em;
+  }
+  .h-head .hh-act { text-align: right; }
   /* 任务 ID：全局唯一、同时是产物文件名；点一下复制，便于报障与精确检索 */
   .tid { display: inline-flex; align-items: center; min-height: 24px; font: var(--fs-xs) var(--mono); color: var(--muted); letter-spacing: .2px; cursor: pointer;
          border: 1px solid var(--line); border-radius: var(--r-xs); padding: 2px 8px; user-select: all;
          transition: color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease); }
   .tid:hover { color: var(--acc-text); border-color: var(--acc); }
-  .hist-item .h-actions { display: flex; gap: 6px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
+  /* ★ 操作簇必须"位置钉死、按钮不撑宽"：
+     旧实现用 flex-wrap 随内容排版，于是 "▶ 播放"(77px) 和 "▶ 成品（带伴奏）"(142px)
+     让整簇在 78 ~ 239px 之间跳，"⋯ 更多"在第 1 行 x=1774、第 8 行 x=1613 —— 鼠标要追按钮。
+     但反过来做成 flex:1 均分也不行：整簇定宽 236px 时，两颗按钮各摊 115px，
+     "▶ 播放"被拉成一条大横条，比正文还抢眼。
+     正解：**簇定宽 + 内容右对齐 + 按钮按内容自然宽**，靠 min-width 保证短标签也不塌，
+     长标签靠 ellipsis 收。按钮数量不同的行，最右那颗始终对齐同一列。 */
+  .hist-item .h-actions { display: flex; gap: 6px; justify-content: flex-end; align-items: center; flex-wrap: nowrap; min-width: 0; }
+  /* ★ 一簇最多要放 4 颗（乐谱行：载入 / MIDI / ABC / 删除）。
+     簇宽 236 − 3×6(gap) = 218 ⇒ 每颗 54.5 上限，所以 min-width 只能是 52：
+     取 58 会让 4×58+18 = 250 > 236，flex 不换行(nowrap) ⇒ 内容溢出到下一列。
+     min-width 52 是"两颗字的最短标签（如 'MIDI'）+ 左右各 8 padding"的实测值。
+     flex-shrink 允许 1：真的差几像素时让按钮一起收，而不是把整簇顶出去。 */
+  .hist-item .h-actions > button { flex: 0 1 auto; min-width: 52px; max-width: 116px;
+    padding-left: 8px; padding-right: 8px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .hist-item .h-col-st { font: var(--fs-sm) var(--sans); font-weight: 600; white-space: nowrap; }
-  .hist-item .h-col-meta { font: var(--fs-xs) var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  /* 行内小表单（inlineForm 生成，展开在触发它的那张卡片下方）：凹槽底 + 一圈暖色描边，
+  /* ★ 错误行不能再占用行高。它是"这行失败了"的补充说明，不属于表的骨架；
+     一旦它参与高度计算，失败行就是 90px、其余 72px，整张表的行高在两种值之间跳。
+     做法：**从文档流里拿出去**（绝对定位在任务单元格下方），平时单行 ellipsis，
+     点开时浮成一整块气泡（白底 + 描边 + z-index）——展开是"临时悬浮"，照样不撑行高。
+     单行 + ellipsis 是关键：整段 CUDA 报错有 3~4 行，放出来行高照样崩。 */
+  .hist-item .h-col:first-child { position: relative; }
+  .hist-item .h-errline {
+    position: absolute; left: 0; right: 0; top: calc(100% + 2px); z-index: 25;
+    max-width: 100%; line-height: 1.35;
+  }
+  .hist-item .h-errline[data-open="1"] {
+    right: auto; width: max-content; max-width: 520px;
+    white-space: normal; padding: 7px 10px; border-radius: var(--r-sm);
+    background: var(--panel); border: 1px solid var(--err);
+    box-shadow: 0 6px 20px rgba(0,0,0,.16);
+  }
+  /* ★ 元信息列（时长·耗时·大小）：三个数字挤在 150px 里必然截断成 "🎵 150s · ⏱ 180s · 2.86…"，
+     被截掉的偏偏是最该看的体积。改成**单行不截断**：列宽 172px 恰好放得下三段，
+     并且三个数字用 tabular-nums 对齐，纵向扫下来位数不会跳。 */
+  .hist-item .h-col-meta { font: var(--fs-xs) var(--mono); color: var(--muted); white-space: nowrap;
+    font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
+  /* 行内小表单（inlineForm 生成，展开在触发它的那张卡片下方）：浅槽底 + 一圈强调色描边，
      和卡片本身区分开，一眼看出这是"正在填的一组东西"。 */
   .inline-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 8px 0 var(--sp-4);
                padding: var(--sp-4); background: var(--acc-soft); border: 1px solid var(--acc);
@@ -779,7 +1206,7 @@
   .inline-form select, .inline-form input[type="text"] { width: auto; min-width: 128px; padding: 7px 10px; font: var(--fs-sm) var(--sans); }
   .inline-form input[type="range"] { width: 148px; height: 24px; padding: 0; accent-color: var(--acc); }
   .inline-form .if-ro { font: 600 var(--fs-sm) var(--mono); color: var(--acc-text); white-space: nowrap; }
-  .inline-form .primary, .inline-form .ghost { min-height: 28px; }
+  .inline-form .primary, .inline-form .ghost { height: 28px; }
   /* 训练进度卡片：单列自适应布局——标题/元信息/进度条纵向铺满整卡，按钮流式跟随，
      不再用历史页的 5 列网格（内容会挤在左边、右侧大片留白、标题被截断） */
   #rvcTrainList .hist-item { grid-template-columns: 1fr; gap: 8px; cursor: default; }
@@ -793,8 +1220,11 @@
   #rvcTrainList .hist-item [data-pause] { justify-content: flex-start; }
   #rvcTrainList .hist-item audio { width: 100%; }
   @media (max-width: 1180px) {
-    .hist-item { grid-template-columns: minmax(120px, 1.4fr) 92px minmax(100px, 2fr) auto; }
-    .hist-item .h-col-meta { display: none; }
+    /* 窄屏：收起"元信息"这一列（它是最可省的），列模板同步改，别只藏列不改轨道
+       ——藏了列不改轨道，剩下的列会整体右移一档，正好错位一格。 */
+    :root { --hcol-meta: 0px; --hcol-act: 208px; }
+    #histList .hist-item, #histList .h-head { grid-template-columns: var(--hcol-task) var(--hcol-state) var(--hcol-lyric) var(--hcol-act); }
+    #histList .hist-item .h-col-meta, #histList .h-head .hh-meta { display: none; }
   }
 
   .voice-card { display: flex; flex-direction: column; gap: 7px; padding: var(--sp-4); border-radius: var(--r-md); background: var(--bg-2); border: 1px solid var(--line-soft); }
@@ -817,67 +1247,109 @@
   .spinner { width: 13px; height: 13px; border: 1.5px solid rgba(0,0,0,.14); border-top-color: currentColor; border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* 底部播放坞（常驻，与侧栏同源暖灰基材 + 键缘上光；高度对齐侧栏设置按钮 ~44px） */
+  /* 底部播放坞（常驻）。与侧栏同属"常驻外壳"：**同一块不透明的 --shell 面**。
+     曾经这里写的是 `color-mix(--shell 92%, transparent)` + backdrop-blur，
+     想法是"半透明更有层次"，实际结果是：侧栏是不透明 #1c2128，播放坞是
+     同一颜色 92% 叠在浅色主区上 → 渲染成 rgb(44,49,56)，**两者肉眼可见是两个深灰**，
+     用户直接指出"左右下这三块配色完全不一样"。半透明在常驻外壳上是纯粹的负资产：
+     既要 blur 消耗合成、又在异色底上必然偏移、还让上下两段外壳接不上。
+     现在改成实底 + 无 blur，且 --shell 直接指向 --panel：
+     侧栏、播放坞、主区卡片三者是同一层面，只有页面底 --bg 差一档。 */
   .dock {
-    position: fixed; left: 216px; right: 0; bottom: 0; z-index: 40;
-    background: rgba(238,237,234,.88);
-    -webkit-backdrop-filter: blur(16px) saturate(1.4); backdrop-filter: blur(16px) saturate(1.4);
-    border-top: 1px solid var(--line);
-    box-shadow: 0 -6px 24px rgba(31,35,40,.07);
+    position: fixed; left: var(--side-w); right: 0; bottom: 0; z-index: 40;
+    background: var(--shell);
+    border-top: 1px solid var(--shell-line);
+    box-shadow: none;
     display: flex; gap: var(--sp-4); align-items: center; padding: 7px var(--sp-7); height: var(--dock-h);
+    color: var(--shell-text);
   }
-  html[data-theme="dark"] .dock {
-    background: rgba(23,23,26,.88);
-    box-shadow: 0 -6px 24px rgba(0,0,0,.35);
-  }
+  /* 播放坞内的控件只有一套语言：**同区同圆角 --r-sm(8px)，高度分 28 / 32 两档**
+     （28 = 次级动作与选择，32 = 主要动作）。这行注释就是这段代码的唯一真源，
+     改之前先确认主区那套（--r-sm + 26/36）有没有跟着一起变，三块外壳要能互相解释。
+     曾经的问题是三个高度 28/30/36 + 两个圆角 8/10 混在一个 50px 高的条里，
+     看起来像从三个不同界面里各剪了一块贴过来 —— 这正是用户说的"风格完全不一样"。 */
   .dock .dock-file { display: flex; flex-direction: row; align-items: center; gap: 9px; flex-shrink: 0; }
-  .dock-pick { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0;
-    font: 600 var(--fs-sm) var(--sans); color: var(--text); cursor: pointer;
-    border: 1px solid var(--line); border-radius: var(--r-full); padding: 5px 12px; background: var(--panel);
-    transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease); }
-  .dock-pick:hover { border-color: var(--acc); color: var(--acc-text); background: var(--acc-soft); }
+  .dock-pick { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; min-height: 28px;
+    font: 600 var(--fs-sm) var(--sans); color: var(--shell-text); cursor: pointer;
+    border: 1px solid var(--shell-line); border-radius: var(--r-sm); padding: 4px 12px; background: color-mix(in srgb, var(--shell-text) 7%, transparent);
+    transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
+  /* 悬停不再整块刷成强调色：侧栏 .tab / 主区 .ghost 都只是"描边亮一档 + 字变白"，
+     播放坞原来是唯一一个 hover 就变成实心蓝的控件，跳得比其他所有控件都猛。
+     现在加一条强调色底边来表示"可点"，与选中态（tab 左侧指示条）同一思路。 */
+  .dock-pick:hover { border-color: var(--shell-acc); color: var(--shell-text); background: color-mix(in srgb, var(--shell-text) 11%, transparent); }
   /* 无障碍：控件视觉隐藏但仍可被 Tab 聚焦与读屏朗读 */
   .visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
-  .dock .dock-name { font: var(--fs-xs) var(--sans); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
-  .dock audio { flex: 1; min-width: 160px; height: 32px; }
-  .dock .ghost { padding: 5px 12px; font-size: var(--fs-sm); }
-  /* 自绘播放控件：实体播放键 + 凹槽轨道 + 铜色液柱，与硬件台一致 */
+  .dock .dock-name { font: var(--fs-xs) var(--sans); color: var(--shell-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+  /* ★ 原生 <audio controls> 是这条坞里唯一没被主题接管的零件。
+     它是浏览器自绘的浅灰控件（实测 #dfe0e1，从 x≈595 一路铺到 1195），
+     两套主题下都是同一个浅灰 —— 深色模式下像贴了一截白铁皮，
+     浅色模式下又把"载入本地音频 / 自绘进度条 / 下载 WAV"这条**自绘的**控件语言撕开一道口子。
+     它唯一被需要的能力是"出声"，画面本来就已经自绘（.dock-btn / .dock-track / .dock-time）。
+     所以直接不渲染它：display:none 不影响 play()/pause()，
+     而"点播放键没声音"这类异常由 JS 兜底（见 #player 的 error 监听）。 */
+  .dock audio { display: none; }
+  /* 外壳的字色/描边走 --shell-* 那套，主区那套 .ghost（白底深字）放进来会"贴不住"。
+     这里把 dock 内的 ghost 换成外壳语言：透明底 + --shell-text 字 + --shell-line 描边，
+     与 dock-pick 同一档观感；因为 --shell-* 指向主区令牌，明暗主题都不需要额外分支。
+     尺寸显式覆盖成 28/--r-sm：主区 .ghost 是 36px，直接沿用会让"下载 WAV"
+     比同一个条里的"载入本地音频"高出 8px，同一条上两个不同高度。 */
+  .dock .ghost { height: 28px; padding: 0 12px; font-size: var(--fs-sm); border-radius: var(--r-sm);
+    background: transparent; color: var(--shell-text); border-color: var(--shell-line); }
+  .dock .ghost:hover:not(:disabled) { background: var(--shell-2); border-color: var(--shell-muted); color: var(--shell-text); }
+  /* 自绘播放控件：与主区按钮同一套语言——扁平强调色、同一个圆角令牌、无辉光投影。
+     （旧注释写的"实体播放键 / 凹槽轨道 / 铜色液柱"是暖色拟物改版的残留，早就不适用。）
+     32px 是"主要动作"那一档（对应主区 .primary）；圆角从 --r-md(10) 收到 --r-sm(8)：
+     30px 的方块配 10px 圆角在这个高度上已经接近胶囊，和同条里 8px 的按钮并排很跳。 */
   .dock-transport { flex: 1; min-width: 200px; display: flex; align-items: center; gap: 10px; }
   .dock-btn {
-    display: grid; place-items: center; width: 36px; height: 36px; flex-shrink: 0; padding: 0;
-    border-radius: 50%; border: 0; cursor: pointer; color: #fff;
-    background: var(--acc);
-    box-shadow: 0 2px 8px -2px var(--acc-glow);
-    transition: filter var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
+    display: grid; place-items: center; width: 32px; height: 32px; flex-shrink: 0; padding: 0;
+    border-radius: var(--r-sm); border: 0; cursor: pointer; color: var(--shell-acc-ink);
+    background: var(--shell-acc);
+    box-shadow: none;
+    transition: background var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
   }
-  .dock-btn:hover:not(:disabled) { filter: brightness(1.07); }
+  .dock-btn:hover:not(:disabled) { background: var(--shell-acc-hi); }
   .dock-btn:active:not(:disabled) { transform: scale(.94); }
   .dock-btn:disabled { opacity: .4; cursor: not-allowed; }
   .dock-btn svg { width: 15px; height: 15px; }
-  .dock-time { font: var(--fs-xs) var(--mono); color: var(--muted); flex-shrink: 0; min-width: 38px; text-align: center; }
+  .dock-time { font: var(--fs-xs) var(--mono); color: var(--shell-muted); flex-shrink: 0; min-width: 38px; text-align: center; }
+  /* 6px 的轨道在 50px 高的条里只有目标的 1/8，鼠标很难压准。
+     外面套一层 28px 的透明命中区（--r-full 只给内部轨道，外层不描边、不填色，
+     所以放大的是"能点到的地方"而不是"看得见的东西"）。 */
   .dock-track {
-    flex: 1; height: 6px; border-radius: var(--r-full); background: var(--panel-2);
-    position: relative; cursor: pointer; min-width: 80px;
+    flex: 1; height: 28px; border-radius: var(--r-sm); background: none;
+    position: relative; cursor: pointer; min-width: 80px; display: flex; align-items: center;
+  }
+  /* 导轨（未播放部分）。★ 14% 太淡了：叠加后浅色只有 1.32:1、深色 1.46:1，
+     在空白坞里几乎看不见 —— 用户会以为"这条是分隔线"而不是"一条能拖的进度条"。
+     22% 是两套主题的最佳平衡点，两头的约束刚好在这里交汇：
+       · 太淡 → 导轨本身看不见（下限）
+       · 太浓 → 与压在它上面的 6px 强调色填充混在一起，读不出"播到哪了"（上限）
+     实测 22%：导轨 浅 1.56 / 深 1.91；填充对导轨 浅 3.33 / 深 3.25，
+     两个方向都在"能看见"这一侧。这是单一比例唯一同时满足两端的位置，别单边调。 */
+  .dock-track::before {
+    content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 6px; transform: translateY(-50%);
+    border-radius: var(--r-full); background: color-mix(in srgb, var(--shell-text) 22%, transparent);
   }
   .dock-track-fill {
-    position: absolute; left: 0; top: 0; bottom: 0; width: 0%; border-radius: var(--r-full);
-    background: var(--acc);
+    position: absolute; left: 0; top: 50%; transform: translateY(-50%); height: 6px; width: 0%; border-radius: var(--r-full);
+    background: var(--shell-acc);
     pointer-events: none;
   }
   .dock-track-knob {
     position: absolute; top: 50%; left: 0%; width: 13px; height: 13px; border-radius: 50%;
     transform: translate(-50%, -50%);
-    background: #fff;
-    border: 1px solid var(--line-strong);
-    box-shadow: 0 1px 3px rgba(31,35,40,.3);
+    background: var(--shell-text);
+    border: 1px solid var(--shell-line);
+    box-shadow: none;
     pointer-events: none; transition: box-shadow var(--dur-1) var(--ease);
   }
-  .dock-track:hover .dock-track-knob { box-shadow: 0 1px 3px rgba(31,35,40,.3), 0 0 0 4px var(--acc-soft); }
+  .dock-track:hover .dock-track-knob { box-shadow: 0 0 0 4px color-mix(in srgb, var(--shell-text) 18%, transparent); }
 
   /* 右下角提示 */
   .toast-wrap { position: fixed; right: 16px; bottom: 64px; display: flex; flex-direction: column; gap: 6px; z-index: 60; align-items: flex-end; pointer-events: none; }
-  .toast { background: rgba(246,243,236,.94); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); border: 1px solid var(--line-soft); border-radius: var(--r-md); padding: 9px 14px; font: var(--fs-sm) var(--sans); color: var(--text); box-shadow: var(--shadow-lg); animation: fadein var(--dur-2) var(--ease-out); max-width: 420px; pointer-events: auto; }
+  .toast { background: color-mix(in srgb, var(--panel) 94%, transparent); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px 14px; font: var(--fs-sm) var(--sans); color: var(--text); box-shadow: var(--shadow-lg); animation: fadein var(--dur-2) var(--ease-out); max-width: 420px; pointer-events: auto; }
   .toast.ok { border-left: 3px solid var(--ok); }
   .toast.warn { border-left: 3px solid var(--warn); }
   .toast.err { border-left: 3px solid var(--err); }
@@ -885,19 +1357,18 @@
 
   /* 常驻完成通知（点 X 才消失） */
   .sticky-wrap { position: fixed; left: 50%; transform: translateX(-50%); top: 14px; z-index: 70; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
-  .sticky-notify { display: flex; align-items: center; gap: 12px; background: rgba(246,243,236,.96); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); border: 1px solid var(--line-soft); border-radius: var(--r-md); padding: 11px 15px; box-shadow: var(--shadow-lg); max-width: 560px; pointer-events: auto; animation: fadein var(--dur-2) var(--ease-out); border-left: 3px solid var(--muted); }
+  .sticky-notify { display: flex; align-items: center; gap: 12px; background: color-mix(in srgb, var(--panel) 96%, transparent); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); border: 1px solid var(--line); border-radius: var(--r-md); padding: 11px 15px; box-shadow: var(--shadow-lg); max-width: 560px; pointer-events: auto; animation: fadein var(--dur-2) var(--ease-out); border-left: 3px solid var(--muted); }
   .sticky-notify.ok { border-left-color: var(--ok); }
   .sticky-notify.err { border-left-color: var(--err); }
   .sticky-notify .sn-title { font: 600 var(--fs-base) var(--sans); color: var(--text); }
   .sticky-notify .sn-text { font: var(--fs-sm) var(--sans); color: var(--muted); margin-top: 2px; }
   .sticky-notify .sn-x { border: 0; background: var(--panel-2); color: var(--muted); width: 26px; height: 26px; border-radius: 50%; cursor: pointer; font-size: var(--fs-xs); flex-shrink: 0; display: grid; place-items: center; transition: background var(--dur-1) var(--ease); }
   .sticky-notify .sn-x:hover { background: var(--panel-2); color: var(--text); }
-  html[data-theme="dark"] .sticky-notify { background: rgba(28,33,40,.97); }
   html[data-theme="dark"] .sticky-notify .sn-x { background: #30363d; }
 
   @media (max-width: 860px) {
     body { display: block; }
-    .side { position: static; width: auto; height: auto; flex-direction: row; align-items: center; gap: 10px; padding: 10px 16px; border-right: 0; border-bottom: 1px solid var(--line); }
+    .side { position: static; width: auto; height: auto; flex-direction: row; align-items: center; gap: 10px; padding: 10px 16px; border-right: 0; border-bottom: 1px solid var(--shell-line); }
     .side nav { flex-direction: row; margin: 0 0 0 auto; }
     .side-foot { margin: 0; border: 0; padding: 0; }
     .brand-sub { display: none; }
@@ -916,14 +1387,18 @@
      nav 自身可滚动（小屏窗口高度不够时不挤掉底部的健康灯）。 */
   .side nav { margin-top: 12px; flex: 1 1 auto; min-height: 0; overflow-y: auto; scrollbar-width: none; }
   .side nav::-webkit-scrollbar { display: none; }
-  .side nav .nav-group { font: 600 var(--fs-micro) var(--sans); letter-spacing: .14em; color: #8b949e; padding: 14px 12px 5px; user-select: none; text-transform: uppercase; }
+  .side nav .nav-group { font: 600 var(--fs-micro) var(--sans); letter-spacing: .14em; color: var(--shell-dim); padding: 14px 12px 5px; user-select: none; text-transform: uppercase; }
   .side nav .tab { padding: 6px 10px; min-height: 32px; font-size: var(--fs-sm); }
   /* 页签序号：带圈数字与页签正文里的"③ 页""去 ⑤"是同一套编号，
      一眼能对上是它唯一的价值。为低分辨率可读性给足字号与对比度：
      12px（不是 11px）+ 亮一档的蓝，选中态吃父级高对比字色。 */
-  .side nav .tab .tno { flex: none; font: 600 var(--fs-sm) var(--sans); color: var(--acc-chip-hi);
+  /* ★ 序号原来用 --acc-chip-hi（浅色下 #cfe3fb）——那是为深色外壳调的淡蓝，
+     外壳变白之后它压在 #ffffff 上只有 1.31:1，等于看不见。
+     现在：未选＝外壳次级灰（浅 6.11 / 深 5.94），选中＝外壳强调色（浅 7.88 / 深 6.20）。
+     顺带也更安静：13 个页签都挂一个亮蓝序号是典型的"颜色泛滥"。 */
+  .side nav .tab .tno { flex: none; font: 600 var(--fs-sm) var(--sans); color: var(--shell-muted);
                         letter-spacing: 0; margin-right: 8px; opacity: 1; width: 16px; text-align: center; }
-  .side nav .tab.active .tno { color: #e6edf3; opacity: 1; }
+  .side nav .tab.active .tno { color: var(--shell-acc); opacity: 1; }
   /* 页签名允许换行：v2.1 把名字改成了"歌词+style+乐谱生成歌曲"这种长名，
      一行放不下时截断成"歌词+style+乐谱生…"反而不知道是哪页。 */
   /* 页签名占据剩余宽度（flex:1），这样带计数徽标的页签（⑧/⑪）徽标才会被推到最右，
@@ -932,6 +1407,12 @@
   .side nav .tab .tlabel { flex: 1 1 auto; min-width: 0; line-height: 1.3; }
 
   #style { min-height: 96px; font: var(--fs-sm)/var(--lh-base) var(--mono); }
+  /* ②/⑤ 页里曲风框是配角（主角是歌词），不必按 ① 的 96px 给。
+     实测 621px 窗口：① 的 Style 框 108px 是合理的；② 页里同样 96px 会把
+     下面的「歌词」框顶到可视区外（差 31px），而歌词才是这两页真正要填的东西。
+     78px = 默认那句英文（3 行 × 19.2 + 上下 padding 18 + 描边 2 = 76）刚好一次露全，
+     不留滚动条；再矮就会出现"第 3 行被切一半"——那比多给 12px 难看得多。 */
+  #styleSlotGen > #styleBox > #style { min-height: 78px; }
 
   /* ① 右栏的「二选一」开关。做成整条等宽的分段控件而不是两个复选框：
      互斥关系用"一组里只能亮一个"表达最直白，用户不需要理解为什么不能两个都开。 */
@@ -1004,13 +1485,47 @@
   .kv > div { display: flex; gap: 10px; font: var(--fs-sm) var(--sans); border-bottom: 1px solid var(--line-soft); padding: 6px 0; }
   .kv .k { color: var(--muted); flex: none; min-width: 96px; }
   .kv .v { color: var(--text); font: var(--fs-xs) var(--mono); word-break: break-all; }
+  /* ★ 关于页的系统信息：33 行平铺会顶出视口（1021px 高的单列），
+     分成 4 组后按**两列网格**排布 —— 每列占位由列宽决定，不由内容决定。
+     为什么不用 CSS 多列（column-width）：多列是"按高度均分"的，
+     它会从上一组中间把下一组劈到新列，于是"存储与显存"的小标题出现在第三列中部、
+     与前一组之间没有任何空隙 —— 分组的本意（一眼看出这是一块独立的组）就没了。
+     grid 是"按位置摆放"，每组要么在左列要么在右列，组与组之间用行距断开，界限清楚。 */
+  #sysInfo { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--sp-6); align-content: start; grid-auto-flow: row; }
+  .kv-group { break-inside: avoid; margin-bottom: var(--sp-5); min-width: 0; }
+  .kv-group-title {
+    font: 600 var(--fs-xs) var(--sans); color: var(--muted);
+    letter-spacing: .06em; padding-bottom: 5px; margin-bottom: 2px;
+    border-bottom: 1px solid var(--line);
+  }
+  .kv-group .kv { gap: 0; }
+  /* 分组内是"标签—值"两列：值可能很长（路径/说明），必须能换行且不被标签挤没。
+     k 定宽 92px，v 占满剩余并可 break-all —— 不加 min-width:0 长路径会把行撑宽。 */
+  .kv-group .kv > div { padding: 5px 0; gap: 8px; }
+  .kv-group .kv .k { min-width: 92px; }
+  .kv-group .kv .v { flex: 1 1 auto; min-width: 0; }
+  @media (max-width: 1400px) { #sysInfo { grid-template-columns: 1fr; } }
   /* 关于页里的外链：跟着主题色走，但在深浅两套主题下都要够 4.5:1，
      所以不直接用 --acc（纯主色在浅色主题下作为文字只有 3:1）。 */
   .about-link { color: var(--acc-text); text-decoration: none; border-bottom: 1px solid var(--acc-soft2); }
   .about-link:hover { border-bottom-color: var(--acc); }
 
-  /* 任务行的"更多"控件以前只有 HTML 没有规则，靠父级 flex 兜着——补上 */
-  .h-more { display: inline-flex; align-items: center; gap: 5px; font: var(--fs-xs) var(--mono); color: var(--muted); }
+  /* ★ 任务行的"更多"菜单：它展开后是**一整块面板**，不是"行内多几个按钮"。
+     旧实现让它留在 .h-actions 这个 flex 里，于是展开时菜单被挤成一条、
+     按钮全被 flex:1 拉扁。现在脱离行内流：绝对定位成一个下拉面板，
+     右对齐挂在该行上，z-index 抬到列表之上。
+     显隐只认 .open 类（JS 那边也改成切类），不再用内联 style.display —— 
+     靠 `style*="display: none"` 字符串匹配自己的内联属性太脆，改个写法就静默失效。 */
+  .h-more {
+    position: absolute; top: calc(100% - 4px); right: 8px; z-index: 30;
+    display: none; min-width: 208px; padding: 6px;
+    flex-direction: column; gap: 3px;
+    background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--r-md);
+    box-shadow: 0 8px 24px rgba(0,0,0,.14), 0 2px 6px rgba(0,0,0,.08);
+  }
+  .h-more.open { display: flex; }
+  .h-more button { justify-content: flex-start; text-align: left; height: 30px; padding: 0 10px;
+    width: 100%; font: var(--fs-sm) var(--sans); flex: none; }
 
   /* ⑥ 三栏：会话侧条 / iframe / 产出回填。窄屏退回单列（iframe 那一栏优先保住高度） */
   .ailab-grid { display: grid; grid-template-columns: 196px minmax(0, 1fr) 300px; gap: 14px; align-items: start; }
@@ -1031,7 +1546,7 @@
 
 <aside class="side">
   <div class="brand">
-    <div class="mark"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 1.5 6 2.7v7.1a2.4 2.4 0 1 0 1.2 2.1V5.4l4.3-1v3.4a2.4 2.4 0 1 0 1.2 2.1V1.5z"/></svg><span class="tlabel"></div>
+    <div class="mark"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 1.5 6 2.7v7.1a2.4 2.4 0 1 0 1.2 2.1V5.4l4.3-1v3.4a2.4 2.4 0 1 0 1.2 2.1V1.5z"/></svg></div>
     <div>
       <div class="brand-name">音乐工作台</div>
       <div class="brand-sub">YuE2 · 本地音乐生成</div>
@@ -1062,13 +1577,18 @@
       <span class="fr-label" id="healthText">正在连接…</span>
       <span class="dot"></span>
     </div>
-    <!-- v2.0：侧栏底部只留「常驻可见」的两件事——服务健康灯 + 主题切换。
-         模型校验 / 引擎模式 / 主题色搬进 ⑫ 设置页（#modelVerifyRow / #modeRow / #accentRow）。 -->
-    <button class="foot-row" id="themeBtn" title="切换明暗模式">
-      <svg class="ico-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="3.2"/><path d="M8 1.5v1.8M8 12.7v1.8M1.5 8h1.8M12.7 8h1.8M3.4 3.4l1.3 1.3M11.3 11.3l1.3 1.3M12.6 3.4l-1.3 1.3M4.7 11.3l-1.3 1.3"/></svg>
-      <svg class="ico-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13.5 9.7A5.8 5.8 0 0 1 6.3 2.5a5.8 5.8 0 1 0 7.2 7.2z"/></svg>
-      <span class="fr-label" id="themeLabel">深色模式</span>
-      <span class="fr-value">点击切换</span>
+    <!-- 外观开关（唯一一处切明暗的地方）。
+         ★ 这里曾经被读成"第二个设置"：一个太阳/月亮图标 + 「深色」+ 「点击切换」
+         三样东西挤在一行里，图标像设置齿轮、「深色」像分组标题、「点击切换」像副标题，
+         合起来就长得像个设置项，与导航里的 ⑫ 设置打架。
+         现在把它做成**状态明确的开关**：图标只表示"当前是哪种模式"，
+         文案直接给出"当前值 → 点一下会变成什么"，右侧用小胶囊呈现**可切换到的目标**，
+         一眼就是"开关"而不是"入口"。 -->
+    <button class="foot-row" id="themeBtn" title="切换明暗模式" aria-live="polite">
+      <svg class="ico-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1.5v1.8M8 12.7v1.8M1.5 8h1.8M12.7 8h1.8M3.4 3.4l1.3 1.3M11.3 11.3l1.3 1.3M12.6 3.4l-1.3 1.3M4.7 11.3l-1.3 1.3"/></svg>
+      <svg class="ico-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M13.5 9.7A5.8 5.8 0 0 1 6.3 2.5a5.8 5.8 0 1 0 7.2 7.2z"/></svg>
+      <span class="fr-label" id="themeLabel">浅色</span>
+      <span class="mode-pill" id="themePill" title="点一下切到另一种模式">切到深色</span>
     </button>
   </div>
 </aside>
@@ -1088,7 +1608,7 @@
       <!-- 左＝产出。位置从"页面最底部"提到左上：以前调完下面的旋钮要滚回页面顶端
            才知道 Style 变成了什么，现在视线不动就能同时看见"我选的"和"得到的"。 -->
       <div class="pane pane-out">
-        <div class="pane-head"><b>产出 · 这段英文就是提交给模型的 Style</b><span class="hint-xs">可直接手改；手改后右侧只刷新预览，不覆盖这里</span></div>
+        <div class="pane-head"><b>产出 · 这段英文就是提交给模型的 Style</b><span class="hint-xs" title="可直接手改；手改后右侧只刷新预览，不覆盖这里">可直接手改；手改后右侧只刷新预览，不覆盖这里</span></div>
         <div class="pane-body">
           <!-- 预算表：用户问"超出 12 个词到底会怎样，页面上怎么不吭声"。
                12 条是官方样本均值而不是模型上限（本机 20 条短语的历史任务照样出了音频），
@@ -1108,7 +1628,7 @@
           </div></div>
           <div class="six" id="sixBox" style="margin-top:9px;"></div>
           <div class="lint" id="styleLint"></div>
-          <div class="hint-xs" id="presetNote" style="margin-top:7px;"></div>
+          <div class="hint-xs pn" id="presetNote" style="margin-top:7px;"></div>
           <div class="hint-xs" id="styleRecipe" style="margin-top:6px;"></div>
         </div>
         <div class="pane-foot">
@@ -1128,10 +1648,12 @@
         <div class="pane-head"><b>曲风来源（二选一）</b><span class="hint-xs">两条路都汇进左边那个 Style 框</span></div>
         <div class="pane-body">
         <div class="seg" id="asmModeSeg" role="tablist" aria-label="选择曲风来源方式">
-          <button class="segbtn active" id="segPreset" data-asm="preset" type="button" role="tab" aria-selected="true">① 曲风配方库</button>
-          <button class="segbtn" id="segSix" data-asm="six" type="button" role="tab" aria-selected="false">② 六要素装配台</button>
+          <button class="segbtn active" id="segPreset" data-asm="preset" type="button" role="tab" aria-selected="true" title="从现成配方里挑一张卡片：不知道从哪下手时用这条">① 曲风配方库</button>
+          <button class="segbtn" id="segSix" data-asm="six" type="button" role="tab" aria-selected="false" title="逐格自己拼：想精确把控每一个维度时用这条">② 六要素装配台</button>
         </div>
-        <div class="hint-xs" id="asmModeHint" style="margin:8px 0 0;">不知道从哪下手 → 用配方库挑一张现成卡片；想逐格把控 → 用装配台自己拼。</div>
+        <!-- 原来这里有一行 38px 的 asmModeHint（"不知道从哪下手 → …"）。
+             两个分段按钮的标签已经说明了各自的适用场景，这行只是重复；
+             内容改挂到按钮的 title 上（悬停可得），省下的 38px 还给卡片区。 -->
 
         <!-- ========== 视图 A：曲风配方库 ========== -->
         <div class="asmview" id="asmPresetView">
@@ -1174,7 +1696,7 @@
           </div>
           <div class="arow">
             <div class="ak">2 曲风<small>已选</small></div>
-            <div class="av"><span id="genreNow" class="chip mini active" style="cursor:default;">—</span>
+            <div class="av"><span id="genreNow" class="chip active" style="cursor:default;min-height:26px;">—</span>
               <input id="aGenre" placeholder="或自己写曲风词，如 city pop / piano ballad" style="flex:1;min-width:150px;" /></div>
           </div>
           <div class="arow">
@@ -1184,8 +1706,12 @@
           <div class="arow">
             <div class="ak">4 人声<small>性别+音色</small></div>
             <div class="av">
-              <select id="gender" style="max-width:150px;"></select>
-              <div class="chips" id="timbreChips" style="flex:1;"></div>
+              <!-- 同 6 节奏：定宽下拉单独一行，音色候选词满宽铺开。
+                   以前 150px 下拉 + 11 个词挤一行，候选词每行只排 2 个、整格 279px。 -->
+              <div class="av-lead">
+                <select id="gender"></select>
+              </div>
+              <div class="chips" id="timbreChips"></div>
             </div>
           </div>
           <div class="arow">
@@ -1195,9 +1721,16 @@
           <div class="arow">
             <div class="ak">6 节奏<small>BPM/调性</small></div>
             <div class="av">
-              <input id="bpm" type="number" value="" min="40" max="220" placeholder="BPM 如 88" style="width:96px;" />
-              <select id="aKey" style="width:120px;"></select>
-              <div class="chips" id="feelChips" style="flex:1;"></div>
+              <!-- BPM + 调性单独占一行（.av-lead），候选词再换行铺满整宽。
+                   以前三者挤在同一行：96px 输入 + 120px 下拉吃掉 216px，
+                   留给 15 个候选词的只剩 ~170px → 每行只排 2 个 → 整格高 796px，
+                   是其它五格的两倍还多，右栏总高 1930px（可视只有 357px）。
+                   把定宽控件抽到上一行，候选词区就拿到满宽（约 310px），行数直接减半。 -->
+              <div class="av-lead">
+                <input id="bpm" type="number" value="" min="40" max="220" placeholder="BPM 如 88" />
+                <select id="aKey"></select>
+              </div>
+              <div class="chips" id="feelChips"></div>
             </div>
           </div>
           <div class="arow">
@@ -1237,30 +1770,13 @@
                所以"① 装配出来的"和"这里手写的"是同一个值，不存在哪边才是真的。
                以前这里只是一条只读的来源条 + 两个跳转按钮，想改一个词都得跳回 ①。 -->
           <div id="styleSlotGen"></div>
-          <div class="hint-xs" style="margin-top:5px;">英文效果最佳。想用配方库点选或六要素微调，去「① Style 设计」页 —— 那边和这里是同一个输入框，改哪边都一样。</div>
-
-          <!-- 两段关系条（②）：只讲 Style + 歌词 → 歌曲。
-               ② 不接乐谱，所以这里刻意不出现"乐谱"这一环——画出不存在的输入
-               只会让人以为漏填了什么东西。 -->
-          <div class="flow" id="flowBarSing" aria-label="歌词+style生成歌曲的两段输入" hidden>
-            <div class="node"><b>Style</b><small>曲风那一句英文<br>本页上方输入框</small></div><span class="arw">＋</span>
-            <div class="node"><b>歌词</b><small>[Verse] [Chorus] 分段<br>本页左栏</small></div><span class="arw">→</span>
-            <div class="node out"><b>一首完整的歌</b><small>旋律与和声<br>都由模型自己规划</small></div>
-          </div>
-
-          <!-- 三段关系条（⑤ 专用）：Style + 乐谱 + 歌词 → 歌曲 -->
-          <div class="flow" id="flowBar" aria-label="歌词+style+乐谱生成歌曲的三段输入" hidden>
-            <div class="node"><b>Style</b><small>曲风那一句英文<br>本页上方输入框</small></div><span class="arw">＋</span>
-            <div class="node"><b>乐谱</b><small>ABC 谱决定旋律<br>右侧乐谱区</small></div><span class="arw">＋</span>
-            <div class="node"><b>歌词</b><small>填进谱子的哪个字<br>本页左栏</small></div><span class="arw">→</span>
-            <div class="node out"><b>按谱演唱的歌</b><small>模型照谱唱，<br>不自编旋律</small></div>
-          </div>
+          <div class="hint-xs" style="margin-top:5px;" title="想用配方库点选或六要素微调，去「① Style 设计」页 —— 那边和这里是同一个输入框，改哪边都一样。">英文效果最佳。想点选配方去「① Style 设计」页，与这里是同一个输入框。</div>
 
           <label for="taskName">任务名称（用于历史展示与下载命名）</label>
           <input id="taskName" placeholder="例如：稻香" maxlength="100" />
 
           <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10v9H3zM6 6.5h4M6 9h5"/></svg>歌词</div>
-          <label for="lyrics" style="margin-top:0;">Lyrics / 歌词（[Verse] [Chorus] 分段，每段 4–8 行）</label>
+          <label for="lyrics" style="margin-top:0;">[Verse] [Chorus] 分段，每段 4–8 行</label>
           <textarea id="lyrics">[Verse]
 Neon fades along the lane
 Footsteps keep the time of rain
@@ -1288,6 +1804,28 @@ We will sing beyond the night</textarea>
           <!-- 填词助手：只在 ⑤ 出现——歌词行数与谱子小节数对不上时提前警告，
                不等生成四五分钟后才发现唱不下。 -->
           <div class="lint" id="lyricBarWarn" hidden></div>
+
+          <!-- 关系条（②/⑤）：放在两个输入框**之后**，当作"这张图解释你刚填的东西怎么汇成一首歌"。
+               原来它在 Style 框和任务名之间，正好卡在两个必填输入中间：
+               621px 的窗口里左栏只有 ~260px 可视高，这条 66px 的图把「歌词」框
+               顶到了可视区之外（实测 lyrics 底部 662 / 可视底 424，差 238px）——
+               用户进页第一眼看不到本页最该填的那个框。输入在前、说明在后，
+               是表单类页面唯一站得住的顺序。 -->
+          <div class="flow" id="flowBarSing" aria-label="歌词+style生成歌曲的两段输入" hidden>
+            <div class="node"><b>Style</b><small>曲风那一句英文<br>本页上方输入框</small></div><span class="arw">＋</span>
+            <div class="node"><b>歌词</b><small>[Verse] [Chorus] 分段<br>本页左栏</small></div><span class="arw">→</span>
+            <div class="node out"><b>一首完整的歌</b><small>旋律与和声<br>都由模型自己规划</small></div>
+          </div>
+
+          <!-- 三段关系条（⑤ 专用）：Style + 乐谱 + 歌词 → 歌曲。
+               ⑤ 不接乐谱以外的输入，所以这里刻意只出现这三环——画出不存在的输入
+               只会让人以为漏填了什么东西。 -->
+          <div class="flow" id="flowBar" aria-label="歌词+style+乐谱生成歌曲的三段输入" hidden>
+            <div class="node"><b>Style</b><small>曲风那一句英文<br>本页上方输入框</small></div><span class="arw">＋</span>
+            <div class="node"><b>乐谱</b><small>ABC 谱决定旋律<br>右侧乐谱区</small></div><span class="arw">＋</span>
+            <div class="node"><b>歌词</b><small>填进谱子的哪个字<br>本页左栏</small></div><span class="arw">→</span>
+            <div class="node out"><b>按谱演唱的歌</b><small>模型照谱唱，<br>不自编旋律</small></div>
+          </div>
 
           <!-- 结果卡：完成后给五个出口。以前出成片只剩底部播放坞一个口，
                想要 LRC / eLRC / 送去换声都得先绕去 ⑪ 任务管理把这一条找回来。 -->
@@ -1591,7 +2129,7 @@ We will sing beyond the night</textarea>
       <h1 class="page-title">音色库</h1>
       <p class="page-sub">管理换声用的 RVC 音色模型。可以在 ⑦ 训练，也可以把外部下载的 .pth 导入进来。</p>
     </div>
-    <div class="grid" id="voicePaneRvc">
+    <div class="grid page-fill" id="voicePaneRvc">
 
       <!-- 左：模型列表 + 导入。列表卡片保留原有 5 个操作（体检/建档/融合/重命名/删除）。 -->
       <div>
@@ -1660,40 +2198,50 @@ We will sing beyond the night</textarea>
   <section class="panel-tab" id="tab-history" style="display:none;">
     <div class="page-head">
       <h1 class="page-title">任务管理</h1>
-      <p class="page-sub">所有生成、转谱、分离、训练任务的进度与产物都在这里。按任务类型分页签查看。</p>
+      <p class="page-sub">所有生成、转谱、分离、训练任务的进度与产物都在这里。上方按「状态」和「类型」两个维度筛选。</p>
     </div>
     <div class="head-row">
-      <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.3 2.3"/></svg>生成历史（服务端保留最近 1000 条，含音频）</div>
+      <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.3 2.3"/></svg>生成历史<span class="m-count" id="histCountHead">0</span>（服务端保留最近 1000 条，含音频）</div>
       <div class="flex">
         <button class="ghost btn-sm" id="histRefresh">刷新</button>
         <button class="danger btn-sm" id="histClear">清空</button>
       </div>
     </div>
-    <!-- 筛选工具栏：状态、类型、搜索、批量操作合并成一条。
-         原来三行各管一件事，行高一屏就吃掉 40%，而列表才是这页的主角。 -->
-    <div class="flex" style="align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap;">
-      <div class="subtabs" id="histTabs">
-        <button class="subtab active" data-kind="all">全部 <span id="histN_all">0</span></button>
-        <button class="subtab" data-kind="running">⏳ 进行中 <span id="histN_running">0</span></button>
-        <button class="subtab" data-kind="done">✓ 已完成 <span id="histN_done">0</span></button>
-        <button class="subtab" data-kind="error">✕ 失败 <span id="histN_error">0</span></button>
+    <!-- ★ 筛选工具栏：状态与类型是**两个正交维度**，不是一行七个标签。
+         旧实现把两组 subtabs 并排、中间夹一条 1px 竖线，两组各有一个"全部"，
+         用户读到的是"一串同级的筛选项"，分不清"全部"属于哪一组。
+         现在：两组各带一个小标题（状态 / 类型），各自成行、各自开区间。
+         ★ 搜索框放在**状态行右侧**（不是类型行）：它和"状态"一样属于"收窄视图"，
+           而且这一行更短，右侧正好有一大片空 —— 放这儿不额外占一行高度。
+           页头每高一行，列表就少一行，这页列表才是主角。 -->
+    <div class="hist-filter">
+      <div class="hf-row">
+        <span class="hf-label">状态</span>
+        <div class="subtabs" id="histTabs">
+          <button class="subtab active" data-kind="all">全部 <span id="histN_all">0</span></button>
+          <button class="subtab" data-kind="running">进行中 <span id="histN_running">0</span></button>
+          <button class="subtab" data-kind="done">已完成 <span id="histN_done">0</span></button>
+          <button class="subtab" data-kind="error">失败 <span id="histN_error">0</span></button>
+        </div>
+        <div class="hf-right">
+          <input id="histSearch" class="t-sm" placeholder="搜任务名 / 曲风 / 任务 ID" />
+          <button class="ghost btn-sm" id="batchResume" style="display:none;" title="把意外终止/已停止/失败的队列任务重新入队继续执行">▶ 一键继续</button>
+          <span id="queueBar" class="hf-queue"></span>
+        </div>
       </div>
-      <!-- 两组页签之间的分隔：用一条真正的竖线，不用「|」字符。
-           竖排字符既会被当成文字（浅色主题下对比度只有 4.3:1），
-           又会在换行时单独挂在行首。 -->
-      <span aria-hidden="true" style="width:1px; height:18px; flex:none; align-self:center; background:var(--line);"></span>
-      <div class="subtabs" id="histKindTabs">
-        <button class="subtab active" data-kind="all">🎵 歌曲</button>
-        <button class="subtab" data-kind="rvc">🎙 换声</button>
-        <button class="subtab" data-kind="train">🎨 音色制作</button>
-        <button class="subtab" data-kind="score">🎼 乐谱提取</button>
-        <button class="subtab" data-kind="separate">✂ 分离</button>
+      <div class="hf-row">
+        <span class="hf-label">类型</span>
+        <div class="subtabs" id="histKindTabs">
+          <button class="subtab active" data-kind="all">全部</button>
+          <button class="subtab" data-kind="generate">🎵 生成歌曲</button>
+          <button class="subtab" data-kind="rvc">🎙 换声</button>
+          <button class="subtab" data-kind="train">🎨 音色制作</button>
+          <button class="subtab" data-kind="score">🎼 乐谱提取</button>
+          <button class="subtab" data-kind="separate">✂ 分离</button>
+        </div>
       </div>
-      <input id="histSearch" class="t-sm" placeholder="搜任务名 / 曲风 / 任务 ID" style="max-width:220px;padding:6px 11px;" />
-      <button class="ghost btn-sm" id="batchResume" style="display:none;" title="把意外终止/已停止/失败的队列任务重新入队继续执行">▶ 一键继续</button>
-      <div id="queueBar" style="font:11px var(--mono); color:var(--muted);"></div>
     </div>
-    <div class="row-list" id="histList" style="width:100%;max-width:1680px; margin-top:14px;">
+    <div class="row-list page-fill-list" id="histList" style="width:100%;max-width:1680px; margin-top:var(--sp-3);">
       <div class="empty">暂无任务记录。</div>
     </div>
   </section>
@@ -1771,15 +2319,15 @@ We will sing beyond the night</textarea>
               <option value="pm">pm · 最快（质量最低，容易飘）</option>
             </select>
           </div>
-          <div style="grid-column: 1 / -1; display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
-            <span class="t-sm muted">变调快捷：</span>
-            <button class="ghost" type="button" data-pitch="0" title="同一性别声线直接用 0">同性别 0</button>
-            <button class="ghost" type="button" data-pitch="-12" title="女生唱的歌曲换成男声">女转男 -12</button>
-            <button class="ghost" type="button" data-pitch="12" title="男生唱的歌曲换成女声">男转女 +12</button>
-            <button class="ghost" type="button" data-pitch="-4">微调 -4</button>
-            <button class="ghost" type="button" data-pitch="4">微调 +4</button>
+          <div class="preset-row" style="grid-column: 1 / -1;">
+            <span class="row-label">变调快捷：</span>
+            <button class="ghost btn-sm" type="button" data-pitch="0" title="同一性别声线直接用 0">同性别 0</button>
+            <button class="ghost btn-sm" type="button" data-pitch="-12" title="女生唱的歌曲换成男声">女转男 -12</button>
+            <button class="ghost btn-sm" type="button" data-pitch="12" title="男生唱的歌曲换成女声">男转女 +12</button>
+            <button class="ghost btn-sm" type="button" data-pitch="-4">微调 -4</button>
+            <button class="ghost btn-sm" type="button" data-pitch="4">微调 +4</button>
           </div>
-          <div style="grid-column: 1 / -1; display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
+          <div class="preset-row" style="grid-column: 1 / -1;">
             <button class="ghost" type="button" id="rvcAnalyze">分析音域 → 变调建议</button>
             <label for="rvcAnalyzeSep" style="display:inline-flex; align-items:center; gap:5px; cursor:pointer; font-size:12px; width:auto;">
               <input id="rvcAnalyzeSep" type="checkbox" />
@@ -1790,10 +2338,10 @@ We will sing beyond the night</textarea>
           </div>
           <div class="hint-xs" style="grid-column: 1 / -1;">💡 变调怎么填：先判断「歌曲里原唱的性别」和「目标音色的性别」——不同性别必须 ±12（女转男 -12 / 男转女 +12），否则会闷哑或尖细；同性别可先用 0，听感偏高/偏低再 ±3~5 微调。判断不准就先试 0，跑完听「换声人声」再调。<br>🎹 伴奏自动跟调：填 ±4 这类非整八度，伴奏同等转过去（否则成品里人声伴奏两个调）；填 ±12/±24 整八度只换音区、不换调，伴奏保持原调；填 ±16 这种"八度+零头"，伴奏只转零头那 ±4。原调伴奏另存一份（任务卡里"伴奏（原调）"），想自己配原调用它。</div>
           <div id="rvcRecoBox" style="grid-column: 1 / -1; border:1px solid var(--line,#2a2f3a); border-radius:var(--r-sm); padding:8px 10px; background:rgba(127,127,127,.06);">
-            <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
-              <span class="t-sm" style="font-weight:600;">🎯 这个音色的推荐参数</span>
+            <div class="preset-row">
+              <span class="row-label" style="color:var(--text); font-weight:600;">🎯 这个音色的推荐参数</span>
               <button class="ghost" type="button" id="rvcApplyReco" title="把下面所有旋钮一键设成推荐值">一键套用</button>
-              <span id="rvcRecoState" class="t-sm muted">读取中…</span>
+              <span id="rvcRecoState" class="row-label">读取中…</span>
             </div>
             <div id="rvcRecoList" class="hint-xs" style="margin-top:6px;"></div>
             <div id="rvcPitchWarn" class="hint-xs" style="margin-top:6px; display:none; color:var(--err);"></div>
@@ -1826,11 +2374,11 @@ We will sing beyond the night</textarea>
               <option value="48000">48000</option>
             </select>
           </div>
-          <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
-            <span class="t-sm muted">效果预设：</span>
-            <button class="ghost" type="button" data-preset="0.5,0.33" title="多数场景的最佳起点：官方默认检索档">⭐ 标准</button>
-            <button class="ghost" type="button" data-preset="0.7,0.33" title="更像目标音色，但可能轻微电音（素材优质时用）">更像音色</button>
-            <button class="ghost" type="button" data-preset="0.3,0.15" title="检索大幅减弱、清辅音/呼吸多保留；长音与高音电音明显时用它">🔇 防电音</button>
+          <div class="preset-row">
+            <span class="row-label" style="color:var(--text); font-weight:600;">效果预设：</span>
+            <button class="ghost btn-sm" type="button" data-preset="0.5,0.33" title="多数场景的最佳起点：官方默认检索档">⭐ 标准</button>
+            <button class="ghost btn-sm" type="button" data-preset="0.7,0.33" title="更像目标音色，但可能轻微电音（素材优质时用）">更像音色</button>
+            <button class="ghost btn-sm" type="button" data-preset="0.3,0.15" title="检索大幅减弱、清辅音/呼吸多保留；长音与高音电音明显时用它">🔇 防电音</button>
           </div>
           <div style="grid-column: 1 / -1;">
             <label for="rvcSep" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
@@ -1880,7 +2428,7 @@ We will sing beyond the night</textarea>
       <h1 class="page-title">音色制作</h1>
       <p class="page-sub">用一段干净的人声训练 RVC 音色。训练耗时长，可以随时暂停、之后接着跑。</p>
     </div>
-    <div class="grid">
+    <div class="grid page-fill">
 
       <!-- 左栏：素材侧——名字、样本、分离与净化、轮数。录音指南留在这一栏，
            因为那两段的判据是「听你的素材」，不是「看你的任务」。 -->
@@ -1912,11 +2460,11 @@ We will sing beyond the night</textarea>
         <div class="hint-xs">✅ 好素材的判断：回放录音能听清每个字、没有嗡嗡的房间声、音量稳定——素材质量决定音色上限，比任何参数都重要。上传完整歌曲时务必勾选自动分离，否则伴奏会被当成"人声"学进去，音色会发糊。</div>
         <div class="pgrid" style="margin-top:10px;">
           <div><label for="rvcTrainEpochs">训练轮数（1-1200；30 试听 / 100 常用 / 200 精训）</label><input id="rvcTrainEpochs" type="number" value="200" min="1" max="1200" step="10" /></div>
-          <div style="grid-column: 1 / -1; display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
-            <span class="t-sm muted">轮数档位：</span>
-            <button class="ghost" type="button" data-epochs="30" title="先看看素材能不能练出个像样的东西，几十分钟就有结果">🔎 30 轮试听</button>
-            <button class="ghost" type="button" data-epochs="100" title="常规档，多数素材够用">⭐ 100 轮常用</button>
-            <button class="ghost" type="button" data-epochs="200" title="官方推荐口径：10 分钟以上素材练到 200 轮">🏆 200 轮精训</button>
+          <div class="preset-row" style="grid-column: 1 / -1;">
+            <span class="row-label">轮数档位：</span>
+            <button class="ghost btn-sm" type="button" data-epochs="30" title="先看看素材能不能练出个像样的东西，几十分钟就有结果">🔎 30 轮试听</button>
+            <button class="ghost btn-sm" type="button" data-epochs="100" title="常规档，多数素材够用">⭐ 100 轮常用</button>
+            <button class="ghost btn-sm" type="button" data-epochs="200" title="官方推荐口径：10 分钟以上素材练到 200 轮">🏆 200 轮精训</button>
           </div>
         </div>
       </div>
@@ -2076,7 +2624,7 @@ We will sing beyond the night</textarea>
                  style="width:34px;height:26px;padding:0;border:1px solid var(--line);border-radius:var(--r-xs);background:none;cursor:pointer;" />
           <span class="hint-xs">自定义（点左边色块取色；上面 8 个预设已经调好对比度）</span>
         </div>
-        <div class="hint-xs" style="margin-top:6px;">明暗模式在左侧栏底部（常驻，不用进本页切）。主题与主题色写进 localStorage，刷新后保持。</div>
+        <div class="hint-xs" style="margin-top:6px;">主题色写进 localStorage，刷新后保持。明暗模式是左侧栏底部那个常驻开关，不属于本页设置。</div>
         <div class="status" id="settingsStatus" style="margin-top:10px;"></div>
 
         <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 4.5h10M3 8h10M3 11.5h6"/></svg>维护</div>
@@ -2101,9 +2649,7 @@ We will sing beyond the night</textarea>
       <h1 class="page-title">关于</h1>
       <p class="page-sub">本机的系统信息（只读），以及这个工作台是谁做的、源码在哪、用什么许可。</p>
     </div>
-    <div class="grid settings">
-
-      <!-- 左：系统信息（只读） -->
+    <div class="grid settings grid-about">
       <div>
         <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.2v4M8 4.8v.2"/></svg>系统信息（只读）</div>
         <div class="kv" id="sysInfo"><div class="empty">读取中…</div></div>
@@ -2479,7 +3025,11 @@ let asmMode = "preset";
 const THEME_KEY = "la_theme";
 function applyTheme(t) {
   document.documentElement.dataset.theme = t;
-  $("themeLabel").textContent = t === "dark" ? "浅色" : "深色";
+  const dark = t === "dark";
+  // 左：当前模式（标签本身说"现在是什么"），右：可切换到的目标（胶囊说"点了会变成什么"）
+  const lab = $("themeLabel"), pill = $("themePill");
+  if (lab) lab.textContent = dark ? "深色" : "浅色";
+  if (pill) pill.textContent = dark ? "切到浅色" : "切到深色";
   try { localStorage.setItem(THEME_KEY, t); } catch {}
   // 明暗切换后重算主题色派生变量（applyAccent 内部读当前 data-theme）
   if (typeof applyAccent === "function") applyAccent($("accentPicker").value || "#0969da");
@@ -2803,7 +3353,48 @@ function switchTab(name) {
   // 底部那条粘底产出条撑长了文档，加上浏览器刷新时的滚动恢复，落点就跑到底了。
   // 不归零的话用户打开就看见"下半页"，而页面的标题和左右两栏的关系全在上方，第一眼看不懂。
   scrollPageTop();
+  // 换页后左右栏内容变了，可滚动状态要重算（渐隐提示跟着更新）
+  requestAnimationFrame(syncScrollAffordance);
 }
+
+// 「下面还有内容」的提示：给每个可滚动的 .pane-body 打两个类——
+//   .can-scroll = 内容确实超出了可视区；.at-end = 已经滚到底。
+// CSS 只在「可滚 且 未到底」时加底部渐隐，所以不会出现"已经在底部还提示下面有"的假信号。
+// 用 ResizeObserver 而不是只监听 window.resize：栏内内容变化（如六格/配方展开）
+// 也会改变可滚状态，而那种变化不触发 window.resize。
+function syncScrollAffordance() {
+  $$(".grid.compose .pane-body").forEach(b => {
+    const over = b.scrollHeight - b.clientHeight;
+    b.classList.toggle("can-scroll", over > 2);
+    b.classList.toggle("at-end", b.scrollTop >= over - 2);
+  });
+}
+if (typeof ResizeObserver !== "undefined") {
+  const _ro = new ResizeObserver(() => syncScrollAffordance());
+  document.addEventListener("DOMContentLoaded", () => {
+    $$(".grid.compose .pane-body").forEach(b => _ro.observe(b));
+    $$(".grid.compose .pane-body").forEach(b => b.addEventListener("scroll", syncScrollAffordance, { passive: true }));
+    window.addEventListener("resize", syncScrollAffordance, { passive: true });
+    syncScrollAffordance();
+  });
+}
+
+// 页脚说明文字被单行省略号截断时，把完整文案挂到 title 上 —— 截断本身可以接受
+// （页脚是动作区，不该被两行解释顶高），但"看得见被截了 + 悬停能读全"是底线。
+// 写在 sync 之后是因为是否截断取决于当前栏宽，栏宽会随窗口/分栏变化。
+function syncFootHintTitles() {
+  $$(".pane-foot .hint-xs").forEach(el => {
+    if (el.scrollWidth > el.clientWidth + 1) {
+      if (!el.title) { el.title = (el.textContent || "").trim(); el.dataset.autoTitle = "1"; }
+    } else if (el.dataset.autoTitle === "1") {
+      el.removeAttribute("title"); delete el.dataset.autoTitle;
+    }
+  });
+}
+document.addEventListener("DOMContentLoaded", () => {
+  syncFootHintTitles();
+  window.addEventListener("resize", () => requestAnimationFrame(syncFootHintTitles), { passive: true });
+});
 
 // 归零主滚动条 + 各栏内滚动条（宽屏下每栏各自可滚，只归零 window 没用）
 function scrollPageTop() {
@@ -3270,9 +3861,19 @@ function saveAsm() {
 }
 
 // ---- 维度的渲染 ----
-// 折叠态先露这几个（芯片改成中英双行后变高，数量比单行时代收一些，
-// 保证不展开时这一格仍是"两三行扫完"的高度，而不是把右栏顶出一屏之外）。
-const MULTI_LIMIT = { moodChips: 12, timbreChips: 10, instChips: 14, feelChips: 12 };
+// 折叠态露几个：静态常量，**故意不做运行时自适应计算**。
+// 理由（踩过的坑，留档）：容器宽度在第 0 帧 / 分栏切换后 / 字体加载完后
+// 是三个不同的值（353 / 553 / 642），任何"在某一刻量一次就定下来"的做法
+// 都会在真实时序下算错，而且没有自愈路径（实测情绪格被锁死在 6 个词）。
+// 布局的事交给 CSS，JS 只负责给出候选词。
+//
+// 取值依据（1920 视口、分栏态实测容器 642px、gap 6px、尾组横向约 132px）：
+//   可放个数 = floor((642 - 132 + 6) / (chip宽 + 6))
+//   情绪/人声 chip 44px → 10 个；配器 chip 58px → 8 个；节奏 chip 49px → 9 个。
+// 取到"刚好放满一行"，尾组就跟在同一行末尾（靠 .wtail 的 margin-left:auto 吸住）。
+// 窄屏时容器更窄，flex-wrap 会自然把尾组落到下一行 —— 这是可接受的降级，
+// 不会出现"词莫名消失"。
+const MULTI_LIMIT = { moodChips: 10, timbreChips: 10, instChips: 8, feelChips: 8 };
 const multiOpen = {};
 // ★ 折叠方式重做（用户："这种折叠、滚动方式太呆了"）。旧做法有两处呆：
 //   ① 每格词表自带一条 92px 内滚动条——小滚动条嵌在整页滚动条里，滚轮经过就抢走滚动，
@@ -3298,8 +3899,21 @@ function renderMulti(elId, vocab, key) {
   const shown = [...extras, ...vocab];
   const q = wordQuery.trim().toLowerCase();
   const pool = q ? shown.filter(v => wordHit(v, q)) : shown;
-  const limit = MULTI_LIMIT[elId] || 12;
-  const list = (q || multiOpen[elId]) ? pool : pool.filter((v, i) => i < limit || sel.includes(v));
+  // limit 是静态常量（取值依据见 MULTI_LIMIT 定义处，按分栏态容器 642px 精算）。
+  // ★ 已选词必须显示，且**占用额度**：
+  //   早期写法 `i < limit || sel.includes(v)` 是"前 limit 个 + 全部已选"，
+  //   已选词额外加进来 → 实际渲染数 = limit + 已选数，直接突破算好的行宽，
+  //   尾组被挤到第二行（实测节奏格 8+1=9 个 chip 恰好差 3px 换行）。
+  //   现在先放已选词（它们是不可省的），再用剩余额度按原序补未选词，
+  //   总数恒等于 limit，行宽可控。顺序仍按词表原序（不把已选词提到最前，
+  //   免得词的位置每点一下就跳一次，用户找不到刚才点的那个）。
+  let limit = (q || multiOpen[elId]) ? Infinity : (MULTI_LIMIT[elId] || 12);
+  const selSet = new Set(sel);
+  let quota = limit;
+  const keep = new Set();
+  pool.forEach(v => { if (quota > 0 && selSet.has(v)) { keep.add(v); quota--; } });
+  pool.forEach(v => { if (quota > 0) { keep.add(v); quota--; } });
+  const list = (q || multiOpen[elId]) ? pool : pool.filter(v => keep.has(v));
   const row = el.closest(".arow");
   if (row) row.classList.toggle("dim", !!q && pool.length === 0);   // 搜的时候这一格没命中：压暗而不是留个空框
   if (!pool.length) {
@@ -3313,21 +3927,34 @@ function renderMulti(elId, vocab, key) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "chip mini word" + (on ? " tag-on" : "");
+    // 芯片**默认只露中文**：英文真值放进 <i>，但由 CSS 在未选中时隐藏、选中时显示。
+    // 原因是"10 行才排下 16 个词"——acoustic piano / electric piano 这类长词
+    // 把每个芯片撑到 135–152px，310px 的栏宽一行只放得下 2 个。
+    // 只露中文后芯片降到 ~60px，一行 4–5 个，整格从 312px 压到 ~140px。
+    // 选中后把英文露出来，是为了让用户**能核对真正写进 Style 的那串是什么**——
+    // 这是"中文可选 + 英文可验"的折中，而不是把英文藏死。
     b.innerHTML = "<b>" + escapeHtml(wordZh(v)) + "</b><i>" + escapeHtml(v) + "</i>";
     b.title = wordZh(v) + " / " + v + "\n" + (on ? "已选入 Style · 再点一下取消" : "点击选入 Style");
     b.setAttribute("aria-pressed", on ? "true" : "false");
     b.onclick = () => toggleWord(elId, vocab, key, v, on);
     el.appendChild(b);
   });
+  // 「+N ▾」+「已选 N · 清空」：两个都是"读词表的附属动作"，
+  // 用 .wfill（弹性填充）+ .wtail 的组合让它们**贴着词表最后一行末尾**，
+  // 不会被挤成孤零零的第二行（见 CSS 里 .wfill 那段注释）。
+  const tail = document.createElement("span");
+  tail.className = "wtail";
   // 搜索态不显示展开按钮（命中的词本来就已经全摊开了）
   if (!q && pool.length > limit) {
     const t = document.createElement("button");
     t.type = "button"; t.className = "chip mini more";
-    t.textContent = multiOpen[elId] ? "收起 ▴" : "其余 " + (pool.length - list.length) + " 个 ▾";
+    // 文案压到最短：「其余 42 个 ▾」在 6 字 chip + 尾组同行的约束下太占宽，
+    // 情绪格（42 个待展开）会因此把尾组挤到第二行 —— 而这一格恰好是最常被点的。
+    t.textContent = multiOpen[elId] ? "收起 ▴" : "+" + (pool.length - list.length) + " ▾";
     t.title = multiOpen[elId] ? "收回只显示常用词（已选中的仍留在原地）"
                               : "这一格共 " + pool.length + " 个词，全部摊开看；展开后由右栏的滚动条接手";
     t.onclick = () => { multiOpen[elId] = !multiOpen[elId]; renderMulti(elId, vocab, key); updateWordToggle(); };
-    el.appendChild(t);
+    tail.appendChild(t);
   }
   if (sel.length) {
     const c = document.createElement("button");
@@ -3335,8 +3962,9 @@ function renderMulti(elId, vocab, key) {
     c.textContent = "已选 " + sel.length + " · 清空";
     c.title = "取消这一格的全部选择";
     c.onclick = () => { asm[key] = []; recompile(); renderMulti(elId, vocab, key); };
-    el.appendChild(c);
+    tail.appendChild(c);
   }
+  if (tail.childNodes.length) el.appendChild(tail);
 }
 // 选/取消一个词 → 重算 Style → 再把"信息预算"的代价当场说出来（超线不拦、不偷偷删词，只报数）
 function toggleWord(elId, vocab, key, v, wasOn) {
@@ -3445,7 +4073,7 @@ function renderPresetGrid() {
     if (q || pool.length <= PRESET_CAP) { btn.style.display = "none"; return; }
     btn.style.display = "";
     btn.textContent = presetOpen ? "只留前 " + PRESET_CAP + " 张 ▴"
-                                 : "其余 " + (pool.length - Math.min(PRESET_CAP, pool.length)) + " 张 ▾";
+                                 : "+" + (pool.length - Math.min(PRESET_CAP, pool.length)) + " 张 ▾";
     btn.title = presetOpen ? "收回到只显示前 " + PRESET_CAP + " 张（当前选中的那张仍会留在原地）"
                            : "本大类共 " + pool.length + " 张配方，全部摊开挑选";
   }
@@ -3491,25 +4119,26 @@ function updateAsmHint() {
   const cur = (($("style") || {}).value || "").trim();
   // 预算说的是"真正会提交的那一句"：没手改时就是装配产物，手改后就是文本框本身。
   const b = budgetOf(styleDirty ? (cur || preview) : preview);
-  const budCol = b.level === "hard" ? "var(--err)" : b.level === "soft" ? "var(--warn)" : "var(--ok)";
-  const bud = "　·　信息预算 <b style=\"color:" + budCol + ";font-family:var(--mono)\">" +
-    b.phrases + " 条短语 / " + b.words + " 词 / " + b.chars + " 字符</b>" +
-    (b.level === "ok" ? "（官方样本均值 " + PHRASE_SOFT + " 条 / " + WORD_SOFT + " 词 / " + CHAR_SOFT + " 字符以内）"
-      : b.level === "soft" ? "（" + b.over.join("，") + "：已超官方样本均值，能生成，只是每个词的分量变轻）"
-        : "（" + b.over.join("，") + "：明显偏多，建议删词或把重点往前挪）");
+  // 这段文字只在"状态确实不一样"时才有信息量，而且必须**短**——
+  // 以前这里是三段长句（最长 118px），把左栏顶出可视区、主按钮沉到折线以下，
+  // 而且和顶部 budgetrow 的预算数字、上面文本框里的 Style 正文**三重重复**。
+  // 现在压成一行状态 + 一条可展开的说明：默认只占一行，超出部分进 <details>。
+  // 预算数字**只报一次**——顶部 budgetrow 的 #asmBudget 是它唯一的家，
+  // 这里再报一遍就是重复（旧版两处都报，用户看到两个说法不一的数字）。
+  let state, tip;
   if (styleDirty) {
-    el.innerHTML = "⚠ <b>Style 文本已被手改</b>（第 ③ 步的改动只刷新下面的预览，不会覆盖本页底部的 Style 产出框）。" +
-      "要按六要素重写文本框，点「↻ 重新装配到 Style」。<br>装配预览：" +
-      "<span style=\"font-family:var(--mono);opacity:.85;\">" + escapeHtml(preview || "（空）") + "</span>" + bud;
+    state = "⚠ Style 已被手改 —— 装配台只刷新预览，不再覆盖文本框";
+    tip = "第 ③ 步的改动不会写回这个文本框。要按六要素重写它，点「↻ 重新装配到 Style」。";
   } else if (cur && cur !== preview) {
-    el.innerHTML = "当前 Style 文本还不是装配台拼出来的（沿用上次的内容）。" +
-      "点一张曲风卡片（第 ② 步）或动任何一格（第 ③ 步），就会按下面的配方重写它。<br>装配预览：" +
-      "<span style=\"font-family:var(--mono);opacity:.85;\">" + escapeHtml(preview || "（空）") + "</span>" + bud;
+    state = "沿用上次的 Style 文本；点卡片或动一格即按配方重写";
+    tip = "点一张曲风卡片（第 ② 步）或动任何一格（第 ③ 步），就会按配方重写它。";
   } else {
-    el.innerHTML = "<b>②</b> 点一张曲风卡片 = 一次性把 <b>③</b> 六个维度填满并写进 Style；" +
-      "六个维度是卡片展开后的明细，任何一格都能单独增删，改动实时重写 Style 文本。" +
-      "<b>一旦你在文本框里手改，装配台就只给预览不再覆盖产出框</b>。" + bud;
+    state = "装配台与 Style 文本已同步";
+    tip = "点一张曲风卡片 = 一次性把六个维度填满并写进 Style；六个维度是卡片的明细，任何一格都能单独增删，改动实时重写 Style 文本。一旦你在文本框里手改，装配台就只给预览、不再覆盖产出框。";
   }
+  el.innerHTML = '<span class="pn-state">' + state + '</span>' +
+    '<details class="pn-more"><summary>?</summary><div>' + tip + '</div></details>';
+  el.title = tip;
   const m = $("asmBudget");
   if (m) {
     m.textContent = b.phrases + " 短语 · " + b.words + " 词 · " + b.chars + " 字符" +
@@ -3595,12 +4224,14 @@ function updateStyleChecks() {
     if (!has.tempo) msgs.push(["tip", "没写 BPM：节奏由模型自己决定，想控制就在第 6 格填或直接在文本尾部加 “88 BPM”。"]);
     if (!has.vocal && (($("aLang") || {}).value || "") !== "Instrumental") msgs.push(["tip", "没写人声：默认由模型决定性别，想指定就用第 4 格。"]);
     const miss = SIX_LABELS.filter(([zh, k]) => !has[k]).map(([zh]) => zh);
-    // 「齐了」只在真的六项都覆盖时才敢说。以前这条分支排在其它提示之前，
-    // 缺「情绪」时上面 ✓ 栏是空的○，下面却写"六要素齐了"——自相矛盾的绿灯。
-    if (!msgs.length) {
-      if (miss.length) msgs.push(["tip", "还缺：" + miss.join(" · ") + "（补齐六要素更像一张配方，不补也能跑）"]);
-      else msgs.push(["ok", "六要素齐了，提交内容就是左边文本框里这一句。"]);
-    } else if (miss.length) msgs.push(["tip", "未覆盖：" + miss.join(" · ")]);
+    // 「缺哪一格」**不再在这里重复**：上面那排 ✓/○ 状态条已经在讲同一件事，
+    // 文字再写一遍"还缺：情绪"是同一信息出现两次（用户会以为两处在说不同的问题）。
+    // 这里只在"真的能采取行动"时出声；全部覆盖、又没别的问题时，给一句明确的正向收尾。
+    // （以前这条分支排在其它提示之前，缺「情绪」时上面是空 ○、下面却写"六要素齐了"，
+    //   自相矛盾的绿灯——现在只有在 miss 为空时才敢说"齐了"。）
+    if (!msgs.length && !miss.length) msgs.push(["ok", "六要素齐了，提交内容就是左边文本框里这一句。"]);
+    else if (msgs.length && miss.length) msgs.push(["tip", "未覆盖：" + miss.join(" · ")]);
+    // msgs 为空且 miss 非空 → 什么都不说：状态条已经画出来了，保持这一行安静。
   }
   lint.innerHTML = msgs.map(([lv, m]) => {
     const icon = lv === "ok" ? "✓ " : lv === "warn" ? "⚠ " : "· ";
@@ -4399,6 +5030,15 @@ function loadAudio(blob, name, taskName) {
     if (!p.src) return;
     if (p.paused) p.play().catch(() => {}); else p.pause();
   };
+  // ★ 原生控件已被 .dock audio{display:none} 撤掉，浏览器那条"解码失败"的默认红字也一起没了。
+  //   所以媒体错误必须由我们自己送到用户面前，否则"点了播放键没反应"会变成无声故障。
+  //   注意 error 事件的 target 可能是 <audio> 也可能是它内部的 <source>，两处都听。
+  p.addEventListener("error", () => {
+    const map = { 1: "播放被中止", 2: "网络错误，音频没下下来", 3: "音频解码失败（文件可能损坏）", 4: "格式不支持或音频不可用" };
+    toast(map[p.error && p.error.code] || "音频无法播放", "err");
+    btn.disabled = true;
+  });
+  p.addEventListener("stalled", () => { $("audioName").textContent = "音频加载停滞，请重试"; });
   p.addEventListener("play", () => setIcon(true));
   p.addEventListener("pause", () => setIcon(false));
   p.addEventListener("timeupdate", () => {
@@ -5070,6 +5710,8 @@ async function renderHistory() {
     const tsOf = h => h.ts || "";
     list.sort((a, b) => rankOf(a) - rankOf(b) || (tsOf(a) < tsOf(b) ? 1 : tsOf(a) > tsOf(b) ? -1 : 0));
     $("histCount").textContent = list.length;
+    // 页头那份计数（和侧栏徽牌同源，但不是同一个元素 —— 侧栏那个 id 是 histCount）
+    const hcHead = $("histCountHead"); if (hcHead) hcHead.textContent = list.length;
     // 状态标签过滤：全部/进行中(running+pending)/已完成(done)/失败(error+cancelled)
     const stateOf = h => h.status === "done" ? "done"
       : (h.status === "error" || h.status === "cancelled") ? "error"
@@ -5094,9 +5736,20 @@ async function renderHistory() {
     // 「⋯ 更多」菜单展开时本轮不重建 DOM：5s 队列轮询整表 innerHTML 重绘会把菜单
     // 悄悄关掉（实测 6.5s 后自动关闭），用户正在点的按钮随之丢失。
     // 菜单收起后的下一轮轮询自然补回最新状态。
-    if ([...el.querySelectorAll("[data-more-menu]")].some(m => m.style.display !== "none")) return;
+    if ([...el.querySelectorAll("[data-more-menu].open")].length) return;
     if (!shown.length) { el.innerHTML = `<div class="empty">${histKind === "all" ? "暂无历史记录。生成歌曲后会自动保存（含音频与参数）。" : "该分类下暂无记录。"}</div>`; return; }
     el.innerHTML = "";
+    // ★ 列头：五列各是什么写在最上面。它和 .hist-item 共用 --hcol-* 列模板，
+    //   所以"任务"两个字正好压在任务列上，不需要任何手工对齐。
+    //   第 3 列的表头写成"歌词 / 摘要"：乐谱行放的是 ABC 摘要、分离行放的是产物清单，
+    //   只写"首句歌词"会让这两类行看起来"放错了列"。
+    if (shown.some(h => h.kind !== "score" && h.kind !== "separate")) {
+      const head = document.createElement("div");
+      head.className = "h-head";
+      head.innerHTML = "<span>任务</span><span>状态</span><span>歌词 / 摘要</span>"
+        + '<span class="hh-meta">时长 · 耗时 · 大小</span><span class="hh-act">操作</span>';
+      el.appendChild(head);
+    }
     shown.forEach(h => {
       // 乐谱提取 / 分离 两类没有音频产物与歌词，用轻量行，不套生成任务那 12 个按钮
       if (h.kind === "score" || h.kind === "separate") { el.appendChild(lightTaskRow(h)); return; }
@@ -5122,22 +5775,22 @@ async function renderHistory() {
         <div class="h-col">
           <div class="h-title">${escapeHtml(title)}${kindTag}</div>
           ${h.ts || h.id ? '<div class="h-sub">' + [h.ts ? timeAgo(h.ts) : "", idTag(h.id)].filter(Boolean).join(" ") + '</div>' : ''}
-          ${h.status === "error" && h.error ? `<div class="h-sub" style="color:var(--err); cursor:pointer;" data-err title="点击展开/收起">⚠ ${escapeHtml(String(h.error).slice(0, 120))}${String(h.error).length > 120 ? " …（点击查看全部）" : ""}</div>` : ""}
+          ${h.status === "error" && h.error ? `<div class="h-sub h-errline" style="color:var(--err); cursor:pointer;" data-err title="点击展开/收起完整错误">⚠ ${escapeHtml(String(h.error).slice(0, 120))}${String(h.error).length > 120 ? " …（点击查看全部）" : ""}</div>` : ""}
         </div>
         <div class="h-col h-col-st" style="color:${stColor};">${stTxt}</div>
         <div class="h-col">
-          <div class="h-sub" style="margin-top:0; font-size:12px;">${firstLyric ? escapeHtml(firstLyric) : '<span style="color:var(--muted)">—</span>'}</div>
+          <div class="h-sub" style="margin-top:0; font-size:var(--fs-xs);">${firstLyric ? escapeHtml(firstLyric) : '<span style="color:var(--muted)">—</span>'}</div>
         </div>
-        <div class="h-col h-col-meta">
+        <div class="h-col h-col-meta" title="${escapeHtml([dur && '时长 ' + dur, elapsed && '耗时 ' + elapsed, h.bytes && '大小 ' + fmtBytes(h.bytes)].filter(Boolean).join(" · ") || '无')}">
           ${[dur && '🎵 ' + dur, elapsed && '⏱ ' + elapsed, h.bytes && fmtBytes(h.bytes)].filter(Boolean).join(' · ') || '—'}
         </div>
         <div class="h-actions">
           ${h.status === "done" && !isTrain && !(isRvc && h.assets && h.assets.full_song) ? '<button class="ghost" data-play>▶ 播放</button>' : ''}
-          ${h.status === "done" && isRvc && h.assets && h.assets.full_song ? '<button class="ghost" data-play="full">▶ 成品（带伴奏）</button><button class="ghost" data-play="dry">🎤 干人声</button>' : ''}
-          ${h.status === "done" && isTrain ? '<button class="ghost" data-use>去使用</button>' : ''}
-          ${h.status === "done" && !isTrain ? '<button class="ghost" data-dl>⬇ 下载</button>' : ''}
+          ${h.status === "done" && isRvc && h.assets && h.assets.full_song ? '<button class="ghost" data-play="full" title="换声人声 + 伴奏">▶ 成品</button><button class="ghost" data-play="dry" title="只有换声后的人声，无伴奏">🎤 干声</button>' : ''}
+          ${h.status === "done" && isTrain ? '<button class="ghost" data-use title="跳到 ⑨ 换声页并选中这个音色">去使用</button>' : ''}
+          ${h.status === "done" && !isTrain ? '<button class="ghost" data-dl title="下载 WAV">⬇ 下载</button>' : ''}
           ${h.status !== "pending" ? '<button class="ghost" data-more>⋯ 更多</button>' : ''}
-          <div class="h-more" data-more-menu style="display:none;">
+          <div class="h-more" data-more-menu>
             ${h.status === "running" && !isRvc && !isTrain ? '<button class="danger" data-stop>⏹ 终止</button><button class="ghost" data-restart>↻ 重启任务</button>' : ''}
             ${h.status === "done" && !isTrain && !isRvc ? '<button class="ghost" data-rvc>🎙 送去换声</button>' : ''}
             ${!isTrain && !isRvc && (h.lyrics || "").trim() ? '<button class="ghost" data-lyrics>⬇ LRC歌词</button>' : ''}
@@ -5148,7 +5801,7 @@ async function renderHistory() {
             <button class="danger" data-del>🗑 删除</button>
           </div>
           ${h.status === "done" && isRvc && h.assets && Object.keys(h.assets).length ? `
-          <div class="h-more" data-dl-menu style="display:none;">
+          <div class="h-more" data-dl-menu>
             <button class="ghost" data-part-dl="full_song">🎵 成品（带伴奏）</button>
             <button class="ghost" data-part-dl="">🎙 换声人声（干声）</button>
             ${h.assets.vocals_original ? '<button class="ghost" data-part-dl="vocals_original">🎤 原人声</button>' : ''}
@@ -5250,9 +5903,10 @@ async function renderHistory() {
       const dlMenu = d.querySelector("[data-dl-menu]");
       if (moreBtn) moreBtn.onclick = (e) => {
         e.stopPropagation();
-        const open = moreMenu && moreMenu.style.display !== "none";
-        if (moreMenu) moreMenu.style.display = open ? "none" : "";
-        if (dlMenu) dlMenu.style.display = open ? "" : "none";  // RVC：更多与下载产物互斥展开
+        const open = !!(moreMenu && moreMenu.classList.contains("open"));
+        // 「更多」与「下载产物」互斥：同时展开会两个面板叠在一起
+        if (moreMenu) moreMenu.classList.toggle("open", !open);
+        if (dlMenu) dlMenu.classList.toggle("open", open);
       };
       // 直接下载该条 WAV；换声任务默认下载完整歌曲（产物下拉可选其他部分）
       const dl = d.querySelector("[data-dl]");
@@ -5461,10 +6115,14 @@ async function renderHistory() {
       el.appendChild(d);
     });
     // 分页尾巴：一屏 60 行，剩下的点"加载更多"。1000 条全量渲染会把主线程按死。
+    // ★ 它**不是一行数据**，不能穿 .hist-item 的衣服：
+    //   穿了就会继承 .hist-item 的 padding/边框/列网格（还带 hover 与 pointer），
+    //   于是"加载更多"这行看起来像第 61 条任务，实测行高 67px、与数据行的 72px 并存 ——
+    //   一张表里出现第三种行高。改用 .hist-more 这个只属于"列表尾巴"的类，
+    //   它不参与列网格，居中排布，视觉上是"表格之后的一个动作"。
     if (list.length > shown.length) {
       const more = document.createElement("div");
-      more.className = "hist-item";
-      more.style.cssText = "justify-content:center;gap:10px;";
+      more.className = "hist-more";
       const b = document.createElement("button");
       b.className = "ghost"; b.type = "button";
       b.textContent = "↓ 加载更多（已显 " + shown.length + " / " + list.length + "）";
@@ -7290,6 +7948,22 @@ function statusSay(msg, cls) {
 let sysCache = null;
 // 键必须写成 renderSys 实际产出的点号路径（walk 会把父级拼进前缀），
 // 只写叶子名会一行都匹配不上，整页退化成英文裸键。
+/* ★ 系统信息必须分组，不能 33 行平铺。
+   实测（1920x1174）：33 行 × 29px ≈ 1021px 高，把「关于」页顶到 1264px ——
+   视口只有 1174，于是出现滚动条（顺带把整页内容推偏 5px），
+   而"33 行没有小标题的键值"本身也没法一眼扫完，找"引擎模式"要一行行读。
+   分 4 组（端口 / 目录 / 存储与显存 / 引擎），每组一个 .kv-group + 小标题，
+   再让分组本身走多列流式排布 —— 高度腰斩，且"我要看什么"变成了"我去哪一组找"。 */
+const SYS_GROUPS = [
+  { key: "port",  title: "端口与版本", match: (k) => /^(version|ports\.|gateway$|read_only)/.test(k) },
+  { key: "path",  title: "目录",       match: (k) => /^paths\./.test(k) },
+  { key: "disk",  title: "存储与显存", match: (k) => /^(disk\.|gpu\.|backend$)/.test(k) },
+  { key: "eng",   title: "引擎与模型", match: (k) => /^(engines\.|audiocpp$)/.test(k) },
+];
+function sysGroupOf(k) {
+  for (const g of SYS_GROUPS) if (g.match(k)) return g.key;
+  return "port"; // 兜底：未定义的键归到第一组，不丢行
+}
 const SYS_LABEL = {
   version: "版本", read_only: "只读说明",
   // 后三个是 /api/system/info 缺席时退回 /api/health 用的裸键
@@ -7317,6 +7991,7 @@ function fmtSysVal(k, v) {
 }
 function kvAdd(rows, k, v) {
   const d = document.createElement("div");
+  d.dataset.grp = sysGroupOf(k);
   const kk = document.createElement("span");
   kk.className = "k";
   kk.textContent = SYS_LABEL[k] || SYS_LABEL[k.split(".").pop()] || k;
@@ -7339,6 +8014,36 @@ function renderSys(j) {
   box.innerHTML = "";
   if (!rows.length) { box.innerHTML = '<div class="empty">没有读到信息。</div>'; return; }
   rows.forEach((r) => box.appendChild(r));
+  groupSysRows(box);
+}
+/* 把平铺的键值行收进 4 个带小标题的分组。
+   ★ 分组不能写死在 HTML 里：系统信息的键随后端版本增减，硬编码目录会在后端加字段时
+     静默丢行（"我明明有 33 项，怎么只剩 31"）。按 key 前缀归类 + 兜底组，加字段自动有位。 */
+function groupSysRows(box) {
+  const buckets = new Map(SYS_GROUPS.map((g) => [g.key, []]));
+  Array.prototype.slice.call(box.children).forEach((el) => {
+    const g = el.dataset && el.dataset.grp;
+    if (!g || !buckets.has(g)) return;
+    buckets.get(g).push(el);
+  });
+  const frag = document.createDocumentFragment();
+  SYS_GROUPS.forEach((g) => {
+    const items = buckets.get(g.key);
+    if (!items || !items.length) return;
+    const sec = document.createElement("section");
+    sec.className = "kv-group";
+    const h = document.createElement("div");
+    h.className = "kv-group-title";
+    h.textContent = g.title;
+    sec.appendChild(h);
+    const body = document.createElement("div");
+    body.className = "kv";
+    items.forEach((el) => body.appendChild(el));
+    sec.appendChild(body);
+    frag.appendChild(sec);
+  });
+  box.innerHTML = "";
+  box.appendChild(frag);
 }
 async function loadSysInfo() {
   const box = $("sysInfo");
@@ -7985,7 +8690,17 @@ $("trainFromSep").onclick = () => pickSepSource($("trainFromSep"), "导入 ⑩ �
 
 // ---------- ⑪ 乐谱提取与分离两类：轻量行 ----------
 // 它们没有音频产物也没有歌词，硬套生成任务那 12 个按钮只会出一排禁用态，
-// 所以单开一种行：状态 + 一句摘要 + 这一类真正用得上的三个动作。
+// 所以动作更少 —— 但**行骨架必须和别的行一模一样**，否则同一张表里两种行高。
+//
+// ★ 曾踩过的坑：这行最初自己搭了个"3 列 .h-col"的布局，4 个按钮全塞进最后一个 .h-col。
+//   而 .h-col 默认是块级、按钮各自成行 ⇒ 这一行高 168px，而同列表里其它行是 72px。
+//   实测（1920x1174，⑪ 共 61 行）：
+//     行 0「如诗」(kind=generate) → h=72，动作在 .h-actions 里
+//     行 1、2「🎼 乐谱提取」      → h=168 ← 破口
+//   用户看到的是"表格里突然有两行比别的行高一倍多"，正是"乱"的一部分。
+//   修法：**5 个格子，一个不少** —— 任务 / 状态 / 摘要(歌词列) / 元信息 / 操作，
+//   动作一律进 .h-actions（那才有右对齐 + 定宽 + 按钮不撑宽的规矩）。
+//   空列给一个 .h-col 占位（不放内容），列轨道才对得上。
 function lightTaskRow(h) {
   const d = document.createElement("div");
   d.className = "hist-item";
@@ -8002,26 +8717,43 @@ function lightTaskRow(h) {
     : (parts.length
         ? (parts.length + " 份产物：" + parts.map((x) => ((SEP_PARTS.find((sp) => sp.key === x) || {}).label || x)).join("、"))
         : (h.step || ""));
+  // 第 1 格：任务名 + 时间/ID + 摘要（与 generate 行的任务格同一套内部结构）
   const col = document.createElement("div");
   col.className = "h-col";
   col.innerHTML = '<div class="h-title">' + escapeHtml((isScore ? "🎼 乐谱提取 · " : "✂ 分离 · ") + String(title)) + "</div>"
     + '<div class="h-sub">' + [h.ts || h.time ? timeAgo(h.ts || h.time) : "", idTag(h.id)].filter(Boolean).join(" ") + "</div>"
-    + '<div class="h-sub" style="font-size:12px;">' + escapeHtml(preview || "—") + "</div>"
     + (h.error ? '<div class="h-sub" style="color:var(--err);">' + escapeHtml(String(h.error).slice(0, 160)) + "</div>" : "");
+  // 第 2 格：状态
   const st = document.createElement("div");
   st.className = "h-col h-col-st"; st.style.color = stColor; st.textContent = stTxt;
+  // 第 3 格：摘要（复用"歌词"那一列的位置）
+  const sum = document.createElement("div");
+  sum.className = "h-col";
+  {
+    const s = document.createElement("div");
+    s.className = "h-sub"; s.style.marginTop = "0"; s.style.fontSize = "var(--fs-xs)";
+    s.textContent = preview || "—";
+    if (preview) s.title = preview;
+    sum.appendChild(s);
+  }
+  // 第 4 格：元信息（乐谱/分离没有时长大小，占位保持列轨道）
+  const meta = document.createElement("div");
+  meta.className = "h-col h-col-meta";
   const acts = document.createElement("div");
-  acts.className = "h-col";
-  const mk = (t, fn, cls) => {
+  acts.className = "h-actions";
+  const mk = (t, fn, cls, title) => {
     const b = document.createElement("button");
     b.className = cls || "ghost"; b.type = "button"; b.textContent = t;
-    b.style.cssText = "padding:3px 10px;font-size:11.5px;";
+    if (title) b.title = title;
     b.onclick = (e) => { e.stopPropagation(); fn(b); };
     acts.appendChild(b);
     return b;
   };
   if (isScore) {
-    mk("↩ 载入到 ③", async () => {
+    // ★ 标签必须短：操作簇定宽 236px，4 颗按钮按 min-width:58 排不下 4×58+3×6=250，
+    //   长标签（"↩ 载入到 ③" 7 字）更会把簇撑破、把元信息列挤掉。
+    //   这里用"能看懂的最短形式"，完整含义进 title（悬停可见，读屏也拿得到）。
+    mk("↩ 载入", async () => {
       try {
         const rec = await (await fetchT("/api/scores/" + encodeURIComponent(h.id), {}, 25000)).json();
         $("abc").value = rec.abc || "";
@@ -8031,10 +8763,10 @@ function lightTaskRow(h) {
         switchTab("score");
         toast("已载入乐谱到 ③", "ok");
       } catch (e) { toast("载入失败：" + friendlyErr(e), "err"); }
-    });
-    mk("⬇ MIDI", () => exportScoreById(h.id, "mid"));
-    mk("⬇ ABC", () => exportScoreById(h.id, "abc"));
-    mk("✕ 删除", async (b) => {
+    }, "ghost", "载入这份乐谱到 ③ 乐谱");
+    mk("MIDI", () => exportScoreById(h.id, "mid"), "ghost", "导出 MIDI");
+    mk("ABC", () => exportScoreById(h.id, "abc"), "ghost", "导出 ABC 谱");
+    mk("删除", async (b) => {
       if (!confirm("删除这份乐谱？\n\n转谱时归档的 MIDI 等中间文件会一起删除（原音频不受影响），本机不可恢复。")) return;
       b.disabled = true;
       try {
@@ -8042,21 +8774,23 @@ function lightTaskRow(h) {
         if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || "删除失败"); }
         toast("已删除（含归档目录）", "ok"); renderHistory();
       } catch (e) { toast(friendlyErr(e), "err"); b.disabled = false; }
-    }, "danger");
+    }, "danger", "删除这份乐谱");
   } else {
     parts.forEach((part) => {
-      mk("⬇ " + (((SEP_PARTS.find((x) => x.key === part) || {}).label) || part), () =>
-        downloadRemoteAudio("/api/audio/separate/audio/" + encodeURIComponent(h.id) + "?part=" + encodeURIComponent(part), h.id + "_" + part + ".wav"));
+      const lb = ((SEP_PARTS.find((x) => x.key === part) || {}).label) || part;
+      mk(lb, () =>
+        downloadRemoteAudio("/api/audio/separate/audio/" + encodeURIComponent(h.id) + "?part=" + encodeURIComponent(part), h.id + "_" + part + ".wav"),
+        "ghost", "下载 " + lb);
     });
     if (parts.includes("vocals") || parts.includes("vocals_noharmony")) {
-      mk("→⑨ 换声", () => {
+      mk("换声", () => {
         sepCurrent = h.id;
         const part = parts.includes("vocals_noharmony") ? "vocals_noharmony" : "vocals";
         handoffAudio(part, "convert");
-      });
+      }, "ghost", "送到 ⑨ 换声");
     }
-    mk("→⑩ 打开", () => { sepCurrent = h.id; switchTab("sep"); loadSepList(); });
-    mk("✕ 删除", async (b) => {
+    mk("打开", () => { sepCurrent = h.id; switchTab("sep"); loadSepList(); }, "ghost", "在 ⑩ 打开这条分离");
+    mk("删除", async (b) => {
       if (!confirm("删除这条分离记录与它的产物文件？\n\n人声/伴奏的 wav 会一起从 output/ 清掉，本机不可恢复。")) return;
       b.disabled = true;
       try {
@@ -8065,9 +8799,13 @@ function lightTaskRow(h) {
         if (!r.ok) throw new Error(r.status === 409 ? (j.detail || "任务进行中，不能删除") : (j.detail || "删除失败"));
         toast("已删除（含产物）", "ok"); renderHistory();
       } catch (e) { toast(friendlyErr(e), "err"); b.disabled = false; }
-    }, "danger");
+    }, "danger", "删除这条分离记录");
   }
-  d.appendChild(col); d.appendChild(st); d.appendChild(acts);
+  // ★ 五个格子按列轨道顺序落位：任务 / 状态 / 摘要 / 元信息 / 操作。
+  //   少放一个，后面所有格子就会整体左移一列（CSS grid 按顺序填轨道），
+  //   于是"这张表的列还对不对得齐"取决于行类型 —— 那正是要消灭的东西。
+  d.appendChild(col); d.appendChild(st); d.appendChild(sum);
+  d.appendChild(meta); d.appendChild(acts);
   return d;
 }
 async function exportScoreById(id, fmt) {

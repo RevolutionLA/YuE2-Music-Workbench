@@ -331,7 +331,7 @@ class DesignSystem(unittest.TestCase):
     def test_accent_presets_meet_aa_in_both_themes(self):
         """每个主题预设色在两套主题下都要过 AA(4.5:1)。
 
-        亮色主按钮是【白字压主色】，深色主按钮是【墨字 #1d1003 压提亮端】。
+        亮色主按钮是【白字压主色】，深色是【白字压主色 + hover 压暗】。
         旧版两处都不达标：亮色 #b0651c 只有 4.45:1（刚好卡在线下），
         深色直接把用户选的原色当键面，选石墨/绛红这类暗色时只有 2.9:1。
         这条断言就是防止有人"顺手调个色"又把可读性调坏。
@@ -351,6 +351,62 @@ class DesignSystem(unittest.TestCase):
                 failures.append("%s %s 深色主按钮 %.2f" % (name, hexv, dark_btn))
         self.assertEqual(failures, [],
                          "这些预设色对比度不达标：\n  " + "\n  ".join(failures))
+
+    def test_hover_states_meet_aa_in_both_themes(self):
+        """★ hover 态也必须过 AA —— 上面那条只验"静止态"，漏掉的恰恰是最容易坏的地方。
+
+        实测（2026-10-09）：深色主按钮的 hover 原来用 --acc-hi（往白混 10%），
+        白字压在"变亮的底"上，8 个预设色里 5 个掉到 AA 线下
+        （#9a6700 4.05、#8250df 4.20、#1a7f37 4.21、#0969da 4.37、#0f766e 4.49）。
+        规律：**白字底往上提亮 = 对比度必然下降**，所以深色 hover 必须往黑走。
+        这条断言把"hover 也不能掉线"钉住，两种主题各验一次。
+        """
+        m = re.search(r"const ACCENT_PRESETS = \[(.*?)\n\];", self.src, re.S)
+        presets = re.findall(r'\["(#[0-9a-fA-F]{6})",\s*"([^"]+)"\]', m.group(1))
+        self.assertEqual(len(presets), 8)
+
+        failures = []
+        for hexv, name in presets:
+            # 静止态与 hover 态（hover = --acc-btn-lo = 往黑混 20%）都要过 AA
+            for label, face in (("静止", hexv),
+                                ("hover", self._mix(hexv, "#000000", 0.20))):
+                r = self._contrast("#ffffff", face)
+                if r < 4.5:
+                    failures.append("%s %s %s %.2f" % (name, hexv, label, r))
+        self.assertEqual(failures, [],
+                         "这些 preset 的 hover 态对比度不达标：\n  " + "\n  ".join(failures))
+
+    def test_primary_hover_darkens_not_lightens(self):
+        """主按钮的 hover 必须把底面**压暗**，两套主题都不许提亮。
+
+        只验数值不够 —— 有人可以把 hover 改回 var(--acc-hi) 同时把混色比例调小蒙混过去。
+        这里直接盯住规则本身：两个 .primary:hover 的 background 都必须是 --acc-btn-lo。
+        （实测：提亮版本让浅色 8/8 掉到 2.82～3.71:1、深色 5/8 掉线。）
+        """
+        self.assertIn(".primary:hover:not(:disabled) { background: var(--acc-btn-lo);",
+                      self.head, "浅色主按钮 hover 又变回提亮端了（白字底提亮 = 对比度必降）")
+        self.assertIn("html[data-theme=\"dark\"] .primary:hover:not(:disabled) "
+                      "{ background: var(--acc-btn-lo); }", self.head,
+                      "深色主按钮 hover 又变回提亮端了")
+
+    def test_shell_is_the_same_layer_as_panels(self):
+        """常驻外壳（侧栏/播放坞）必须与主区卡片同一层面，不能另开一套颜色。
+
+        用户原话："深色模式我感觉三块是差不多的，但浅色模式，三块还是明显不统一。"
+        查证结果：深色下 --shell 本来就等于 --panel，所以"差不多"；
+        浅色下外壳被单独画成了近黑（先 #1c2128 再 #3c4149），
+        相对明度 0.015/0.052 压在主区 0.843 旁边 —— 那不是"深一档"，是黑白同框。
+        唯一稳的写法是让 --shell 直接指向 --panel：两套主题自动同构，
+        以后改主题色外壳会跟着走，不会再出现"三块不统一"。
+        """
+        decls = re.findall(r"^\s{4}--shell:\s*([^;]+);", self.head, re.M)
+        self.assertEqual(len(decls), 2, "预期明暗两套各有一条 --shell 声明，实际 %d" % len(decls))
+        for d in decls:
+            self.assertEqual(d.strip(), "var(--panel)",
+                             "--shell 又写死成 %s 了：外壳必须与主区卡片同层" % d.strip())
+        # 外壳内的强调色必须是主题感知的"可读档"，不是 applyAccent 写进内联样式的原色
+        self.assertIn("--shell-acc: var(--acc-text);", self.head,
+                      "外壳强调色不能直接用 --acc（它不跟主题翻，深色下只有 3.33:1）")
 
     def test_default_accent_meets_aa(self):
         """默认铜色（--acc）配白字必须过 AA；同时确认深色默认键面不再用原色。"""
@@ -392,6 +448,418 @@ class DesignSystem(unittest.TestCase):
         # 迁移逻辑被真正接进初始化路径
         self.assertIn("applyAccent(loadAccent())", self.src,
                       "主题色初始化没有走 loadAccent()，旧值不会被迁移")
+
+    # ---------- ⑪ 任务管理表 ----------
+
+    def test_hist_table_columns_are_content_independent(self):
+        """任务管理表的列宽不能随行内容变化。
+
+        用户原话："「任务管理」的UI还是太过乱了，作为用户，不便于浏览、筛选。"
+
+        实测证据（1920x1174，30 条真实形状数据）：旧实现
+        `grid-template-columns: minmax(140px,1.4fr) 92px minmax(120px,2fr) 150px auto`
+        的**最后一档是 auto** —— 它按内容（操作按钮）取宽，而每一行是**各自独立的 grid
+        容器**。按钮文案不同 → 该行 auto 宽度不同 → 留给两个 fr 的剩余空间不同 →
+        同一列在不同行解出不同宽度：状态列 x ∈ {649,718,751,784,816}（5 个值），
+        元信息列 3 个值、操作列 3 个值。眼睛识别不了"哪一格是什么"，这就是"乱"。
+
+        契约：列模板里**不允许出现内容驱动的尺寸**（auto / max-content / min-content
+        / fit-content）——凡是按内容取宽的轨道，都会让列位置逐行漂移。
+        fr 本身没问题（所有行同模板、同容器宽，fr 必然解出同值），
+        前提是没有任何一档按内容取宽。
+        """
+        # 列模板只允许出现一次定义 + 一次窄屏覆盖，且必须走令牌
+        tpls = re.findall(r"grid-template-columns:\s*(var\(--hcol[^;]+);", self.head)
+        self.assertTrue(tpls, "任务管理表的列模板没有走 var(--hcol-*) 令牌")
+        for t in tpls:
+            for tok in re.findall(r"var\((--hcol-[a-z]+)\)", t):
+                self.assertIn(tok, self.head, "列令牌 %s 没有定义" % tok)
+        # 令牌不得含内容驱动尺寸——这是"每行列位置不同"的根因
+        for name, val in re.findall(r"^\s{4}(--hcol-[a-z]+):\s*([^;]+);", self.head, re.M):
+            for bad in ("auto", "max-content", "min-content", "fit-content"):
+                self.assertNotIn(bad, val,
+                                 "%s=%s 含内容驱动尺寸 %s：列宽会随行内容变、列位置对不齐"
+                                 % (name, val, bad))
+        # 网格只作用于 #histList 内的行：.hist-item 是共享类（换声/训练/分离列表都用），
+        # 写在共享类上会把那几个"内容纵向铺满"的列表也扭成五列表
+        i = self.head.index("grid-template-columns: var(--hcol-task)")
+        sel = self.head[max(0, i - 300):i]
+        self.assertIn("#histList .hist-item", sel,
+                      "五列网格写到了共享的 .hist-item 上，会污染换声/训练/分离列表")
+
+    def test_hist_table_has_visible_column_header(self):
+        """表必须有列头，且列头与行共用同一份列模板。
+
+        实测：旧实现 hasColumnHeader=false —— 五列各是什么只能靠猜。
+        """
+        self.assertIn(".h-head", self.head, "任务管理表没有列头样式")
+        # 列头必须和行同模板（否则"任务"两字压不到任务列上）
+        m = re.search(r"#histList \.hist-item, #histList \.h-head\s*\{([^}]*)\}", self.head)
+        self.assertIsNotNone(m, "列头与行没有共用列模板选择器")
+        self.assertIn("--hcol-task", m.group(1))
+        # 渲染代码里真的 appendChild 了列头
+        self.assertIn('head.className = "h-head"', self.src,
+                      "renderHistory 没有渲染列头")
+
+    def test_hist_row_height_is_uniform(self):
+        """行高必须唯一——失败行不能因为多一行错误说明撑高。
+
+        实测：旧实现行高有 72px 和 90px 两个值（失败行多一行 inline 错误文本），
+        一列里两种行高交替，扫读节奏全乱。
+        """
+        # 错误行被移出文档流（absolute），因此不参与行高计算
+        i = self.head.index(".hist-item .h-errline")
+        chunk = self.head[i:i + 320]
+        self.assertIn("position: absolute", chunk,
+                      "错误行又回到文档流里了：失败行会比其它行高")
+        self.assertIn("overflow: hidden", self.head[self.head.index(".hist-item .h-sub"):
+                                                   self.head.index(".hist-item .h-sub") + 200])
+
+    def test_hist_all_row_kinds_share_the_five_column_skeleton(self):
+        """⑪ 里**每一种行**（生成 / 换声 / 训练 / 乐谱 / 分离）都必须落 5 个格子。
+
+        用户原话："「任务管理」的UI还是太过乱了，作为用户，不便于浏览、筛选。"
+
+        实测（1920x1174，⑪ 共 61 行）：
+          · 生成行「如诗」       → h=72，动作在 .h-actions →
+          · 乐谱行「🎼 乐谱提取」 → h=168 ← 比别的行高一倍多
+          · 列表尾巴「加载更多」 → h=67 ← 第三种行高
+        根因有两个，都不在 CSS：
+          ① lightTaskRow()（乐谱/分离）自己搭了"3 列 .h-col"布局，4 颗按钮全塞进最后一个
+             .h-col（块级，按钮各自成行）⇒ 行高 4×36+padding ≈ 168。
+             CSS grid 是**按顺序填轨道**的，少一个格子后面全部左移一列 ——
+             这张表的列还对不对得齐，居然取决于行的类型。
+          ② 分页尾巴穿了 class="hist-item" 的衣服，于是继承了 padding/边框/列网格，
+             看起来像第 61 条任务，还多出 67px 这一档行高。
+        契约：渲染出的每个 .hist-item 都必须恰好 append 5 个子元素，且动作在 .h-actions 里；
+              列表尾巴必须用 .hist-more，不许复用 .hist-item。
+        """
+        # ① lightTaskRow 必须 5 格 + 动作进 .h-actions
+        #    （取"函数开头 → 下一个顶层函数"之间的整段；按字数切片会在函数变长时截断，
+        #      于是断言看着在、其实量的是空气）
+        i = self.src.index("function lightTaskRow(h)")
+        j = self.src.index("async function exportScoreById", i)
+        body = self.src[i:j]
+        self.assertIn("d.appendChild(col); d.appendChild(st); d.appendChild(sum);", body,
+                      "lightTaskRow 没有铺满 5 个格子（后面几列会整体左移）")
+        self.assertIn("d.appendChild(meta); d.appendChild(acts);", body,
+                      "lightTaskRow 少了元信息格或操作格")
+        self.assertIn('acts.className = "h-actions"', body,
+                      "lightTaskRow 的按钮没有进 .h-actions（会失去右对齐/定宽/不撑宽三条规矩）")
+        # 不许再出现"把按钮塞进 .h-col"的老写法
+        self.assertNotIn('acts.className = "h-col"', body,
+                         "lightTaskRow 又用 .h-col 当操作容器了（块级里按钮会各自成行）")
+        # ② 列表尾巴必须有自己的类
+        self.assertIn('more.className = "hist-more"', self.src,
+                      "「加载更多」没有用 .hist-more（会继承 .hist-item，多出一种行高）")
+        self.assertNotIn('more.className = "hist-item"', self.src,
+                         "「加载更多」又穿 .hist-item 的衣服了")
+        m = re.search(r"\.hist-more\s*\{([^}]*)\}", self.head)
+        self.assertIsNotNone(m, "找不到 .hist-more 规则")
+        self.assertIn("justify-content: center", m.group(1),
+                      "列表尾巴没有居中（它不是一行数据）")
+        # ③ 操作簇要容得下 4 颗按钮：236 − 3×gap(6) = 218 ⇒ 每颗上限 54.5
+        mb = re.search(r"\.hist-item \.h-actions > button\s*\{([^}]*)\}", self.head)
+        self.assertIsNotNone(mb, "找不到操作按钮规则")
+        minw = int(re.search(r"min-width:\s*(\d+)px", mb.group(1)).group(1))
+        self.assertLessEqual(minw, 54,
+                             "操作按钮 min-width=%dpx，4 颗放不进 236px 的簇"
+                             "（4×%d+3×6=%d > 236，nowrap 会溢出到下一列）"
+                             % (minw, minw, minw * 4 + 18))
+
+    def test_hist_action_cluster_is_right_pinned(self):
+        """操作列必须定宽右对齐，按钮不得随文案撑宽整簇。
+
+        实测：旧实现操作簇右边界在第 1 行 x=1852、第 8 行 x=1445（差 407px），
+        "▶ 播放"(77px) 与 "▶ 成品（带伴奏）"(142px) 让整簇宽度在 78~239 之间跳，
+        鼠标要追着按钮跑。改后：每行右边界恒为 1852。
+        """
+        m = re.search(r"\.hist-item \.h-actions\s*\{([^}]*)\}", self.head)
+        self.assertIsNotNone(m, "找不到 .h-actions 规则")
+        rule = m.group(1)
+        self.assertIn("justify-content: flex-end", rule, "操作簇没有右对齐")
+        self.assertIn("flex-wrap: nowrap", rule, "操作簇会换行，行高随之变化")
+        # 按钮按内容自然宽（flex-grow:0），不能 flex:1 均分（会把"▶ 播放"拉成横条）。
+        # shrink 允许 1：一簇要容下 4 颗（乐谱行）时，差几像素靠一起收，
+        # 而不是让整簇溢出到下一列（min-width 有下限兜底，不会塌成看不见）。
+        bm = re.search(r"\.hist-item \.h-actions > button\s*\{([^}]*)\}", self.head)
+        self.assertIsNotNone(bm, "找不到操作按钮规则")
+        br = bm.group(1)
+        self.assertRegex(br, r"flex:\s*0\s+[01]\s+auto",
+                         "按钮被拉宽了（flex-grow:1 均分会把短标签拉成横条）")
+        self.assertIn("text-overflow: ellipsis", br, "长标签没有 ellipsis 收口")
+
+    def test_control_height_decoupled_from_font_size(self):
+        """控件高度必须由 height 给定，不能靠"字号 + 上下 padding"累加。
+
+        用户原话："整个3081端口的页面你再好好打磨，主要是布局，元素间的对齐和间隔。"
+
+        实测（1920x1174，跨 9 个页面统计）：旧实现
+          · .ghost 高度 ∈ {26,36,37,38}（应为两档：次级 / 主要）
+          · input ∈ {34,37}、primary ∈ {37,38}、select = 39
+        根因是 `min-height:36px; padding:9px 17px`：内容盒高 = padding + 行盒，
+        而行盒跟着 font-size 走 —— 13px 的 37px、12px 的 36px、带 svg 的又不同。
+        同一排"标签 + 输入 + 按钮"三个控件三种高度，一眼就是没对齐。
+
+        契约：主要档 36 / 次级档 28（btn-sm 与 btn-xs 同为次级；"微级 26" 已废除
+        —— 26 与 28 差 2px 谁也看不出，却让"数档位"这件事多出一个值），一律用 height 钉死。
+        """
+        # 基础按钮
+        m = re.search(r"\.primary, \.ghost, \.danger\s*\{([^}]*)\}", self.head)
+        self.assertIsNotNone(m, "找不到按钮基础规则")
+        base = m.group(1)
+        self.assertIn("height: 36px", base, "按钮主要档没有用 height 钉死（会随字号变高）")
+        self.assertNotIn("padding: 9px", base, "按钮又回到 padding 累加高度的写法了")
+        # 次级/微级也必须用 height（min-height 小于基础 height 时不生效）
+        self.assertIn(".btn-sm { padding: 0 11px !important; height: 28px !important;", self.head,
+                      ".btn-sm 必须用 height 覆盖（min-height 盖不住 height:36px）")
+        self.assertIn(".btn-xs { padding: 0 10px !important; height: 28px !important;", self.head,
+                      ".btn-xs 必须用 height 覆盖（并与 .btn-sm 同为次级档 28）")
+        # 单行输入控件
+        m2 = re.search(r'input:not\(\[type="checkbox"\]\)[^{]*\{([^}]*)\}', self.head)
+        self.assertIsNotNone(m2, "找不到单行 input 的高度规则")
+        self.assertIn("height: 36px", m2.group(1),
+                      "单行 input 没有钉死高度（select 会被 UA 内边距撑到 39px）")
+        self.assertIn("select { cursor: pointer; height: 36px;", self.head,
+                      "select 没有钉死高度")
+        # textarea 是唯一允许"高度表达内容量"的控件，必须保留 padding 累加
+        m3 = re.search(r"textarea \{ min-height: 84px;([^}]*)\}", self.head)
+        self.assertIsNotNone(m3, "textarea 基础规则不见了")
+        self.assertNotIn("height: 36px", m3.group(1),
+                         "textarea 被钉死成单行高了——它是多行控件，高度就是'这里写多少'")
+
+    def test_button_height_has_exactly_two_tiers(self):
+        """按钮高度必须恰好两档：主要 36 / 次级 28。
+
+        实测（1920x1174，跨 9 个页面把所有 button.ghost 量一遍）：
+        改造前 ∈ {26,36,37,38}，把 .btn-xs 从 26 收到 28、并修掉
+        `.model-now .ghost{height:26px}` 之后 ∈ {28,36}，两档。
+
+        ★ 这条规矩的意义就是"一眼能数清"。26 和 28 差 2px 谁也看不出，
+          但工具量得出来、后人得重新判断哪个才对 —— 多出来的第 3 档把规矩破了。
+        """
+        hs = set()
+        for m in re.finditer(r"(?:^|[,\s])\.?[\w-]*[^{}]*\{[^{}]*height:\s*(\d+)px[^{}]*\}", self.head):
+            pass  # 宽匹配不用，下面精确取
+        # 精确取三个按钮档位
+        base = re.search(r"\.primary, \.ghost, \.danger\s*\{[^}]*height:\s*(\d+)px", self.head)
+        sm = re.search(r"\.btn-sm\s*\{[^}]*height:\s*(\d+)px", self.head)
+        xs = re.search(r"\.btn-xs\s*\{[^}]*height:\s*(\d+)px", self.head)
+        self.assertIsNotNone(base, "按钮基础档没有 height")
+        self.assertIsNotNone(sm, ".btn-sm 没有 height")
+        self.assertIsNotNone(xs, ".btn-xs 没有 height")
+        tiers = {int(base.group(1)), int(sm.group(1)), int(xs.group(1))}
+        self.assertEqual(tiers, {28, 36},
+                         "按钮高度档位应恰好是 {28, 36}（次级/主要），实际 %s" % sorted(tiers))
+        # 不允许再有第三档的按钮高度散落在别处
+        #
+        # ★ 关键：选择器必须"整体都是按钮"，不能只看含不含 ghost/btn-
+        #   —— `.primary svg, .ghost svg, .danger svg { height:14px }` 里的 14px 是
+        #   **图标尺寸**（svg 的行高不是按钮的行高）。只要选择器里有一个 svg/icon 子选择器，
+        #   这条规则管的就是图标而不是按钮本体，整条跳过。
+        #   同一个坑的另一种写法：`.m-actions button svg`。判定口径统一为"扫选择器的每一段
+        #   复合选择器，只要某一段的末位是 svg/img/i，就认为该段是图标尺寸"。
+        ICON_TAIL = re.compile(r"(?:^|[\s>+~])(svg|img)\s*$")
+        stray = []
+        for m in re.finditer(r"([.:#][\w.#>-]*[^{}]*)\{([^{}]*)\}", self.head):
+            sel, body = m.group(1), m.group(2)
+            if "ghost" not in sel and "btn-" not in sel:
+                continue
+            # 逐段（按逗号）判断：任何一段落在图标上，该段就不算按钮高度
+            for part in sel.split(","):
+                part = part.strip()
+                if not part or ICON_TAIL.search(part):
+                    continue
+                # 该段必须真的是按钮本体（最后一段含 .ghost/.btn-*），否则不算
+                tail = part.split()[-1].split(">")[-1].split("+")[-1].split("~")[-1].strip()
+                if "ghost" not in tail and "btn-" not in tail:
+                    continue
+                for hm in re.finditer(r"(?<!min-)height:\s*(\d+)px", body):
+                    v = int(hm.group(1))
+                    if v not in (28, 36):
+                        stray.append("%s → height:%dpx" % (part[:50], v))
+        self.assertEqual(stray, [], "按钮出现了第三档高度：" + "、".join(stray))
+
+    def test_short_pages_fill_the_viewport(self):
+        """内容偏短的页面（⑫设置/⑬关于/⑦音色制作/⑧音色库）必须把版面撑满。
+
+        用户原话："整个3081端口的页面你再好好打磨，主要是布局，元素间的对齐和间隔。"
+
+        实测（1920x1174）：⑬ 内容底 439px、视口 1174px —— **底下 685px 全空**；
+        ⑫ 空 547px、⑧ 空 417px、⑦ 空 385px。留白在框内是设计，在框外是"没做完"。
+
+        契约：这四个页面的主网格必须有一份 min-height（用纵向令牌算，不许魔法数）。
+        """
+        self.assertIn(".grid.settings:not(.compose), .grid.page-fill:not(.compose)", self.head,
+                      "短页撑满的规则不见了")
+        i = self.head.index(".grid.settings:not(.compose)")
+        chunk = self.head[i:i + 320]
+        self.assertIn("min-height:", chunk + self.head[i - 200:i + 320],
+                      "短页没有 min-height")
+        self.assertIn("var(--pagehead-h)", chunk + self.head[i - 200:i + 320],
+                      "短页高度没有用纵向令牌算（又写魔法数了）")
+        # 这四个页面真的挂了类
+        for cls in ['class="grid page-fill" id="voicePaneRvc"', 'class="grid page-fill"']:
+            self.assertIn(cls, self.src, "⑦/⑧ 没有挂 page-fill 类：%s" % cls)
+        # ★ 例外：关于页内容天然偏短且两列悬殊（646 / 317px），撑满会把两张卡片一起
+        #   拉到 1000px，卡片内空出 210 / 540px。它改为"贴合内容 + 整块居中"。
+        self.assertIn(".grid.grid-about:not(.compose)", self.head,
+                      "关于页的撑满例外不见了（会被重新拉到卡片内一大片空）")
+        self.assertIn("align-items: start", self.head,
+                      "关于页的列没有改成贴合内容")
+
+    def test_vertical_budget_is_a_single_source(self):
+        """纵向预算必须只有一份：main 的内边距 = compose 栏高公式减掉的那些。
+
+        用户原话："整个3081端口的页面你再好好打磨，主要是布局，元素间的对齐和间隔。"
+
+        实测（1920x1174）：改造前 main 底部 padding = dock-h + sp-8 = 82px，
+        而 .grid.compose .pane 的高度按 `100vh - sp-6 - pagehead - dock-h - pane-gap` 算 ——
+        两侧对"底部留多少"各持一套口径，于是 ①②③④⑤ 每页都高出视口 11px，
+        逼出一条纵向滚动条；滚动条宽 10px，把可用宽度从 1920 压到 1910，
+        而居中块(max-width:1680;margin:auto)因此左右各收 5px
+        → ⑥ 的标题 x=115、其余页 x=120。翻页时标题**横向跳 5px**，这就是"没对齐"的真身。
+
+        契约：① main 的下内边距 与 pane 高度公式里的下边距项必须一致；
+              ② html 上必须有 scrollbar-gutter: stable（滚动条的"有无"由内容决定，
+                 布局绝不能依赖它 —— 预留通道，宽度才恒定）。
+        """
+        # ① main 的下内边距（注意文件里有多个 main 规则：动画/侧栏/窄屏都各有一条，
+        #    要取"带 calc(--dock-h ...)"那条，即主区那条）
+        m = re.search(r"\n  main \{[^}]*padding:[^;]*calc\(var\(--dock-h\) \+ var\((--sp-\d)\)\)[^}]*\}", self.head)
+        self.assertIsNotNone(m, "找不到主区 main 的 padding 规则（应由「坞高 + 间距令牌」构成）")
+        main_pad = m.group(0)
+        tok = m.group(1)
+        # ② pane 高度公式里的下边距项必须引用同一个令牌
+        #    （calc 里嵌 var()，正则数括号太脆；直接取 height: calc( 之后到 "));" 的那一段）
+        p = re.search(r"\.grid\.compose \.pane \{[^}]*height:\s*calc\((.*?)\);\s*\}", self.head, re.S)
+        self.assertIsNotNone(p, "找不到 compose 栏高公式")
+        formula = p.group(1)
+        self.assertIn("var(--dock-h)", formula, "栏高公式没有减掉坞高")
+        self.assertIn("var(%s)" % tok, formula,
+                      "栏高公式的下边距项(%s)与 main 的下内边距不一致 —— "
+                      "两侧口径一分家，页面就会比视口高/矮几像素，凭空长滚动条" % tok)
+        self.assertIn("var(--pagehead-h)", formula, "栏高公式没有减掉页头高")
+        # ③ 滚动条通道必须固定预留
+        self.assertRegex(self.head, r"html \{[^}]*scrollbar-gutter:\s*stable",
+                         "html 上没有 scrollbar-gutter: stable —— "
+                         "滚动条的有无会改写可用宽度，居中块随之左右跳")
+
+    def test_history_list_scrolls_internally(self):
+        """任务管理列表必须自身滚动，让筛选栏永远钉在顶部。
+
+        用户原话："「任务管理」的UI还是太过乱了，作为用户，不便于浏览、筛选。"
+
+        实测：旧实现列表自然生长（30 条 = 2430px），页面整体滚 —— 筛选栏一滚就没了，
+        换筛选条件要先滚回顶部。现在列表封顶到剩余视口高、自己滚：
+        clientH=822 而 scrollH=2428，滚到底筛选栏仍在 y=151（filterStayed=true）。
+        """
+        m = re.search(r"\.row-list\.page-fill-list\s*\{([^}]*)\}", self.head)
+        self.assertIsNotNone(m, "找不到 .page-fill-list 规则")
+        r = m.group(1)
+        self.assertIn("max-height:", r, "列表没有封顶，会撑长整页")
+        self.assertIn("overflow-y: auto", r, "列表没有自身滚动")
+        self.assertIn("var(--pagehead-h)", r, "列表上限没有用纵向令牌算")
+        self.assertIn("max(240px,", r, "列表上限没有兜底，矮窗口会压成一条缝")
+        self.assertIn('class="row-list page-fill-list" id="histList"', self.src,
+                      "⑪ 的列表没有挂 page-fill-list 类")
+
+    def test_preset_row_label_shares_the_chip_line_box(self):
+        """「快捷预设行」的行首小标题必须和后缀芯片同一条行盒/同一中线。
+
+        用户原话："整个3081端口的页面你再好好打磨，主要是布局，元素间的对齐和间隔。"
+
+        实测（1920x1174，⑦ 变调快捷行）：`.preset-row{align-items:center}` 里放一个
+        19px 的行内 <span> 和四颗 28px 的 .btn-sm，结果是"各自居中" ——
+        两段文字中线差 4~5px，`sameRowY` 量出 2 个不同的 y。肉眼一眼就是没对齐。
+
+        契约：行首维度标签一律 `.row-label`（inline-flex + 固定 28px 行盒 + 文字垂直居中），
+        于是它与 .btn-sm 是同一档高度，中线天然重合，不靠猜 padding。
+        """
+        m = re.search(r"\.preset-row > \.row-label\s*\{([^}]*)\}", self.head)
+        self.assertIsNotNone(m, "找不到 .preset-row > .row-label 规则")
+        r = m.group(1)
+        self.assertIn("display: inline-flex", r, "行首标签不是行盒，会和芯片各居其位")
+        self.assertIn("align-items: center", r, "行首标签内的文字没有垂直居中")
+        self.assertIn("height: 28px", r,
+                      "行首标签的高度不等于次级档 28px，中线对不上 .btn-sm")
+        self.assertIn("flex: none", r, "行首标签会被压缩换行")
+        # 预设行里不许再留裸的 .t-sm 行首标签（会退回 19px 行盒）
+        rows = re.findall(r'<div class="preset-row"[^>]*>(.*?)</div>', self.src, re.S)
+        self.assertTrue(rows, "找不到任何 preset-row")
+        for body in rows:
+            for lm in re.finditer(r'<span class="([^"]*)"', body):
+                cls = lm.group(1)
+                self.assertNotIn("t-sm", cls.split(),
+                                 "预设行里还有裸 .t-sm 行首标签，高度会对不齐：%s" % cls)
+                self.assertIn("row-label", cls.split() or [],
+                              "预设行行首标签没有挂 .row-label：%s" % cls)
+
+    def test_ailab_height_is_layout_derived_not_a_magic_number(self):
+        """⑬-AI 工作台的 100vh 扣减不许再写魔法数，必须由 flex 列自己算出来。
+
+        实测（1920x1174，#ailab）：`.ai-frame-wrap{height:calc(100vh - 190px)}` 算出 984px，
+        但这一页的真实 chrome 开销是 216px（main 顶距 20 + 页头外框 + 上方 .sec 的 24/12 上下 margin
+        + 播放坞让位 62）—— 写 190 少算了 26px。后果：整页 1200px > 视口 1174px，
+        13 个页签里**只有这一页**长出滚动条；又因为全站加了 `scrollbar-gutter: stable`，
+        别的页不跳、只有它跳，反而更显眼。
+
+        契约：#tab-ailab 是 flex 列 + 定高（只扣 main 的上下 padding 与播放坞让位），
+        .ailab-grid 用 flex:1 吃掉剩余高度，具体数值交给浏览器。加减任何一段 chrome
+        都不需要再回来改这个算式。
+        """
+        m = re.search(r"#tab-ailab\s*\{([^}]*)\}", self.head)
+        self.assertIsNotNone(m, "找不到 #tab-ailab 规则")
+        r = m.group(1)
+        self.assertIn("display: flex", r,
+                      "#tab-ailab 不是 flex 列，.ailab-grid 无法吃掉剩余高度")
+        self.assertIn("flex-direction: column", r, "#tab-ailab 的 flex 方向不是列")
+        self.assertIn("height: calc(100vh", r, "#tab-ailab 没有按视口定高")
+        # 只拦"真的拿来当 100vh 扣减"的魔法数 —— 那是这个 bug 的形状。
+        # 不能裸查 "190px"：注释里会引用旧值说明来由，别处也可能有无关的 max-width:190px。
+        self.assertNotRegex(
+            re.sub(r"/\*[\s\S]*?\*/", "", self.head),
+            r"100vh\s*-\s*\d+px",
+            "还有 `calc(100vh - <字面数>px)` 残留 —— 裸数字迟早算错，"
+            "必须改用 --dock-h / --pagehead-h / --sp-* 令牌或 flex 列",
+        )
+        # 显示态必须是 flex —— switchTab 用内联 display 切换，写 none 这页就永远出不来
+        self.assertNotIn("display: none", r,
+                         "#tab-ailab 写成 display:none 会让该页永远显示不出来"
+                         "（switchTab 显示时把内联 display 置空，会回落到这条规则）")
+        g = re.search(r"#tab-ailab \.ailab-grid\s*\{([^}]*)\}", self.head)
+        self.assertIsNotNone(g, "找不到 #tab-ailab .ailab-grid 规则")
+        self.assertIn("flex: 1", g.group(1), ".ailab-grid 没有吃掉剩余高度")
+
+    def test_footer_hint_truncation_leaves_a_trace(self):
+        """页脚说明被截断时必须留下痕迹（省略号 + title），不许无声丢字。
+
+        实测（1920x1174，① Style 装配栏）：`.pane-foot .hint-xs` 原来写
+        `-webkit-line-clamp:1; overflow:hidden` —— 既没有省略号、也没有 title。
+        那条 38px 的文案被压进 19px 的盒子，后半句（"那两页也各自留了曲风输入框…"）
+        **整段消失**，用户只看到半句话。这正是设计系统禁止的"元素莫名消失"。
+
+        契约：单行 + text-overflow:ellipsis（可见的截断痕迹），
+        并由 syncFootHintTitles() 在真的被截断时把完整文案挂到 title 上。
+        """
+        m = re.search(r"\.pane-foot \.hint-xs\s*\{([^}]*)\}", self.head)
+        self.assertIsNotNone(m, "找不到 .pane-foot .hint-xs 规则")
+        r = m.group(1)
+        self.assertIn("text-overflow: ellipsis", r, "截断没有省略号，看不出被截了")
+        self.assertIn("white-space: nowrap", r, "不是单行截断，行高会随文本换行膨胀")
+        self.assertIn("overflow: hidden", r, "没有裁剪掉溢出部分")
+        self.assertNotIn("-webkit-line-clamp", r,
+                         "还在用 line-clamp —— 它不带省略号也不带 title，是无声截断")
+        # 必须有自动挂 title 的兜底，并且真的做了"赋值 title"这件事 ——
+        # 只查函数名存在是不够的：把函数体掏空、调用点留着，名字照样在，功能却没了。
+        fm = re.search(r"function syncFootHintTitles\(\)\s*\{([\s\S]*?)\n\}", self.src)
+        self.assertIsNotNone(fm, "没有 syncFootHintTitles()，被截断的文案无法通过悬停读全")
+        body = fm.group(1)
+        self.assertIn(".pane-foot .hint-xs", body, "syncFootHintTitles 没在管页脚 hint")
+        self.assertRegex(body, r"\.title\s*=", "syncFootHintTitles 没有真的挂 title")
+        self.assertIn("scrollWidth", body, "syncFootHintTitles 没有判定是否真的被截断")
+        self.assertRegex(self.src, r"syncFootHintTitles\(\)[\s\S]{0,400}addEventListener\(\"resize\"",
+                         "syncFootHintTitles 没有跟随 resize 重算（栏宽变化会改变截断与否）")
 
 
 if __name__ == "__main__":
