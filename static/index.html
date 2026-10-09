@@ -5664,7 +5664,7 @@ async function fetchExtraTasks() {
     if (b && b.running && !histQueuePoll) {
       histQueuePoll = setInterval(() => {
         if (curTab !== "history") { clearInterval(histQueuePoll); histQueuePoll = null; return; }
-        renderHistory();
+        renderHistory(120);
       }, 5000);
     }
   } catch {}
@@ -5693,9 +5693,10 @@ async function fetchExtraTasks() {
   return out;
 }
 
-async function renderHistory() {
+async function renderHistory(fetchLimit) {
   try {
-    const r = await fetch("/api/generate/list");
+    // 审计 C-T2：队列轮询时只需头部若干条（一屏 60 行），传 fetchLimit 减少每 5s 全量拉 1000 条的开销
+    const r = await fetch("/api/generate/list" + (fetchLimit ? "?limit=" + fetchLimit : ""));
     const j = await r.json();
     let list = Array.isArray(j.items) ? j.items : [];
     // 队列 + 活跃条目并入统一列表（按 id 去重：历史里已完结的优先）

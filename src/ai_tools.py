@@ -60,7 +60,23 @@ def tool_generate(style: str, lyrics: str, cot: str = "full",
     if cur and cur.get("status") == "running":
         return {"error": "已有生成任务进行中（id " + str(cur.get("id")) + "），请先等它完成"}
     r = asyncio.run(gw.generate_start(payload))
-    return {"ok": True, "job_id": r["job"]["id"], "count": r.get("count", 1),
+    # generate_start 响应里不再返回 job（避免凭空烧一个不会运行的 ID），
+    # 任务 id 由真实线程登记，从 /generate/current 取（蓝军 B-T1）。
+    if r.get("error"):
+        return {"error": str(r["error"])}
+    cur = gw._gen_get_job() or {}
+    job_id = cur.get("id")
+    if not job_id:
+        # 线程尚未登记（或提交失败），退回 /generate/current 兜底一次
+        try:
+            cur2 = asyncio.run(gw.generate_current())
+            job_id = ((cur2.get("job") or {}).get("id")) or ((cur2.get("latest") or {}).get("id"))
+        except Exception:
+            pass
+    if not job_id:
+        return {"ok": True, "count": r.get("count", 1),
+                "hint": "生成已提交但任务 id 尚未登记，稍后用 tool_get_progress 查询进度"}
+    return {"ok": True, "job_id": job_id, "count": r.get("count", 1),
             "hint": "生成已提交，用 tool_get_progress 查询进度；full/32步 长词约 60-90 分钟"}
 
 

@@ -91,14 +91,30 @@ def ai_web(request: Request):
 
     log = Path(__file__).parent.parent / "dsh-plugin" / "_dsh_web.log"
 
+    _TOKEN_RE = rf"http://127\.0\.0\.1:{DSH_PORT}/\?token=([A-Za-z0-9_\-]+)"
+
+    def _redact(tok: str) -> None:
+        """审计 B-T3：日志里的 token 明文是"门票"，任何能读文件的本地进程都能取用。
+        读取侧拿到 token 后立即把文件中的明文抹掉（保留 URL 骨架便于排障）。"""
+        try:
+            txt = log.read_text(encoding="utf-8", errors="replace")
+            red = re.sub(_TOKEN_RE, rf"http://127.0.0.1:{DSH_PORT}/?token=***redacted***", txt)
+            if red != txt:
+                log.write_text(red, encoding="utf-8")
+        except Exception:
+            pass
+
     def _read_token() -> str | None:
         if not log.is_file():
             return None
         # 取**最后**一条：日志可能被两条链路写（拉起脚本每次截断重写、本模块以 "ab"
         # 追加），旧 token 留在前面。返回第一个匹配会把用户引到上一次会话的地址上。
-        hits = re.findall(rf"http://127\.0\.0\.1:{DSH_PORT}/\?token=[A-Za-z0-9_\-]+",
-                          log.read_text(encoding="utf-8", errors="replace"))
-        return hits[-1] if hits else None
+        hits = re.findall(_TOKEN_RE, log.read_text(encoding="utf-8", errors="replace"))
+        if hits:
+            tok = hits[-1]
+            _redact(tok)
+            return f"http://127.0.0.1:{DSH_PORT}/?token={tok}"
+        return None
 
     def _alive() -> bool:
         import httpx
@@ -256,6 +272,12 @@ def ai_chat(body: ChatBody):
         raise HTTPException(status_code=500, detail="dsh runner 不存在（dsh-plugin/src/runner.mjs）")
 
     task = _task_from_session(sid, body.message.strip(), body.confirm)
+    # 审计 B-T6：Windows CreateProcess 命令行上限约 32K 字符，超限会直接
+    # CreateProcess 失败并报成 502"dsh 内核失败"，误导排查——前置校验给可读错误。
+    if len(task) > 30000:
+        raise HTTPException(status_code=400,
+                            detail="消息过长（含注入的对话历史共 %d 字符，上限 30000）。"
+                                   "请缩短本条消息或开新会话减少历史" % len(task))
     try:
         r = subprocess.run(
             ["node", str(DSH_RUNNER), task],

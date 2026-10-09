@@ -1608,13 +1608,18 @@ def history_audio(rid: str):
     fp = HIST_DIR / fn
     if not fp.is_file():
         raise HTTPException(status_code=404, detail="audio file missing")
-    return Response(content=fp.read_bytes(), media_type="audio/wav")
+    # FileResponse 流式返回 + 自带 Range 支持（审计 P-1：整文件读内存有并发峰值）
+    return FileResponse(str(fp), media_type="audio/wav")
 
 
 @router.delete("/history/clear")
 def history_clear():
     for i in _hist_read():
-        (HIST_DIR / i.get("file", "")).unlink(missing_ok=True)
+        # 审计 S-3：history.json 可被篡改，file 字段需 containment 校验，防删任意文件
+        fn = os.path.basename(str(i.get("file", "")).replace("\\", "/"))
+        fp = (HIST_DIR / fn).resolve()
+        if fn and fp.parent == HIST_DIR.resolve() and fp.is_file():
+            fp.unlink(missing_ok=True)
     _hist_write([])
     return {"ok": True}
 
@@ -1628,7 +1633,11 @@ def history_delete(rid: str):
         raise HTTPException(status_code=404, detail="not found")
     for gone in items:
         if gone["id"] == rid:
-            (HIST_DIR / gone.get("file", "")).unlink(missing_ok=True)
+            # 审计 S-3：与 clear 同样的 containment 校验
+            fn = os.path.basename(str(gone.get("file", "")).replace("\\", "/"))
+            fp = (HIST_DIR / fn).resolve()
+            if fn and fp.parent == HIST_DIR.resolve() and fp.is_file():
+                fp.unlink(missing_ok=True)
     _output_purge(rid)   # 逐字歌词 .lrc/.elrc 与歌词 txt 落在 output/，不清就是孤儿
     _hist_write(keep)
     return {"ok": True}
@@ -2311,14 +2320,18 @@ def generate_current():
 
 
 @router.get("/generate/list")
-def generate_list():
+def generate_list(limit: int = 1000):
+    # 审计 C-T2：队列轮询只看头部几条，支持 ?limit= 减少每次传输/解析量
+    limit = max(1, min(int(limit), 1000))
     items = []
     if OUTPUT_DIR.is_dir():
         for p in sorted(OUTPUT_DIR.glob("*.json"), reverse=True):
             m = _output_read_meta(p.stem)
             if m:
                 items.append(m)
-    return {"items": items[:1000]}
+            if len(items) >= limit:
+                break
+    return {"items": items[:limit]}
 
 
 @router.get("/generate/audio/{rid}")
@@ -2327,7 +2340,8 @@ def generate_audio(rid: str):
     fp = _output_wav_path(rid)
     if not fp.is_file():
         raise HTTPException(status_code=404, detail="audio not found")
-    return Response(content=fp.read_bytes(), media_type="audio/wav")
+    # FileResponse 流式返回 + 自带 Range 支持（审计 P-1：整文件读内存有并发峰值）
+    return FileResponse(str(fp), media_type="audio/wav")
 
 
 @router.get("/generate/lyrics/{rid}")
@@ -8225,6 +8239,9 @@ def _rvc_autoresume_gate(job: dict, jp: Path) -> str | None:
 
 
 def _orphan_cleanup_on_startup() -> None:
+    # 审计 B-T7：自动续跑训练虽有三道闸，但"半夜维护重启网关会自动复活 GPU 训练数小时"
+    # 可能违背用户预期——提供 YUE2_AUTO_RESUME=0 一键关闭（默认保持原有行为）。
+    auto_resume_enabled = os.environ.get("YUE2_AUTO_RESUME", "").strip().lower() not in ("0", "false", "off", "no")
     # 1) output/ 元数据（生成/批量/换声/训练的归档记录）
     if OUTPUT_DIR.is_dir():
         for p in OUTPUT_DIR.glob("*.json"):
@@ -8301,6 +8318,10 @@ def _orphan_cleanup_on_startup() -> None:
     # 死因归档进 last_error、暂停标志复位，一处逻辑不分两条。只接最近的那个：GPU 只有一
     # 张卡，多接等于排队时互相抢闸门。
     for _mtime, rid in sorted(resumable, reverse=True)[:1]:
+        if not auto_resume_enabled:
+            # YUE2_AUTO_RESUME=0：不自动接回（job.json 已标"任务中断"），等用户手动续跑
+            print("[startup] YUE2_AUTO_RESUME=0，跳过训练任务自动续跑（可手动 ↻ 续跑）")
+            return
         try:
             j = rvc_train_resume(rid)
             rec = _rvc_train_read(rid)
