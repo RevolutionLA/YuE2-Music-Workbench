@@ -2232,6 +2232,7 @@ We will sing beyond the night</textarea>
         <div class="hf-right">
           <input id="histSearch" class="t-sm" placeholder="搜任务名 / 曲风 / 任务 ID" />
           <button class="ghost btn-sm" id="batchResume" style="display:none;" title="把意外终止/已停止/失败的队列任务重新入队继续执行">▶ 一键继续</button>
+          <button class="danger btn-sm" id="batchStop" style="display:none;" title="只停批量队列：正在算的这条会跑完，未开始的标为已取消（之后可用「一键继续」全部复位）">⏹ 停止队列</button>
           <span id="queueBar" class="hf-queue"></span>
         </div>
       </div>
@@ -5094,10 +5095,10 @@ function setGenerating(on) {
 
 // ---------- 用户主动终止当前生成/连发任务（网关不停，引擎下次生成自动重启） ----------
 $("stopGen").onclick = async () => {
-  if (!confirm("确定终止当前任务？正在生成的这首会被丢弃（不保存），连发/批量队列后续任务全部取消。")) return;
+  if (!confirm("确定终止当前任务？\n正在生成的这一条会被丢弃（不保存）。\n批量队列里其它任务不受影响，会接着跑下一条；要把整条队列停下，去 ⑪ 任务管理按「⏹ 停止队列」。")) return;
   $("stopGen").disabled = true;
   try {
-    const r = await fetch("/api/generate/stop", { method: "POST" });
+    const r = await fetch("/api/generate/stop?scope=current", { method: "POST" });
     const j = await r.json();
     if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
     setGenerating(false);
@@ -5656,6 +5657,10 @@ async function fetchExtraTasks() {
     const un = (b && b.items || []).filter(x => ["pending", "running", "error", "cancelled"].includes(x.status)).length;
     const resumeBtn = $("batchResume");
     if (resumeBtn) resumeBtn.style.display = b && !b.running && un > 0 ? "" : "none";
+    // 「⏹ 停止队列」只在队列正在跑时出现：它停的是"下一条不再开始"，
+    // 与「终止任务」（掐掉正在算的这条）是两件事，别让用户猜
+    const stopQBtn = $("batchStop");
+    if (stopQBtn) stopQBtn.style.display = b && b.running ? "" : "none";
     it0.forEach(it => {
       const p = it.payload || {};
       out.push({
@@ -5881,12 +5886,14 @@ async function renderHistory(fetchLimit) {
         e.stopPropagation();
         // 终止会丢掉已经算了一半的进度（这张卡跑一首要十几分钟），创作页那颗按钮有确认，
         // 历史页这颗没有——同一个动作两个入口不该两种手感
-        if (!confirm("终止这个正在跑的任务？\n已经算到一半的进度不会保留，也不会产出文件。")) return;
+        if (!confirm("终止这个正在跑的任务？\n已经算到一半的进度不会保留，也不会产出文件。\n只停这一条：批量队列里未开始的任务照常继续。")) return;
         sb.disabled = true;
         try {
-          const r = await fetch("/api/generate/stop", { method: "POST" });
+          const r = await fetch("/api/generate/stop?scope=current", { method: "POST" });
           if (!r.ok) throw new Error("终止失败");
-          toast("已请求终止，正在生成的任务将停止", "ok");
+          // 后端会回"还有 N 条待跑，会继续执行"——别让用户以为整条队列都没了
+          const j = await r.json().catch(() => ({}));
+          toast(j.message || "已请求终止，正在生成的任务将停止", "ok");
           setTimeout(renderHistory, 1200);
         } catch (err) { sb.disabled = false; toast(friendlyErr(err), "err"); }
       };
@@ -5895,8 +5902,8 @@ async function renderHistory(fetchLimit) {
         e.stopPropagation();
         rsBtn.disabled = true;
         try {
-          // 先终止当前执行，再把该条目复位为 pending 重新入队
-          await fetch("/api/generate/stop", { method: "POST" }).catch(() => {});
+          // 先终止当前执行（只停正在算的这一条，不动队列），再把该条目复位为 pending 重新入队
+          await fetch("/api/generate/stop?scope=current", { method: "POST" }).catch(() => {});
           const r = await fetch("/api/batch/retry", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: h.id }) });
           const j = await r.json();
           if (!r.ok || !j.ok) throw new Error(j.detail || j.message || "重启失败");
@@ -6149,6 +6156,18 @@ $("batchResume").onclick = async () => {
   try {
     const j = await (await jfetch("/api/batch/resume", { method: "POST" })).json();
     toast(j.message || "已恢复队列", "ok");
+    renderHistory();
+  } catch (e) { toast(friendlyErr(e), "err"); }
+  finally { btn.disabled = false; }
+};
+// 停止队列：正在算的这条会跑完，未开始的置为已取消（之后「一键继续」可全部复位）
+$("batchStop").onclick = async () => {
+  if (!confirm("停止批量队列？\n正在算的这一条会跑完；未开始的条目会标为已取消，之后点「▶ 一键继续」可全部复位重跑。\n只想掐掉正在算的这一条，请用「终止任务」。")) return;
+  const btn = $("batchStop");
+  btn.disabled = true;
+  try {
+    const j = await (await jfetch("/api/batch/stop", { method: "POST" })).json();
+    toast(j.message || "队列已停止", "ok");
     renderHistory();
   } catch (e) { toast(friendlyErr(e), "err"); }
   finally { btn.disabled = false; }

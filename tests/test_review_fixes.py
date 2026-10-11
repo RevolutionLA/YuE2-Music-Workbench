@@ -310,6 +310,255 @@ class TestQueueMigration(Sandbox):
         self.assertEqual(started, [1], "正常中断要照常续跑")
 
 
+class TestStopScope(Sandbox):
+    """「终止」的两种范围（2026-10-11 事故锁定）。
+
+    用户在 ⑪ 任务管理点掉正在跑的那一条，想丢掉的只是这一首；旧实现只有"全停"一种
+    范围，于是队列里另外几条（本机每条要跑 90 分钟）被一并标成 cancelled，而且强杀
+    引擎正好撞上显卡 nvlddmkm 153 故障，网关被拖死、看门狗击杀重启，一次点击丢一天。
+
+    锁定四件事：① scope=current 一个未开始的条目都不许动、队列继续跑；
+    ② scope=queue 保留原来的全停语义；③ 空闲时点终止不许动引擎、不留残余标志；
+    ④ worker 在只停一条时把下一条接着跑完，而不是收工。"""
+
+    IDS = ("20260101_000000_00000001", "20260101_000000_00000002",
+           "20260101_000000_00000003", "20260101_000000_00000004")
+
+    def setUp(self) -> None:
+        super().setUp()
+        import contextlib
+        self.kills: list[int] = []
+        self.job: dict | None = None
+        self._saved2 = (app._kill_audiocpp_now, app._gen_get_job, app._gen_set_job,
+                        app._output_write_meta, app._output_read_meta, app._GPU_SEM,
+                        app._gen_run, app._batch_ensure_worker)
+        app._kill_audiocpp_now = lambda: self.kills.append(1)
+        app._gen_get_job = lambda: self.job
+        app._gen_set_job = lambda j: None
+        app._output_write_meta = lambda m: None
+        app._output_read_meta = lambda rid: {"status": "done", "sec": 1.0}
+        app._batch_ensure_worker = lambda: None
+        # 测试绝不能去抢真机的 GPU 闸门：本机正在跑歌时这条用例要是排队等锁，
+        # 套件就会在别人的任务上挂住（也违反本文件"不触发任何计算"的前提）
+        app._GPU_SEM = contextlib.nullcontext()
+        app._clear_stop_flags()
+        self.client = TestClient(app.app, base_url=LOCAL_BASE)
+
+    def tearDown(self) -> None:
+        app._clear_stop_flags()
+        (app._kill_audiocpp_now, app._gen_get_job, app._gen_set_job,
+         app._output_write_meta, app._output_read_meta, app._GPU_SEM,
+         app._gen_run, app._batch_ensure_worker) = self._saved2
+        super().tearDown()
+
+    def _seed(self, first: str = "running") -> None:
+        """一条正在算 + 两条待跑 + 一条已完成；first=pending 用于 worker 用例。"""
+        items = [{"id": self.IDS[0], "qid": "q1", "name": "正在算的", "status": first,
+                  "payload": {}, "started_ts": "2026-01-01T00:00:00"},
+                 {"id": self.IDS[1], "qid": "q1", "name": "待跑甲", "status": "pending",
+                  "payload": {}},
+                 {"id": self.IDS[2], "qid": "q1", "name": "待跑乙", "status": "pending",
+                  "payload": {}},
+                 {"id": self.IDS[3], "qid": "q1", "name": "已完成", "status": "done",
+                  "payload": {}}]
+        app._batch_write({"name": "如诗", "qid": "q1", "running": True,
+                          "current": self.IDS[0] if first == "running" else None,
+                          "items": items})
+        if first == "running":
+            self.job = {"id": self.IDS[0], "status": "running"}
+
+    def _statuses(self) -> list[str]:
+        return [it["status"] for it in app._batch_read()["items"]]
+
+    def test_current_scope_leaves_untouched_items_alone(self):
+        self._seed()
+        r = self.client.post("/api/generate/stop?scope=current")
+        self.assertEqual(r.status_code, 200)
+        j = r.json()
+        self.assertEqual(self._statuses(), ["running", "pending", "pending", "done"],
+                         "只停当前这一条：未开始的条目一个都不许改（终态由 worker 落）")
+        self.assertTrue(app._batch_read()["running"], "队列还得继续跑下一条，running 不能被清")
+        self.assertEqual(j["queue_pending"], 2)
+        self.assertEqual(j["queue_cancelled"], 0)
+        self.assertIn("不受影响", j["message"], "回执要讲明白还剩几条会继续跑")
+        self.assertTrue(app._STOP_ONE_EVENT.is_set())
+        self.assertFalse(app._CANCEL_EVENT.is_set(), "只停一条不该把整条队列叫停")
+        self.assertEqual(self.kills, [1], "确有推理在跑才强杀引擎")
+
+    def test_queue_scope_keeps_the_old_blast_radius(self):
+        self._seed()
+        j = self.client.post("/api/generate/stop?scope=queue").json()
+        self.assertEqual(self._statuses().count("cancelled"), 3,
+                         "显式停队列时才把未开始的一并取消（可「一键继续」复位）")
+        self.assertFalse(app._batch_read()["running"])
+        self.assertTrue(app._CANCEL_EVENT.is_set())
+        self.assertEqual(j["queue_cancelled"], 3)
+
+    def test_idle_click_neither_kills_engine_nor_leaves_flags(self):
+        self._seed(first="pending")
+        self.job = None
+        j = self.client.post("/api/generate/stop?scope=current").json()
+        self.assertEqual(self.kills, [],
+                         "没东西在算就不该动引擎：本机强杀引擎撞上过 nvlddmkm 驱动故障")
+        self.assertFalse(app._STOP_ONE_EVENT.is_set(),
+                         "残留的中断标志会把下一条刚起跑的任务掐死")
+        self.assertFalse(app._CANCEL_EVENT.is_set())
+        self.assertEqual(self._statuses(), ["pending", "pending", "pending", "done"])
+        self.assertIn("当前没有正在执行的任务", j["message"])
+        self.assertEqual(j["queue_pending"], 3)
+
+    def test_unknown_scope_is_rejected(self):
+        self._seed()
+        self.assertEqual(self.client.post("/api/generate/stop?scope=everything").status_code, 400)
+
+    def test_stop_one_also_aborts_the_inflight_call(self):
+        app._STOP_ONE_EVENT.set()
+        self.assertTrue(app._stop_requested(), "只停一条同样要中断当前这次推理")
+        self.assertFalse(app._CANCEL_EVENT.is_set())
+        app._clear_stop_flags()
+        self.assertFalse(app._stop_requested())
+
+    def test_worker_runs_next_items_after_stop_one(self):
+        """正面证据：掐掉一条之后，队列里剩下的照常跑完，而不是整个收工。"""
+        self._seed(first="pending")
+        ran: list[str] = []
+
+        def fake_gen_run(job, payload):
+            ran.append(job["id"])
+            if len(ran) == 1:
+                app._STOP_ONE_EVENT.set()   # 模拟用户在第一条跑到一半时点「终止这一条」
+
+        app._gen_run = fake_gen_run
+        app._batch_run_worker()
+        self.assertEqual(ran, list(self.IDS[:3]), "第一条被掐掉后，第二、第三条要照常执行")
+        st = app._batch_read()
+        self.assertEqual([it["status"] for it in st["items"]],
+                         ["cancelled", "done", "done", "done"])
+        self.assertEqual(st["items"][0]["error"], "已由用户取消")
+        self.assertFalse(st["running"], "队列跑空后要自己收工")
+        self.assertFalse(app._STOP_ONE_EVENT.is_set(), "用完的中断标志必须清掉")
+
+    # ---- 启动自恢复（同一次事故的第二条链：任务一直挂"待跑"起不来） ---- #
+
+    def test_boot_resume_actually_starts_a_pending_queue(self):
+        """旧写法先 running=False 再拉 worker，而 worker 第一句就是"running 为假就退出"：
+        所谓自动续跑从来没生效过（10-11 实测：09:25 提交的一条重启后一直挂着待跑）。"""
+        app._batch_write({"name": "如诗", "qid": "q1", "running": False, "current": None,
+                          "items": [{"id": self.IDS[0], "qid": "q1", "status": "pending",
+                                     "payload": {}}]})
+        started: list[int] = []
+        app._batch_ensure_worker = lambda: started.append(1)
+        r = app._batch_boot_resume()
+        self.assertTrue(r["resumed"], "有待跑条目就得报告已续跑")
+        self.assertTrue(app._batch_read()["running"], "running 必须为真，否则 worker 一起来就退出")
+        self.assertEqual(started, [1])
+
+    def test_boot_resume_revives_a_stranded_running_item(self):
+        app._batch_write({"name": "如诗", "qid": "q1", "running": True, "current": self.IDS[0],
+                          "items": [{"id": self.IDS[0], "qid": "q1", "status": "running",
+                                     "payload": {}}]})
+        started: list[int] = []
+        app._batch_ensure_worker = lambda: started.append(1)
+        r = app._batch_boot_resume()
+        st = app._batch_read()
+        self.assertEqual(r["restored"], 1)
+        self.assertEqual(st["items"][0]["status"], "pending")
+        self.assertEqual(st["items"][0]["revive_n"], 1, "首次复活计数从 1 起")
+        self.assertTrue(st["running"])
+        self.assertEqual(started, [1])
+
+    def test_boot_resume_judges_crash_loop_dead_instead_of_looping(self):
+        """条目自己是崩溃诱因时：启动→复活→再崩→看门狗再拉回，整机无限陪葬。判据与
+        /batch/status 的自愈同一把尺，超上限就判死并且不再拉起 worker。"""
+        from datetime import datetime
+        app._batch_write({"name": "如诗", "qid": "q1", "running": True, "current": self.IDS[0],
+                          "items": [{"id": self.IDS[0], "qid": "q1", "status": "running",
+                                     "payload": {}, "revive_n": app._REVIVE_MAX,
+                                     "revive_ts": datetime.now().isoformat(timespec="seconds")}]})
+        started: list[int] = []
+        app._batch_ensure_worker = lambda: started.append(1)
+        r = app._batch_boot_resume()
+        st = app._batch_read()
+        self.assertEqual(r["judged_dead"], 1)
+        self.assertEqual(st["items"][0]["status"], "error")
+        self.assertIn("崩溃诱因", st["items"][0]["error"])
+        self.assertFalse(st["running"])
+        self.assertEqual(started, [], "判死的条目不能再拉起 worker")
+
+    def test_boot_resume_leaves_finished_queue_alone(self):
+        app._batch_write({"name": "如诗", "qid": "q1", "running": True, "current": None,
+                          "items": [{"id": self.IDS[3], "qid": "q1", "status": "done",
+                                     "payload": {}}]})
+        started: list[int] = []
+        app._batch_ensure_worker = lambda: started.append(1)
+        r = app._batch_boot_resume()
+        self.assertFalse(r["resumed"])
+        self.assertFalse(app._batch_read()["running"])
+        self.assertEqual(started, [])
+
+
+class TestVramPrecheckGuard(Sandbox):
+    """引擎自己占着的显存不算"显存不足"（2026-10-11 实测：看门狗重启网关后旧引擎仍在
+    CUDA 上常驻 4.4GB，预检只看到"空闲 245MB"，于是把整条队列降级到 CPU，
+    一首 99 分钟的活变成约 10 小时）。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._s = (app._ensure_backend, app._vram_ok_for_gpu, app._audiocpp_cuda_ready,
+                   app._restart_audiocpp, app._wait_backend_ready, app._gen_run_once,
+                   app._commit_free_mb, app.backend_mode, app._win_toast,
+                   app._output_write_meta, app._output_write_lyrics, app._lrc_build_async)
+        app._ensure_backend = lambda: None
+        app._commit_free_mb = lambda: 40000
+        app._wait_backend_ready = lambda *a, **k: True
+        app.backend_mode = lambda: "cuda"
+        app._win_toast = lambda *a, **k: None
+        app._output_write_meta = lambda m: None
+        app._output_write_lyrics = lambda *a, **k: None
+        app._lrc_build_async = lambda rid: None
+        # 预检一律说"空闲只有 245MB"：两条用例的差别只在引擎自己是否已经跑在 GPU 上
+        app._vram_ok_for_gpu = lambda: (False, 245)
+        self.restarts: list[object] = []
+        app._restart_audiocpp = lambda p, backend=None: self.restarts.append(backend)
+
+    def tearDown(self) -> None:
+        (app._ensure_backend, app._vram_ok_for_gpu, app._audiocpp_cuda_ready,
+         app._restart_audiocpp, app._wait_backend_ready, app._gen_run_once,
+         app._commit_free_mb, app.backend_mode, app._win_toast,
+         app._output_write_meta, app._output_write_lyrics,
+         app._lrc_build_async) = self._s
+        super().tearDown()
+
+    def _run(self, engine_ready: bool) -> dict:
+        app._audiocpp_cuda_ready = lambda: engine_ready
+        sent: list[dict] = []
+
+        def fake_once(payload):
+            sent.append(payload)
+            return 200, "", b"RIFF" * 40, {}
+
+        app._gen_run_once = fake_once
+        job = {"id": "20260101_000000_aaaaaaaa", "status": "running",
+               "style": "pop", "lyrics": "[Verse]\n测试"}
+        app._gen_run(job, {"seed": 7})
+        self.assertEqual(len(sent), 1, "两条路径最终都要真的把生成请求发出去")
+        return job
+
+    def test_engine_already_on_gpu_is_not_a_reason_to_drop_to_cpu(self):
+        job = self._run(engine_ready=True)
+        self.assertIsNone(job.get("cpu_fallback"),
+                          "引擎已在 GPU 载好权重，不许因「空闲显存不足」把整首歌降级")
+        self.assertEqual(self.restarts, [], "不该为了降级去重启引擎")
+        self.assertEqual(job["status"], "done")
+
+    def test_genuinely_short_vram_still_falls_back(self):
+        """反例：引擎确实没跑在 GPU 上（没起来/还在 CPU），预检照旧拦一次。"""
+        job = self._run(engine_ready=False)
+        self.assertTrue(job.get("cpu_fallback"))
+        self.assertIn("cpu", self.restarts)
+        self.assertIn("空闲 245MB", str(job.get("gpu_error")))
+
+
 class TestSweepHonesty(Sandbox):
     """冒烟实测（09-26 22:17）：用户点"停止"后，正在算的那一首十秒内就被轮询写成
     "服务重启，任务中断"，而网关 PID 从头到尾没变过——这句指控没有证据。

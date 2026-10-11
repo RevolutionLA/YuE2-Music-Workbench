@@ -1921,7 +1921,22 @@ def _gen_get_job() -> dict | None:
         return _GEN_JOB
 
 
-_CANCEL_EVENT = threading.Event()  # 用户主动终止：中断当前推理并停止后续连发
+_CANCEL_EVENT = threading.Event()   # 终止"整条队列"：中断当前推理、停止后续连发、不再起新条目
+# 2026-10-11 事故：页面上"只停这一个任务"的按钮和"停整条队列"共用上面这一个标志，
+# 于是用户在 ⑪ 任务管理点掉一条任务时，队列里另外 4 条（本机每条要跑 90 分钟）被一并
+# 标成 cancelled。拆成两个标志：只停当前这一条时，未开始的条目一律不动。
+_STOP_ONE_EVENT = threading.Event()  # 只终止当前这一条（含它的后续连发 take），批量队列照常往下走
+
+
+def _stop_requested() -> bool:
+    """当前这次推理是否该立即中断——两种终止都算。"""
+    return _CANCEL_EVENT.is_set() or _STOP_ONE_EVENT.is_set()
+
+
+def _clear_stop_flags() -> None:
+    """开始或恢复任何执行之前都要清标志：残留的 stop-one 会把刚起跑的下一条掐死。"""
+    _CANCEL_EVENT.clear()
+    _STOP_ONE_EVENT.clear()
 
 
 def _kill_audiocpp_now() -> None:
@@ -1967,6 +1982,29 @@ def _vram_ok_for_gpu() -> tuple[bool, int | None]:
     if free is None:
         return True, None  # 查不到就不拦截，交给引擎自己报错
     return free >= _VRAM_HEADROOM_MB + 3000, free
+
+
+def _audiocpp_cuda_ready() -> bool:
+    """引擎进程活着、跑在 cuda、且已经加载好权重 → 显存这件事它自己已经安排好了。
+
+    只用来决定"还要不要做生成前的空闲显存预检"。2026-10-11 实测的误判：看门狗把网关
+    重启后，旧的引擎进程还常驻在 CUDA 上（6GB 卡里占着 4.4GB），`_gpu_free_mb()` 于是
+    只看到"空闲 245MB"，预检判定显存不足、把整条队列降级到 CPU——一首 99 分钟的活变成
+    约 10 小时。"空闲低"恰恰是我们自己的引擎占的，这种时候该问引擎，不该问空闲量。
+    """
+    try:
+        r = httpx.get(settings.audiocpp_base_url + "/health", timeout=2.0)
+        if r.status_code != 200:
+            return False
+        d = r.json()
+    except Exception:
+        return False
+    models = d.get("models")
+    try:
+        loaded = int(models) > 0
+    except (TypeError, ValueError):
+        loaded = bool(models)
+    return str(d.get("backend") or "").lower() == "cuda" and loaded
 
 
 def _audiocpp_alive() -> bool:
@@ -2068,7 +2106,9 @@ def _gen_run(job: dict, payload: dict) -> None:
                 sheetsage_pt.unload()
             except Exception:
                 pass
-            ok, free = _vram_ok_for_gpu()
+            # 引擎已在 GPU 上载好权重时不做"空闲显存"预检：那份"空闲"是被引擎自己占着的，
+            # 预检在这种情况下只会误降级（见 _audiocpp_cuda_ready 的 10-11 实测）
+            ok, free = (True, None) if _audiocpp_cuda_ready() else _vram_ok_for_gpu()
             if not ok:
                 used_cpu_fallback = True
                 job.update(
@@ -2086,13 +2126,13 @@ def _gen_run(job: dict, payload: dict) -> None:
             except Exception as e:
                 return 0, str(e)[:800], b"", {}
 
-        if _CANCEL_EVENT.is_set():
+        if _stop_requested():
             return
 
         code, detail, content, headers = attempt()
 
         # 用户主动终止：引擎进程已被强杀，这次调用以连接失败收场
-        if _CANCEL_EVENT.is_set():
+        if _stop_requested():
             return
 
         # 引擎仍然报显存类错误（预检漏网/竞争）：切 CPU 重试一次
@@ -2106,7 +2146,7 @@ def _gen_run(job: dict, payload: dict) -> None:
             _output_write_meta(job)
             _restart_audiocpp(str(SERVER_JSON), backend="cpu")
             _wait_backend_ready()
-            if _CANCEL_EVENT.is_set():
+            if _stop_requested():
                 return
             code, detail, content, headers = attempt()
 
@@ -2163,9 +2203,21 @@ def _wait_backend_ready(timeout: float = 300.0) -> bool:
 
 
 @router.post("/generate/stop")
-def generate_stop():
-    """用户主动终止当前生成/连发任务：标记 cancelled、强杀引擎立即中断推理、
-    阻止后续连发与批量队列继续。网关本身不停，下次生成会自动重启引擎。"""
+def generate_stop(scope: str = "current"):
+    """终止任务。scope 决定停多大一片——这正是 2026-10-11 那次"点一条丢四条"的根因：
+    以前只有"全停"一种行为，用户想掐掉一首，队列里另外 4 条（每条本机 90 分钟）陪葬。
+
+    - "current"（默认；页面「终止任务」与历史卡上的 ✕）：只掐正在算的这一条/这一首
+      （连发的后续 take 一起停）。批量队列里未开始的条目原封不动，worker 接着跑下一条。
+    - "queue"：连批量队列一起停——未开始的条目置为 cancelled，「一键继续」可全部复位。
+
+    两种都靠强杀引擎来立即中断推理（网关本身不停，下次生成自动重启引擎）。
+    引擎没在跑时不动它：本机显卡撞过 nvlddmkm 153（09:02:51 那次就是"终止→强杀引擎→
+    驱动故障→网关卡死 6 分钟→看门狗击杀重启→内存里的换声队列清零"），能少动一次就少动一次。
+    """
+    scope = (scope or "current").strip().lower()
+    if scope not in ("current", "queue"):
+        raise HTTPException(status_code=400, detail="scope 只认 current / queue")
     job = _gen_get_job()
     # 占位 job（id=None，排队中）只清状态不写盘，避免生成 output/None.json
     cancelled_any = bool(job and job.get("id") and job.get("status") == "running")
@@ -2175,21 +2227,38 @@ def generate_stop():
         job["sec"] = None
         _output_write_meta(job)
     _gen_set_job(None)  # 立即结束轮询/恢复态
-    _CANCEL_EVENT.set()
-    _kill_audiocpp_now()
-    # 批量队列一并叫停：未开始的全部取消（读-改-写整体持锁，防止与批量 worker 互相覆盖）
+    if scope == "queue":
+        _CANCEL_EVENT.set()
+    if cancelled_any:
+        _STOP_ONE_EVENT.set()       # 只有真有东西在算才置中断标志：残留标志会掐死下一条
+        _kill_audiocpp_now()
+    # 读-改-写整体持锁，防止与批量 worker 互相覆盖。
     # 注意：锁内必须用无锁的 _batch_read()/_batch_write()；
     # _batch_snapshot()/_batch_store() 会重复加同一把非重入锁导致死锁
+    left = killed = 0
     with _BATCH_LOCK:
         state = _batch_read()
-        if state.get("running"):
+        if scope == "queue" and state.get("running"):
             state["running"] = False
             for it in state["items"]:
                 if it["status"] in ("pending", "running"):
                     it["status"] = "cancelled"
+                    killed += 1
             _batch_write(state)
-    return {"ok": True, "cancelled": cancelled_any,
-            "message": "已终止当前任务" + ("，引擎将自动恢复" if cancelled_any else "")}
+        else:
+            left = sum(1 for it in state["items"] if it["status"] == "pending")
+    if scope == "queue":
+        msg = "已终止当前任务并停掉批量队列"
+        if killed:
+            msg += f"：未开始的 {killed} 条已取消（点「一键继续」可全部复位重跑）"
+    else:
+        msg = "已终止当前正在算的这一条" if cancelled_any else "当前没有正在执行的任务"
+        if cancelled_any:
+            msg += "，引擎将自动恢复"
+        if left:
+            msg += f"；批量队列不受影响，还有 {left} 条待跑，会继续执行"
+    return {"ok": True, "cancelled": cancelled_any, "scope": scope,
+            "queue_pending": left, "queue_cancelled": killed, "message": msg}
 
 
 def _style_yield_to_abc(style: str, abc: str) -> tuple[str, str]:
@@ -2328,13 +2397,14 @@ async def generate_start(payload: dict):
     payload = {**payload, "seed": base_seed}
 
     def _chain_runner():
-        _CANCEL_EVENT.clear()
+        _clear_stop_flags()
         fail = None
         try:
             # GPU 全局闸门：等批量/换声/训练任务释放后再开始（无超时，保证最终会执行）
             with _GPU_SEM:
                 for i in range(1, count + 1):
-                    if _CANCEL_EVENT.is_set():
+                    # 连发是"同一个任务"的 N 个 take：终止当前任务就该停掉后续 take
+                    if _stop_requested():
                         break
                     p = dict(payload)
                     p.pop("count", None)
@@ -2596,7 +2666,7 @@ def _batch_snapshot() -> dict:
 
 def _batch_run_worker() -> None:
     """批量队列工作线程：逐个执行 pending 任务；失败记录后继续下一个。"""
-    _CANCEL_EVENT.clear()
+    _clear_stop_flags()
     while True:
         state = _batch_snapshot()
         if not state.get("running") or _CANCEL_EVENT.is_set():
@@ -2652,9 +2722,12 @@ def _batch_run_worker() -> None:
                 _output_write_meta(job)
                 _gen_set_job(job)
             _gen_run(job, payload)
-            if _CANCEL_EVENT.is_set():
+            if _stop_requested():
                 # 蓝军 N-5：取消必须落终态。旧写法在这里 break，条目卡在 running，
                 # 下一轮 /batch/status 的自愈把它写成"服务重启，任务中断"——服务没重启过。
+                # 现在还要分辨是哪种终止：只停当前这一条（stop-one）的话，队列不动，
+                # 清掉标志接着跑下一条 pending；停整条队列（cancel）才收工。
+                only_one = _STOP_ONE_EVENT.is_set() and not _CANCEL_EVENT.is_set()
                 with _BATCH_LOCK:
                     state = _batch_read()
                     it = next((x for x in state["items"] if x["id"] == nxt_id), None)
@@ -2663,6 +2736,9 @@ def _batch_run_worker() -> None:
                         it["error"] = "已由用户取消"
                     state["current"] = None
                     _batch_write(state)
+                if only_one:
+                    _STOP_ONE_EVENT.clear()    # 标志用完就清，不许牵连下一条
+                    continue
                 return
         # _gen_run 已把 job 状态更新为 done/error 并写 output meta
         final = _output_read_meta(rid) or job
@@ -2815,7 +2891,7 @@ def batch_status():
         state["running"] = any(it["status"] == "pending" for it in state["items"])
         _batch_store(state)
         if state["running"]:
-            _CANCEL_EVENT.clear()
+            _clear_stop_flags()
             _batch_ensure_worker()
     if not state.get("running"):
         # 服务重启或工作线程死亡时，把遗留的 running 任务标记为中断。
@@ -2864,6 +2940,51 @@ def batch_status():
     }
 
 
+def _batch_boot_resume() -> dict:
+    """网关启动时把被"进程被杀"打断的批量队列接回：running 复位为 pending，
+    有待跑条目就把队列标志立起来并拉起 worker。
+
+    ★ 2026-10-11 修：旧写法先 `bs["running"] = False` 再 `_batch_ensure_worker()`，
+    而 worker 的第一句就是"running 为假就退出"——所谓"自动续跑"从来没有真的续跑过。
+    实测：用户 09:25 提交的一条任务在网关被看门狗重启后一直挂着"待跑"，
+    界面显示"无法加载新任务"，只能自己找到「▶ 一键继续」点下去。
+    ★ 复活计数与 /batch/status 的自愈共用同一套判据（_REVIVE_WINDOW_SEC / _REVIVE_MAX）：
+    条目自己就是崩溃诱因时，"启动→复活→再崩"会无限陪葬，超过上限就判死并写清原因。
+    """
+    bs = _batch_snapshot()
+    now_ts = datetime.now()
+    restored = 0
+    judged_dead = 0
+    for it in bs.get("items", []):
+        if it.get("status") != "running":
+            continue
+        prev = None
+        try:
+            prev = datetime.fromisoformat(str(it.get("revive_ts"))) if it.get("revive_ts") else None
+        except ValueError:
+            prev = None
+        rapid = prev is not None and (now_ts - prev).total_seconds() < _REVIVE_WINDOW_SEC
+        n = int(it.get("revive_n") or 0) + 1 if rapid else 1
+        if n > _REVIVE_MAX:
+            it["status"] = "error"
+            it["error"] = (f"连续 {n} 次在中途中断（{_REVIVE_WINDOW_SEC} 秒内复活），已停止自动重跑："
+                           "该任务本身很可能就是崩溃诱因（内存/显存打爆），请单独重试或缩小输入")
+            judged_dead += 1
+            continue
+        it["revive_ts"] = now_ts.isoformat(timespec="seconds")
+        it["revive_n"] = n
+        it["status"] = "pending"
+        restored += 1
+    has_pending = any(it.get("status") == "pending" for it in bs.get("items", []))
+    bs["running"] = has_pending     # worker 只认 running=True：有待跑就得把标志立起来
+    bs["current"] = None
+    _batch_store(bs)
+    if has_pending:
+        _clear_stop_flags()
+        _batch_ensure_worker()
+    return {"restored": restored, "judged_dead": judged_dead, "resumed": has_pending}
+
+
 @router.post("/batch/stop")
 def batch_stop():
     """停止批量队列：当前正在跑的一首会算完，后续 pending 全部取消。"""
@@ -2904,7 +3025,7 @@ def batch_resume():
     state["running"] = True
     state["current"] = None
     _batch_store(state)
-    _CANCEL_EVENT.clear()
+    _clear_stop_flags()
     _batch_ensure_worker()
     msg = f"已恢复 {restored} 个未完成任务，继续执行" if restored else "队列已在等待中，继续执行"
     return {"ok": True, "message": msg, "restored": restored}
@@ -2930,7 +3051,7 @@ def batch_retry(payload: dict):
         state["running"] = True
         state["current"] = None
         _batch_write(state)
-    _CANCEL_EVENT.clear()
+    _clear_stop_flags()
     _batch_ensure_worker()
     return {"ok": True, "message": "已重新入队"}
 
@@ -8373,23 +8494,11 @@ def _orphan_cleanup_on_startup() -> None:
                                   encoding="utf-8")
                 except Exception:
                     pass
-    # 3) 批量队列自恢复：进程被杀时正在跑的条目会永远卡在 running（worker 只取
-    # pending），重启后整个队列假死、等待中的条目也没法手动启动。这里把卡死的
-    # running 复位为 pending；若还有待跑条目则自动拉起 worker 继续执行。
+    # 3) 批量队列自恢复：逻辑收进 _batch_boot_resume()（2026-10-11 修：旧写法先把
+    # running 清成 False 再拉 worker，而 worker 第一句就是"running 为假就退出"，
+    # 于是重启后的"自动续跑"从来没真的续跑过，用户的任务一直挂在待跑）
     try:
-        bs = _batch_snapshot()
-        restored = 0
-        for it in bs.get("items", []):
-            if it.get("status") == "running":
-                it["status"] = "pending"
-                restored += 1
-        bs["running"] = False
-        bs["current"] = None
-        _batch_store(bs)
-        has_pending = any(it.get("status") == "pending" for it in bs.get("items", []))
-        if restored or has_pending:
-            _CANCEL_EVENT.clear()
-            _batch_ensure_worker()
+        _batch_boot_resume()
     except Exception:
         pass  # 队列文件损坏时不应阻断启动；前端可手动重试
     # 4) 音色训练自恢复：上面判为"服务重启，任务中断"且过了三道闸门的任务，这里接回
