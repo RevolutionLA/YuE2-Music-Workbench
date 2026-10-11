@@ -169,6 +169,12 @@ def tool_validate_lyrics(lyrics: str) -> dict:
     return _validate_lyrics_impl(lyrics)
 
 
+# 整行被括号包住的舞台说明（"（器乐渐弱收尾）"、"(harmonies fade)"），不是唱词。
+# 生成链在歌词缺收尾段时会自动补这么一行，校验器必须认得它自己的输出，
+# 否则回填旧记录再点生成就必然报错。
+_DIRECTION_RE = re.compile(r"^\s*[（(【\[].{1,40}[)）】\]]\s*$", re.S)
+
+
 def _validate_lyrics_impl(lyrics: str) -> dict:
     errors, warns = [], []
     blocks = [b.strip("\n") for b in re.split(r"\n\s*\n", lyrics.strip()) if b.strip()]
@@ -188,6 +194,16 @@ def _validate_lyrics_impl(lyrics: str) -> dict:
         if tag.lower().startswith(("intro", "interlude")):
             if body:
                 warns.append(f"[{tag}] 段带歌词行——纯器乐段应只留标签+空行")
+            continue
+        if tag.lower().startswith(("outro", "end")):
+            # 收尾段是"这里收"的结构信号，可以纯器乐：只留标签、或整段都是舞台说明
+            # （包括生成链自动补的那一行）都合法。有唱词时才按 4-8 行要求，且不把
+            # 说明行算进行数。
+            sung = [l for l in body if not _DIRECTION_RE.match(l)]
+            if not sung:
+                continue
+            if not (4 <= len(sung) <= 8):
+                errors.append(f"[{tag}] 唱词行数 {len(sung)} 不在 4-8 行范围（括号内的器乐/演唱说明不计入）")
             continue
         if not (4 <= len(body) <= 8):
             errors.append(f"[{tag}] 行数 {len(body)} 不在 4-8 行范围")

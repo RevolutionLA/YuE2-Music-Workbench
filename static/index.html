@@ -4462,6 +4462,12 @@ async function guardThen(btn, target) {
 // 覆盖前入栈：歌词候选、最近歌词、骨架插入，三条路都会整块换掉歌词框内容。
 // 以前只有骨架有 confirm，点错一张卡片旧词就当场没了——手写二十行词的人经不起这种丢法。
 const lyricUndoStack = [];
+// 998a99d 那次补 [Outro] 是加在存盘之前，所以从那版到本次修复之间生成的记录，
+// lyrics 里都带着这句用户没写过的话。回填时摘掉它——提交时后端会在送引擎的最后一刻
+// 按同一规则重新补上，一字不差，听感不变。
+function stripMachineOutro(t) {
+  return String(t || "").replace(/\n+\[Outro\][ \t]*\n[ \t]*（器乐渐弱收尾）[ \t]*\n*$/i, "").replace(/\s+$/, "");
+}
 function pushLyricUndo(why) {
   const box = $("lyrics"); if (!box) return;
   const v = box.value;
@@ -4821,6 +4827,7 @@ function renderRecentLyrics(el, box, picks) {
 function fillRecentLyrics(p) {
   const box = $("lyrics");
   if (!box) return;
+  p = Object.assign({}, p, { lyrics: stripMachineOutro(p.lyrics) });   // 老记录里那句机器补的 [Outro] 不算用户写的
   const cur = box.value.trim();
   if (cur && cur !== p.lyrics.trim() &&
       !confirm("歌词框已有内容（" + cur.length + " 字）。\n确定 = 用《" + p.name + "》的歌词整体替换\n取消 = 保留现在的内容")) return;
@@ -5261,7 +5268,7 @@ async function resumeRunningJob() {
       // 刷新后把运行中任务的创作参数回填到表单，与页面所见一致
       pushLyricUndo("刷新时回填正在生成的那一首");   // 这条路最凶：它不问任何人，每次刷新都会盖掉框里的词
       $("style").value = job.style || "";
-      $("lyrics").value = job.lyrics || "";
+      $("lyrics").value = stripMachineOutro(job.lyrics);
       $("cot").value = job.cot || "full";
       $("abc").value = job.abc || "";
       // 从 style 中反解歌手性别（提交时 styleWithGender 会把性别拼进 style 尾部）
@@ -5825,7 +5832,7 @@ async function renderHistory(fetchLimit) {
       // jump=true 时切到创作页（「回填」按钮）；播放路径传 false，留在当前页只回填参数。
       const restore = (jump = true) => {
         pushLyricUndo("从历史《" + (h.task_name || h.id || "未命名") + "》回填");   // 回填是整块替换，先留一档
-        $("style").value = h.style || ""; $("lyrics").value = h.lyrics || ""; $("cot").value = h.cot || "full"; $("abc").value = h.abc || "";
+        $("style").value = h.style || ""; $("lyrics").value = stripMachineOutro(h.lyrics); $("cot").value = h.cot || "full"; $("abc").value = h.abc || "";
         // 任务名也回填：历史里存的是当时实际用的名字（可能被改名过）
         if ($("taskName")) $("taskName").value = h.task_name || "";
         const gm = (h.style || "").match(/clear\s+(female|male)\s+vocal/i);

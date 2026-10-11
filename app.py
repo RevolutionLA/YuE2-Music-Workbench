@@ -2087,6 +2087,11 @@ def _gen_run(job: dict, payload: dict) -> None:
     rid = job["id"]
     started = time.time()
     used_cpu_fallback = False
+    # 收尾段在送引擎之前的最后一刻补：存盘那份必须是用户自己写的词（回填、LRC
+    # 强制对齐、重跑都以它为准），只有引擎需要"一定有收尾段"的这份。挂在这个唯一
+    # 出口上，单首与批量两条入口就不必各补一次。
+    engine_payload = dict(payload)
+    engine_payload["lyrics"], _ = _ensure_song_ending(str(payload.get("lyrics") or ""))
     try:
         # 后端自检：audiocpp 掉线（如上次异常崩溃）则自动拉起，避免整次生成直接失败
         _ensure_backend()
@@ -2122,7 +2127,7 @@ def _gen_run(job: dict, payload: dict) -> None:
 
         def attempt() -> tuple[int, str, bytes, dict]:
             try:
-                return _gen_run_once(payload)
+                return _gen_run_once(engine_payload)
             except Exception as e:
                 return 0, str(e)[:800], b"", {}
 
@@ -2335,10 +2340,11 @@ async def generate_start(payload: dict):
     _limit_text("曲风描述", style, _MAX_STYLE)
     _limit_text("歌词", payload.get("lyrics"), _MAX_LYRICS)
     _limit_text("乐谱", payload.get("abc"), _MAX_ABC)
-    # 歌词缺收尾结构时补 [Outro]：防止模型在最后副歌后自由发挥出说话/独白声
-    lyrics_eff, ending_note = _ensure_song_ending(str(payload.get("lyrics") or ""))
-    if ending_note:
-        payload["lyrics"] = lyrics_eff
+    # 歌词缺收尾结构时要补 [Outro]，防模型在尾声自由发挥出说话声——但**不在这里改写
+    # payload**：追加的那一行是机器写的，混进 payload 就一起存进了任务记录，从⑨回填
+    # 出来的歌词带着一句用户没写过的话，再点生成还会被我们自己的结构校验拦下
+    # （[Outro] 要求 4-8 行，那句说明只有 1 行）。真正追加在 _gen_run 送引擎之前。
+    _, ending_note = _ensure_song_ending(str(payload.get("lyrics") or ""))
     # 有谱即按谱：乐谱框非空就必须走消费乐谱的路线，不能让它滑到 off / 形态不符的 full
     cot_eff, cot_note = _resolve_cot(str(payload.get("cot") or "full"),
                                      str(payload.get("abc") or ""))
@@ -2801,8 +2807,9 @@ def batch_start(payload: dict):
         abc_t = str(t.get("abc") or "")[:_MAX_ABC]
         # 同单首生成：缺省仍是 off（批量以快为先），但只要带了谱就不能让谱子落空
         cot_t, cot_note = _resolve_cot(str(t.get("cot") or "off"), abc_t)
-        # 与单首生成同一道防线：歌词缺收尾结构时补 [Outro]，防尾声幻觉说话声
-        lyrics, ending_note = _ensure_song_ending(lyrics)
+        # 与单首生成同一道防线：歌词缺收尾结构时补 [Outro]，防尾声幻觉说话声。
+        # 同样只取提示语、不改存盘的 lyrics（追加在 _gen_run 送引擎之前）。
+        _, ending_note = _ensure_song_ending(lyrics)
         if ending_note:
             cot_note = (cot_note + "；" + ending_note) if cot_note else ending_note
         items.append({
