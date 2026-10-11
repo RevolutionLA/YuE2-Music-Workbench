@@ -4388,7 +4388,9 @@ function lintLines(v) {
 // 某段只有 3 行"这类结构错原来只有用户自己想起去点「🔍」才会发现。
 // 校验接口挂了不拦路：拿不到结论就放行，但如实说一句本次没校验成（不静默降级）。
 async function validateLyricsNow() {
-  const txt = ($("lyrics") || {}).value || "";
+  // 校验的对象必须是"真正会送出去的那份词"：机器补的收尾说明行由后端在送引擎前加，
+  // 不该出现在这里被判成用户的结构错误。
+  const txt = stripMachineOutro(($("lyrics") || {}).value || "");
   if (!txt.trim()) return { ok: true, empty: true, errors: [], warnings: [] };
   try {
     const r = await fetch("/api/lyrics/validate", {
@@ -5334,7 +5336,8 @@ function engineGate(statusEl) {
 }
 
 $("go").onclick = async () => {
-  const lyrics = $("lyrics").value.trim();
+  // 送出的是用户自己写的那份词，收尾段由后端在送引擎前统一补（app.py: _gen_run）
+  const lyrics = stripMachineOutro($("lyrics").value.trim());
   const style = styleWithGender($("style").value.trim());
   if (!engineGate($("status"))) return;
   if (!lyrics || !$("style").value.trim()) {
@@ -5383,7 +5386,8 @@ $("randSeed").onclick = () => { $("seed").value = String(Math.floor(Math.random(
 
 // 加入队列：复用批量队列 API，把创作页当前参数作为单任务排入队尾（不抢占正在生成的任务）
 $("queue").onclick = async () => {
-  const lyrics = $("lyrics").value.trim();
+  // 与「生成歌曲」同一份口径：入队的也是用户自己写的那份词
+  const lyrics = stripMachineOutro($("lyrics").value.trim());
   const style = styleWithGender($("style").value.trim());
   if (!engineGate($("status"))) return;
   if (!lyrics || !$("style").value.trim()) {
@@ -9142,7 +9146,12 @@ function currentConfig() {
 }
 function applyConfig(c) {
   if (!c || typeof c !== "object") return;
-  _FORM_IDS.forEach((id) => { const el = $(id); if (el && c[id] != null) el.value = String(c[id]); });
+  _FORM_IDS.forEach((id) => {
+    const el = $(id); if (!el || c[id] == null) return;
+    // 自动保存的那份可能是修复前留下的、带着机器补的 [Outro]；恢复时摘掉，
+    // 否则刷新一次就把旧脏数据又端回用户面前，提交还会被结构校验拦下。
+    el.value = id === "lyrics" ? stripMachineOutro(c[id]) : String(c[id]);
+  });
   const box = $("abcChords"); if (box && c.abcChords != null) box.checked = !!c.abcChords;
   analyzeAbcDebounced();   // 回填的谱要重算「有没有和弦/走哪条档位」提示
 }
