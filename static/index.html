@@ -1215,7 +1215,7 @@
   #rvcTrainList .hist-item .h-sub { white-space: normal; word-break: break-all; }
   #rvcTrainList .hist-item .h-actions,
   #rvcTrainList .hist-item [data-preview],
-  #rvcTrainList .hist-item [data-use],
+  #rvcTrainList .hist-item [data-copy-name],
   #rvcTrainList .hist-item [data-resume],
   #rvcTrainList .hist-item [data-pause] { justify-content: flex-start; }
   #rvcTrainList .hist-item audio { width: 100%; }
@@ -2042,7 +2042,6 @@ We will sing beyond the night</textarea>
           <label for="seSrc" style="margin-top:0;">原谱（ABC）</label>
           <textarea id="seSrc" class="abc" placeholder="X:1&#10;M:4/4&#10;K:C&#10;V:Vocal&#10;C2 D2 E2 F2 |"></textarea>
           <div class="actions" style="margin-top:8px;">
-            <button class="ghost" id="seFromScore" title="把 ③ 页当前谱框里的内容拿过来">↩ 用 ③ 当前的谱</button>
             <button class="ghost" id="seFromLib" title="从乐谱库挑一份">📁 从乐谱库载入</button>
             <select id="seLibPick" hidden style="max-width:190px;"></select>
             <button class="ghost" id="sePasteClip" title="从剪贴板粘贴">📋 粘贴</button>
@@ -2057,11 +2056,10 @@ We will sing beyond the night</textarea>
         <div class="pane-foot">
           <div class="actions">
             <button class="ghost" id="seCopy" title="复制加工后的 ABC">⧉ 复制结果</button>
-            <button class="ghost" id="seSave" title="另存一份进乐谱库（不覆盖原谱）">💾 存入乐谱库</button>
+            <button class="primary" id="seSave" title="另存一份进乐谱库（不覆盖原谱）；存完在 ⑤ 的乐谱库里挑这份就能按谱生成">💾 存入乐谱库</button>
             <button class="ghost" id="seDownload" title="下载 .abc 文本">⬇ ABC</button>
-            <button class="primary" id="seToGen" title="把加工后的谱送进 ⑤，按这个谱生成歌曲">→ ⑤ 用这个谱生成</button>
           </div>
-          <div class="hint-xs" id="seFootNote">加工结果只在这里和乐谱库里，原谱不会被覆盖。</div>
+          <div class="hint-xs" id="seFootNote">加工结果只在这里和乐谱库里，原谱不会被覆盖。要按这份谱生成歌曲：存进乐谱库，再到 ⑤ 的「乐谱来源=乐谱库」里挑它——页面之间不代填。</div>
         </div>
       </div>
 
@@ -2192,7 +2190,7 @@ We will sing beyond the night</textarea>
         </div>
         <div class="actions" style="margin-top:10px;">
           <button class="ghost" id="voiceInfoRecheck" disabled>↻ 重新体检（不吃缓存）</button>
-          <button class="ghost" id="voiceInfoGoConvert" disabled>→ ⑨ 用这个音色换声</button>
+          <button class="ghost" id="voiceInfoCopy" disabled>📋 复制音色名</button>
         </div>
         <div class="hint-xs" style="margin-top:8px;">外部下载的 .pth 没有训练实测音域，不建档就没有变调建议（页面会直说"无音域"而不是猜一个）。音域档案的单位是 Hz；<b>不要把 RVC 索引里的 2a_f0 当 Hz 读</b>——那是量化后的 mel bin，读错会让建议飞两个八度。</div>
       </div>
@@ -2281,17 +2279,17 @@ We will sing beyond the night</textarea>
         <div class="sec" style="margin-top:0;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 12.5V3.5M8 3.5 4.5 7M8 3.5 11.5 7"/></svg>产出回填</div>
         <label for="aiFeedPick" style="margin-top:0;">取哪一条产出</label>
         <select id="aiFeedPick"></select>
-        <label for="aiFeedStyle">Style（填进 ① 的产出框）</label>
+        <label for="aiFeedStyle">Style（这条产出的曲风）</label>
         <textarea id="aiFeedStyle" class="abc" placeholder="（这条产出里没有 Style）"></textarea>
         <label for="aiFeedLyrics">歌词</label>
         <textarea id="aiFeedLyrics" placeholder="（这条产出里没有歌词）"></textarea>
         <div class="lint" id="aiFeedLint"></div>
         <div class="actions" style="margin-top:8px;">
           <button class="ghost" id="aiFeedCheck">🔍 校验歌词</button>
-          <button class="ghost" id="aiFeedTo1">→ ① Style</button>
-          <button class="primary" id="aiFeedTo2">→ ② 歌词生成</button>
+          <button class="ghost" id="aiFeedCopyStyle">📋 复制 Style</button>
+          <button class="primary" id="aiFeedCopyLyrics">📋 复制 歌词</button>
         </div>
-        <div class="hint-xs" style="margin-top:6px;">回填前可以自己改：这里写进的是 ① 的 Style 框与 ② 的歌词框，改曲风重跑、撤销上一版都在原页继续可用。</div>
+        <div class="hint-xs" style="margin-top:6px;">这一栏只负责<b>取出来</b>：复制走，粘到 ① 或 ② 里由你自己决定要不要用。页面之间不互相代填。</div>
       </div>
     </div>
   </section>
@@ -2313,8 +2311,10 @@ We will sing beyond the night</textarea>
         <label for="rvcFile" style="margin-top:10px;">选择音频文件（wav / mp3 / flac / m4a…，如生成历史里的歌曲）</label>
         <input id="rvcFile" type="file" accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" />
         <div class="actions" style="margin-top:6px;">
-          <button class="ghost" id="rvcFromSep" title="直接从 ⑩ 的分离产物里挑一份当音源，不用再下载回来重传">🎤 从 ⑩ 分离结果导入音源</button>
+          <select id="rvcSrcPick" aria-label="从服务器素材里选一首" style="flex:1;"></select>
+          <button class="ghost" id="rvcSrcRefresh" title="重新拉一遍服务器上的歌与分离产物">↻</button>
         </div>
+        <div class="hint-xs">上面选的是<b>本机服务器上已有的音频</b>（生成过的歌、⑩ 分离出的干声/伴奏），换声时由服务端直接取那份文件，不需要你下载再传。留空就用上面上传的文件。</div>
         <div class="hint-xs" id="rvcFileNow"></div>
         <div class="pgrid g3" style="margin-top:10px;">
           <div><label for="rvcModel">音色模型</label><select id="rvcModel"></select></div>
@@ -2446,8 +2446,10 @@ We will sing beyond the night</textarea>
         <label for="rvcTrainFiles" style="margin-top:10px;">人声样本（可多选；干声最佳，完整歌曲也可以——勾选下方自动分离即可）</label>
         <input id="rvcTrainFiles" type="file" multiple accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" />
         <div class="actions" style="margin-top:6px;">
-          <button class="ghost" id="trainFromSep" title="⑩ 的「人声（去和声）」就是理想训练素材：直接追加进上面的样本框，不必重传">🎤 从 ⑩ 导入分离好的人声</button>
+          <select id="trainSrcPick" multiple size="5" aria-label="从服务器素材里选若干段" style="flex:1;"></select>
+          <button class="ghost" id="trainSrcRefresh" title="重新拉一遍服务器上的分离产物与历史歌曲">↻</button>
         </div>
+        <div class="hint-xs">这里列的是<b>本机服务器上已有的音频</b>（⑩ 的分离产物、生成过的歌），按住 Ctrl 可多选；训练素材要干净人声，优先选「人声（去和声）」。<b>上传的文件与这里选的可以并用</b>，体检会把两者一起算。</div>
         <div class="hint-xs" id="rvcTrainFilesNow"></div>
         <div style="margin-top:8px;">
           <label for="rvcTrainSep" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
@@ -2988,6 +2990,15 @@ function copyId(id) {
     navigator.clipboard.writeText(id).then(done, () => fallbackCopy(id, done));
   } else fallbackCopy(id, done);
 }
+// 「取出去」的统一出口：页面之间不代填，用户要带去另一页就自己复制粘贴。
+function copyOut(text, what) {
+  const t = String(text || "");
+  if (!t.trim()) { toast("这条产出里没有" + what, "err"); return; }
+  const done = () => toast(what + "已复制（" + t.length + " 字）——粘到哪一页由你决定", "ok");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(t).then(done, () => fallbackCopy(t, done));
+  } else fallbackCopy(t, done);
+}
 function fallbackCopy(text, done) {
   const ta = document.createElement("textarea");
   ta.value = text;
@@ -3327,6 +3338,7 @@ function switchTab(name) {
   // ② 的关系条讲两段（Style + 歌词），⑤ 讲三段（+ 乐谱）。两条互斥，不同时出现。
   const fbs = $("flowBarSing"); if (fbs) fbs.hidden = !(name === "sing");
   if (scoreMode && typeof updateLyricBarHint === "function") updateLyricBarHint();
+  if (typeof paintScoreModeTag === "function") paintScoreModeTag();
   if (name === "sing" || name === "scoreSing") syncStylePreview();
   try { if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name); } catch {}
   // 内嵌模式（dsh iframe）：通知父窗口同步侧栏页签高亮
@@ -3335,6 +3347,10 @@ function switchTab(name) {
   if (name === "history" && typeof renderHistory === "function") renderHistory();
   // 进入声音四页时刷新各自的任务列表 / 音色下拉
   if (name === "convert" && typeof renderRvc === "function") renderRvc();
+  // ⑨ 的音源、⑦ 的训练素材都从服务器现取现列：进页面就是最新的一批，
+  // 不依赖别的页面刚刚把什么塞进来。
+  if (name === "convert" && typeof paintSrcPick === "function") paintSrcPick("rvcSrcPick", "— 不用服务器素材，用上面上传的文件 —");
+  if (name === "train" && typeof paintSrcPick === "function") paintSrcPick("trainSrcPick", "");
   if (name === "train" && typeof renderRvcTrainList === "function") renderRvcTrainList();
   if (name === "voices") {
     if (typeof renderRvcModels === "function") renderRvcModels();
@@ -3346,7 +3362,7 @@ function switchTab(name) {
   if (name === "style" && typeof updateAsmHint === "function") { updateAsmHint(); updateStyleChecks(); }
   if (name === "score" && typeof loadScoreList === "function") loadScoreList();
   if (name === "scoreSing" && typeof loadScorePicker === "function") loadScorePicker();
-  // ④ 乐谱加工：进页面时按源谱调号收窄调式选项（谱可能在 ③ 改过，不能沿用上次的判定）
+  // ④ 乐谱加工：进页面时按本页源谱的调号收窄调式选项（源谱是这一页自己载入或粘贴的）
   if (name === "scoreEdit" && typeof seSyncModeOptions === "function") seSyncModeOptions();
   // 设置页：进页面就把健康灯/模型校验/引擎模式刷一遍，不看陈旧读数
   if (name === "settings") {
@@ -5471,7 +5487,11 @@ function analyzeAbcDebounced() {
     } catch { $("abcAnalysis").textContent = ""; }
   }, 500);
 }
-$("abc").addEventListener("input", analyzeAbcDebounced);
+$("abc").addEventListener("input", () => {
+  analyzeAbcDebounced();
+  // 档位提示以前挂在跨页 store 的订阅上；store 删了，改成本页控件自己变化就重画
+  if (typeof paintScoreModeTag === "function") paintScoreModeTag();
+});
 // 切换 CoT 时即时重算提示（不重新请求分析）：让用户当场看到"会不会按我的谱走"
 $("cot").addEventListener("change", () => { if ($("abc").value.trim() && lastAbcAnalysis) renderAbcAnalysis(lastAbcAnalysis); });
 
@@ -5536,7 +5556,7 @@ $("abcAudio").onchange = async () => {
       setScoreLock(false);
       $("abcAudio").value = "";
       // 转谱成功的谱已落盘 data/scores/，记下 score_id 才谈得上导出 MIDI
-      LabStore.set({ abc: ($("abc").value || "").trim(), scoreId: rj.score_id || null, from: "score" });
+      scoreCurrentId = rj.score_id || null;
       $("abcRetryWrap").hidden = true;
       stickyNotify("乐谱提取完成", "已从参考歌曲提取 ABC 乐谱，可直接改词生成。", true);
       loadScoreList();
@@ -5580,7 +5600,7 @@ async function loadScoreList() {
           $("abcStatus").textContent = "✓ 已回填历史乐谱 " + s.id;
           $("abcStatus").style.color = "var(--ok, #34c759)";
           // 记下这是库里哪一份，导出 MIDI 才知道取哪个归档目录
-          LabStore.set({ abc: ($("abc").value || "").trim(), scoreId: s.id, from: "score" });
+          scoreCurrentId = s.id;
         } catch (e) { $("abcStatus").textContent = "回填失败：" + friendlyErr(e); }
       };
       const del = document.createElement("button");
@@ -5810,7 +5830,6 @@ async function renderHistory(fetchLimit) {
         <div class="h-actions">
           ${h.status === "done" && !isTrain && !(isRvc && h.assets && h.assets.full_song) ? '<button class="ghost" data-play>▶ 播放</button>' : ''}
           ${h.status === "done" && isRvc && h.assets && h.assets.full_song ? '<button class="ghost" data-play="full" title="换声人声 + 伴奏">▶ 成品</button><button class="ghost" data-play="dry" title="只有换声后的人声，无伴奏">🎤 干声</button>' : ''}
-          ${h.status === "done" && isTrain ? '<button class="ghost" data-use title="跳到 ⑨ 换声页并选中这个音色">去使用</button>' : ''}
           ${h.status === "done" && !isTrain ? '<button class="ghost" data-dl title="下载 WAV">⬇ 下载</button>' : ''}
           ${h.status !== "pending" ? '<button class="ghost" data-more>⋯ 更多</button>' : ''}
           <div class="h-more" data-more-menu>
@@ -5818,8 +5837,8 @@ async function renderHistory(fetchLimit) {
             ${h.status === "done" && !isTrain && !isRvc ? '<button class="ghost" data-rvc>🎙 送去换声</button>' : ''}
             ${!isTrain && !isRvc && (h.lyrics || "").trim() ? '<button class="ghost" data-lyrics>⬇ LRC歌词</button>' : ''}
             ${!isTrain && !isRvc && (h.lyrics || "").trim() ? '<button class="ghost" data-elrc>⬇ 逐字 eLRC</button>' : ''}
-            ${!isTrain && !isRvc ? '<button class="ghost" data-restore>↩ 回填创作</button>' : ''}
-            ${h.status === "done" && isTrain ? '<button class="ghost" data-use>去使用</button>' : ''}
+            ${!isTrain && !isRvc && (h.style || "").trim() ? '<button class="ghost" data-copy-style>📋 复制 Style</button>' : ''}
+            ${!isTrain && !isRvc && (h.lyrics || "").trim() ? '<button class="ghost" data-copy-lyrics>📋 复制 歌词</button>' : ''}
             <button class="ghost" data-rename>✏ 任务改名</button>
             <button class="danger" data-del>🗑 删除</button>
           </div>
@@ -5832,49 +5851,28 @@ async function renderHistory(fetchLimit) {
             ${h.assets.accompaniment_untuned ? '<button class="ghost" data-part-dl="accompaniment_untuned" title="分离出来的原调伴奏，没跟着变调；想自己配原调时用它">🎹 伴奏（原调）</button>' : ''}
           </div>` : ''}
         </div>`;
-      // 回填：style/歌词/参数 + 从 style 反解歌手性别（与刷新恢复共用一套逻辑）
-      // jump=true 时切到创作页（「回填」按钮）；播放路径传 false，留在当前页只回填参数。
-      const restore = (jump = true) => {
-        pushLyricUndo("从历史《" + (h.task_name || h.id || "未命名") + "》回填");   // 回填是整块替换，先留一档
-        $("style").value = h.style || ""; $("lyrics").value = stripMachineOutro(h.lyrics); $("cot").value = h.cot || "full"; $("abc").value = h.abc || "";
-        // 任务名也回填：历史里存的是当时实际用的名字（可能被改名过）
-        if ($("taskName")) $("taskName").value = h.task_name || "";
-        const gm = (h.style || "").match(/clear\s+(female|male)\s+vocal/i);
-        if (gm) $("gender").value = "clear " + gm[1].toLowerCase() + " vocal";
-        const p = h.params || {};
-        if (p.seed !== undefined && p.seed !== null) $("seed").value = p.seed;
-        if (p.cfg_scale !== undefined && p.cfg_scale !== null) $("cfg").value = p.cfg_scale;
-        if (p.num_inference_steps) $("steps").value = p.num_inference_steps;
-        if (jump) switchTab("sing");
-      };
-      // 播放 + 回填二合一：整条记录可点；失败/进行中的记录点击仅回填参数。
-      // 播放不跳页：留在历史页，音频在底部播放坞播放。
-      // 换声任务给两份：mode="full" 播「换声人声+伴奏」成品，mode="dry" 播干人声；
-      // 整条记录点击（mode 省略）默认播成品——只有干声时自动退回干声。
+      // 这一页只负责"这一条记录"的事：播放、下载、改名、删除、拿歌词。
+      // 以前点一行会顺手把 style/歌词/档位/种子等六个控件写进 ② 的创作表单（还不切页），
+      // 那是最隐蔽的一种跨页代填——用户看不见自己面前的表单何时被人改过。已删除。
+      // 要把参数带去创作页：用下面的「复制 Style / 复制 歌词」，粘到哪一页由你决定。
       const hasFullMix = isRvc && h.assets && h.assets.full_song;
-      const playAndRestore = async (mode) => {
-        if (h.status !== "done") { restore(false); toast("已回填该次生成参数", "ok"); return; }
+      const playRow = async (mode) => {
+        if (h.status !== "done") { toast("这条记录" + (h.status === "error" ? "生成失败" : "还没跑完") + "，没有音频可播", "err"); return; }
         const wantFull = hasFullMix && mode !== "dry";
         const rr = await fetch("/api/generate/audio/" + h.id);
-        if (rr.ok) {
-          if (wantFull) {
-            const fr = await fetch("/api/rvc/audio/" + h.id + "?part=full_song");
-            if (fr.ok) {
-              loadAudio(await fr.blob(), h.id + "_full_song.wav", h.task_name + " · 成品（人声+伴奏）");
-              restore(false);
-              toast("已回填参数并播放成品（换声人声+伴奏）", "ok");
-              return;
-            }
-            toast("成品文件缺失，改播干人声", "err");
+        if (!rr.ok) { toast("音频文件缺失（可能被清理了），记录仍在", "err"); return; }
+        if (wantFull) {
+          const fr = await fetch("/api/rvc/audio/" + h.id + "?part=full_song");
+          if (fr.ok) {
+            loadAudio(await fr.blob(), h.id + "_full_song.wav", h.task_name + " · 成品（人声+伴奏）");
+            return;
           }
-          loadAudio(await rr.blob(), h.id + ".wav",
-                    h.task_name + (isRvc ? " · 干人声（无伴奏）" : ""));
-          restore(false);
-          toast(isRvc ? "正在播放干人声（无伴奏）" : "已回填参数并开始播放", "ok");
+          toast("成品文件缺失，改播干人声", "err");
         }
-        else { toast("音频文件缺失，仅回填参数", "err"); restore(false); }
+        loadAudio(await rr.blob(), h.id + ".wav",
+                  h.task_name + (isRvc ? " · 干人声（无伴奏）" : ""));
       };
-      d.onclick = () => playAndRestore();
+      d.onclick = () => playRow();
       // 错误详情：点击展开/收起完整错误信息（不触发行点击的回填）
       const errLine = d.querySelector("[data-err]");
       if (errLine) errLine.onclick = (e) => {
@@ -5889,7 +5887,7 @@ async function renderHistory(fetchLimit) {
         }
       };
       d.querySelectorAll("[data-play]").forEach((one) => {
-        one.onclick = (e) => { e.stopPropagation(); playAndRestore(one.dataset.play || undefined); };
+        one.onclick = (e) => { e.stopPropagation(); playRow(one.dataset.play || undefined); };
       });
       // 进行中任务的终止/重启（仅队列条目有这两个按钮）
       const sb = d.querySelector("[data-stop]");
@@ -5975,8 +5973,10 @@ async function renderHistory(fetchLimit) {
           } catch (err) { toast("下载失败：" + friendlyErr(err), "err"); }
         };
       });
-      const rb = d.querySelector("[data-restore]");
-      if (rb) rb.onclick = (e) => { e.stopPropagation(); restore(); toast("已回填该次生成参数", "ok"); };
+      const cs = d.querySelector("[data-copy-style]");
+      if (cs) cs.onclick = (e) => { e.stopPropagation(); copyOut(h.style, "Style"); };
+      const cl = d.querySelector("[data-copy-lyrics]");
+      if (cl) cl.onclick = (e) => { e.stopPropagation(); copyOut(stripMachineOutro(h.lyrics), "歌词"); };
       // 下载歌词时间轨：已生成直接下载，否则触发后端对齐并轮询。
       // LRC（行级）与 eLRC（逐字卡拉OK）出自同一次对齐，只是取不同字段。
       async function downloadTrack(btn, fmt) {
@@ -6024,75 +6024,15 @@ async function renderHistory(fetchLimit) {
       if (lb) lb.onclick = (e) => { e.stopPropagation(); downloadTrack(lb, "lrc"); };
       const eb = d.querySelector("[data-elrc]");
       if (eb) eb.onclick = (e) => { e.stopPropagation(); downloadTrack(eb, "elrc"); };
-      // 音色制作完成：跳到换声页并选中该音色
-      const ub = d.querySelector("[data-use]");
-      if (ub) ub.onclick = async (e) => {
-        e.stopPropagation();
-        await renderRvc();
-        const sel = $("rvcModel");
-        const want = h.model || ((h.voice_name || "") + ".pth");
-        const found = sel && [...sel.options].some(o => o.value === want);
-        if (found) sel.value = want;
-        switchTab("convert");
-        // 音色不在下拉里时以前也照旧报"已选中"——那是句假话，用户到换声页会发现选的是别的音色
-        toast(found ? "已选中音色：" + want.replace(/\.pth$/i, "")
-                    : "换声页的下拉里没有「" + want.replace(/\.pth$/i, "") + "」，请手动选一个音色", found ? "ok" : "err");
-      };
-      // 一键送去换声：选音色后服务端直接从 output/ 取该歌曲转换，无需手动上传
+      // 「去使用」（训练完跳换声页并替它选中音色）已删除：那是在替别的页面做选择。
+      // 训练好的音色本来就在 ⑨ 的音色下拉里，名字就写在训练卡片上。
+      // 一键换声：只把「这条记录的 ID + 当场选的音色/变调」交给服务端，
+      // 服务端直接从 output/ 取那份音频去转。不读 ⑨ 页的控件、不替 ⑨ 页写任务列表。
       const rv = d.querySelector("[data-rvc]");
-      if (rv) rv.onclick = async (e) => {
+      if (rv) rv.onclick = (e) => {
         e.stopPropagation();
-        // 推荐参数先落到位：历史页转发用的也是换声页那几个输入框的值，
-        // 没加载过就是 HTML 的初始默认值，会和服务端推荐档不一致。
-        if (!rvcReco) await renderRvc();
-        let models = [];
-        try { models = (await (await fetch("/api/rvc/models")).json()).models || []; } catch {}
-        if (!models.length) { toast("没有可用音色，请先到 ⑦ 音色制作训练，或 ⑧ 音色库导入", "err"); return; }
-        // 音色改成下拉、变调改成数字框：以前是连着两个 prompt()，要凭记忆敲准确的音色名，
-        // 敲错只得到一句"没有叫 XX 的音色"；空着则会静默用列表第一个（用户以为在换王菲，实际是孙燕姿）。
-        const pitchDefault = (rvcReco && rvcReco.pitch !== null) ? rvcReco.pitch : (parseInt($("rvcPitch").value, 10) || 0);
-        inlineForm(rv, {
-          anchor: d,
-          title: "🎤 送去换声：" + (h.task_name || (h.style || "").split(",")[0] || h.id),
-          okText: "开始换声", busyText: "提交中…",
-          hint: "变调半音：男转女 +12 / 女转男 -12 / 不变 0" +
-                (rvcReco && rvcReco.pitch !== null ? "（已按上次分析的推荐值填好）" : "（⑨ 页「分析音域 → 变调建议」可自动算出）") +
-                "；其余档位沿用 ⑨ 页当前设置。",
-          fields: [
-            { id: "model", label: "音色", kind: "select", value: models[0],
-              options: models.map(x => ({ v: x, t: x.replace(/\.pth$/i, "") })) },
-            { id: "pitch", label: "变调", kind: "number", value: pitchDefault, min: -36, max: 36, maxlen: 4 },
-          ],
-          validate: (v) => {
-            // Number("") 是 0、Number("12半音") 是 NaN：任何一种都会把变调静默吞掉，
-            // 成品比预期低一个八度还像"按我填的做的"。这里宁可不提交。
-            if (!/^[+-]?\d{1,3}$/.test(v.pitch)) return { msg: "变调要填整数半音（例如 12、-12、0），没有提交", focus: "pitch" };
-            const p = Number(v.pitch);
-            if (p < -36 || p > 36) return { msg: "变调超出 ±36 半音（三个八度），确认没填错", focus: "pitch" };
-            if (!models.includes(v.model)) return { msg: "音色列表已变，请重新展开选择", focus: "model" };
-            return null;
-          },
-        }, async (v) => {
-          const model = v.model, pitch = Number(v.pitch);
-          const r = await fetch(`/api/rvc/convert/${h.id}`, {
-            method: "POST", headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({
-              model,
-              task_name: ((h.task_name || (h.style || "").split(",")[0] || "") + "·" + model.replace(/\.pth$/i, "")).slice(0, 100),
-              ...rvcParamValues(pitch),
-            }),
-          });
-          const j = await r.json().catch(() => ({}));
-          if (!r.ok) throw new Error(j.detail || "提交失败");
-          // 直接并入换声页的任务列表：状态由服务端回包给（排队 or 开跑），位次也一并带上
-          rvcJobs.unshift({ model, ...(j.job || {}), id: j.id });
-          renderRvcList();
-          pollRvc(j.id);
-          const ahead = Math.max(0, Number(j.position || 1) - 1);
-          toast(ahead ? `已排队（第 ${j.position} 位，前面还有 ${ahead} 个），去 ⑨ 歌曲换声看进度`
-                      : `已送入换声（${model.replace(/\.pth$/i, "")}），去 ⑨ 歌曲换声看进度`, "ok");
-          switchTab("convert");
-        });
+        convertServerSong(h.id, h.task_name || (h.style || "").split(",")[0] || h.id,
+                          d, () => renderHistory());
       };
       // 重命名任务：改 meta 的 task_name，历史展示与下载命名同步生效
       const rn = d.querySelector("[data-rename]");
@@ -6636,9 +6576,10 @@ $$("[data-preset]").forEach(b => {
 });
 
 function rvcParamValues(pitch) {
-  // 换声页这套滑杆只在这里读一次：历史页「送去换声」也复用同一份。
-  // 以前送去换声只带 model + pitch，检索强度/protect/去和声/静音门全走服务端默认，
-  // 于是同一个滑杆在两个入口含义不同——页面上调到 0.6，从历史页走一遍还是 0.75。
+  // 换声页这套滑杆只在这里读一次，也只有这一处读——它就是 ⑨ 页自己的输入。
+  // 以前历史页/成片出口的「送去换声」也来读这十个控件，于是同一个滑杆在两个入口含义不同，
+  // 而且 ⑨ 页的界面会被别的页面当成隐式参数源。现在那两个入口改走服务端为该音色推荐的官方档
+  // （见 convertServerSong），要自己调档位就到 ⑨ 页来。
   const v = {
     pitch: pitch === undefined ? (Number($("rvcPitch").value) || 0) : pitch,
     f0_method: $("rvcF0").value,
@@ -6654,10 +6595,151 @@ function rvcParamValues(pitch) {
   return v;
 }
 
+// 给服务器上已有的一首成品换声：⑨ 之外的入口（⑪ 任务管理、② 成片出口）都走这里。
+// 只问用户两件事——用哪个音色、变调几个半音；其余档位一律用服务端为该音色推荐的官方档，
+// 因为那两个入口没有滑杆，读 ⑨ 页的滑杆等于让一个页面替另一个页面做决定。
+// 要自己调检索强度/protect/去和声/静音门，请到 ⑨ 歌曲换声页提交。
+async function convertServerSong(rid, title, anchor, onDone) {
+  let items = [];
+  try {
+    const j = await (await fetchT("/api/rvc/models", {}, 25000)).json();
+    items = j.items || [];
+  } catch (e) { toast("读音色列表失败：" + friendlyErr(e), "err"); return; }
+  if (!items.length) { toast("没有可用音色：先到 ⑦ 音色制作训练，或在 ⑧ 音色库导入", "err"); return; }
+  inlineForm(anchor, {
+    anchor: anchor && anchor.parentElement ? anchor.parentElement : anchor,
+    title: "🎤 送去换声：" + String(title || rid).slice(0, 26),
+    okText: "开始换声", busyText: "提交中…",
+    hint: "只定音色与变调，其余用服务端为该音色推荐的官方档；要细调档位请到 ⑨ 歌曲换声页。" +
+          "变调半音：男转女 +12 / 女转男 −12 / 不变 0。",
+    fields: [
+      { id: "model", label: "音色", kind: "select", value: items[0].name,
+        options: items.map(x => ({ v: x.name, t: (x.name || "").replace(/\.pth$/i, "")
+          + (x.range_summary ? " · " + x.range_summary : "") })) },
+      { id: "pitch", label: "变调（半音）", kind: "number", value: 0, min: -36, max: 36, maxlen: 4 },
+    ],
+    validate: (v) => {
+      // Number("") 是 0、Number("12半音") 是 NaN：任何一种都会把变调静默吞掉，
+      // 成品比预期低一个八度还像"按我填的做的"。这里宁可不提交。
+      if (!/^[+-]?\d{1,3}$/.test(v.pitch)) return { msg: "变调要填整数半音（例如 12、-12、0），没有提交", focus: "pitch" };
+      const p = Number(v.pitch);
+      if (p < -36 || p > 36) return { msg: "变调超出 ±36 半音（三个八度），确认没填错", focus: "pitch" };
+      if (!items.some(x => x.name === v.model)) return { msg: "音色列表已变，请重新展开选择", focus: "model" };
+      return null;
+    },
+  }, async (v) => {
+    const it = items.find(x => x.name === v.model) || {};
+    const rec = it.recommend || {};
+    const model = v.model, pitch = Number(v.pitch);
+    const body = { model, pitch,
+      task_name: (String(title || "") + "·" + model.replace(/\.pth$/i, "")).slice(0, 100) };
+    // 官方推荐档由服务端给：前端不再抄一份默认值，免得两边的数分叉后
+    // 页面显示的和真正跑的不是同一套
+    ["f0_method", "index_rate", "protect", "rms_mix_rate", "filter_radius", "resample_sr"]
+      .forEach(k => { if (rec[k] !== undefined && rec[k] !== null) body[k] = rec[k]; });
+    const r = await fetchT(`/api/rvc/convert/${encodeURIComponent(rid)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    }, 60000);
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.detail || "提交失败");
+    const ahead = Math.max(0, Number(j.position || 1) - 1);
+    toast(ahead ? `已排队（第 ${j.position} 位，前面还有 ${ahead} 个）——进度在本页列表里看`
+                : "已送入换声（" + model.replace(/\.pth$/i, "") + "）——进度在本页列表里看", "ok");
+    if (typeof onDone === "function") onDone();
+  });
+}
+
+// ---------- 服务器素材下拉 ----------
+// 每个页面自己到服务器的库里取输入：⑨ 的音源、⑦ 的训练素材都从这里挑。
+// 提交时只传标识（<rid> 或 <rid>|<part>），那份文件由服务端自己去取——
+// 既不再"把 A 页的产物塞进 B 页的文件框"，浏览器也不用把几十 MB 音频下载再上传绕一圈。
+async function serverAudioOptions() {
+  const out = [];
+  try {
+    const j = await (await fetchT("/api/audio/separate/list", {}, 25000)).json();
+    (j.items || []).filter(m => m.status === "done" && (m.parts || []).length)
+      .slice(0, 12).forEach(m => {
+        const label = String(m.task_name || m.src_name || m.id).slice(0, 26);
+        m.parts.forEach(p => out.push({
+          v: m.id + "|" + p,
+          t: "🎤 分离产物 · " + label + " · " + ((SEP_PARTS.find(x => x.key === p) || {}).label || p),
+        }));
+      });
+  } catch (e) { /* 没有分离记录只是少一批选项，不是错误 */ }
+  try {
+    const g = await (await fetchT("/api/generate/list", {}, 25000)).json();
+    (g.items || []).filter(it => (it.kind || "generate") === "generate" && it.status === "done")
+      .slice(0, 30).forEach(it => out.push({
+        v: it.id,
+        t: "🎵 成品歌 · " + String(it.task_name || (it.style || "").split(",")[0] || it.id).slice(0, 26),
+      }));
+  } catch (e) { /* 同上 */ }
+  return out;
+}
+async function paintSrcPick(selId, noneLabel) {
+  const sel = $(selId);
+  if (!sel) return;
+  const keep = sel.multiple ? [...sel.selectedOptions].map(o => o.value) : sel.value;
+  const opts = await serverAudioOptions();
+  sel.innerHTML = "";
+  if (!sel.multiple) {
+    const o0 = document.createElement("option");
+    o0.value = ""; o0.textContent = noneLabel;
+    sel.appendChild(o0);
+  }
+  opts.forEach(o => {
+    const el = document.createElement("option");
+    el.value = o.v; el.textContent = o.t;
+    sel.appendChild(el);
+  });
+  sel.disabled = !opts.length;
+  if (!opts.length) {
+    const el = document.createElement("option");
+    el.value = ""; el.textContent = "（服务器上还没有可选的音频）";
+    sel.appendChild(el);
+    return;
+  }
+  if (sel.multiple) {
+    const set = new Set(keep);
+    [...sel.options].forEach(o => { if (set.has(o.value)) o.selected = true; });
+  } else if ([...sel.options].some(o => o.value === keep)) sel.value = keep;
+}
+
+$("rvcSrcRefresh").onclick = () => paintSrcPick("rvcSrcPick", "— 不用服务器素材，用上面上传的文件 —");
+$("trainSrcRefresh").onclick = () => paintSrcPick("trainSrcPick", "");
+// 选了纯人声/已去和声的产物却还勾着「先做人声分离」= 白等一遍 GPU。
+// 这里只把代价说清楚，不替用户改勾选——以前那种"自动取消勾选"就是在替别人做决定。
+$("rvcSrcPick").onchange = () => {
+  const v = $("rvcSrcPick").value || "";
+  const now = $("rvcFileNow");
+  if (!now) return;
+  if (!v) { now.textContent = ""; return; }
+  const dry = /\|vocals(_noharmony)?$/.test(v);
+  const acc = /\|accompaniment$/.test(v);
+  const whole = v.indexOf("|") === -1;
+  now.textContent = "音源：服务器上这份 " + v.split("|").join(" · ") +
+    (dry && $("rvcSep").checked
+      ? "（已是纯人声，勾着「先做人声分离」会再分离一遍，白等约 1.5 分钟——不需要就自己取消勾选）"
+      : dry ? "（已是纯人声，可以直接换声）"
+      : acc ? "（这是伴奏：里面基本没有人声可换，换声多半不是你要的效果）"
+      : whole ? "（整首歌：想只换人声就勾着「先做人声分离」）"
+      : "");
+};
+
 $("rvcGo").onclick = async () => {
   if (!engineGate($("rvcStatus"))) return;
   const f = $("rvcFile").files && $("rvcFile").files[0];
-  if (!f) { fieldProblem($("rvcFile"), $("rvcStatus"), "请先选择音频文件（换声的输入）。"); return; }
+  const srcId = ($("rvcSrcPick") || {}).value || "";
+  if (!f && !srcId) {
+    fieldProblem($("rvcFile"), $("rvcStatus"),
+      "换声要有输入：要么在上面选一个音频文件，要么在下面「服务器素材」里挑一首已经在本机上的歌/干声。");
+    return;
+  }
+  if (f && srcId) {
+    fieldProblem($("rvcSrcPick"), $("rvcStatus"),
+      "上传的文件和服务器素材只能用一个：现在两边都选了，请清掉一个（默认用你选中的服务器素材就不必重传）。");
+    return;
+  }
   const model = $("rvcModel").value;
   if (!model) {
     fieldProblem($("rvcModel"), $("rvcStatus"), "没有可用的音色模型（rvc/assets/weights 下需有 .pth）—— 先到「音色制作」做一个，或把 .pth 放进权重目录后刷新。");
@@ -6672,15 +6754,14 @@ $("rvcGo").onclick = async () => {
     + `区间外的音高该音色基本没学过，成品很可能发劈、失真、带金属声。\n`
     + `推荐值 ${rvcReco.pitch} 就在区间内。\n\n仍要按当前变调提交吗？`)) return;
   const fd = new FormData();
-  fd.append("file", f);
+  if (srcId) fd.append("source_id", srcId); else fd.append("file", f);
   fd.append("model", model);
   fd.append("task_name", $("rvcTaskName").value.trim());
   Object.entries(rvcParamValues()).forEach(([k, val]) => fd.append(k, val));
   $("rvcGo").disabled = true;
   $("rvcStatus").className = "status";
-  $("rvcStatus").textContent = $("rvcSep").checked
-    ? "上传并提交转换…（已开启人声分离，分离阶段较慢，请耐心等待）"
-    : "上传并提交转换…";
+  $("rvcStatus").textContent = (srcId ? "取服务器上的那份音频并提交转换…" : "上传并提交转换…")
+    + ($("rvcSep").checked ? "（已开启人声分离，分离阶段较慢，请耐心等待）" : "");
   try {
     const r = await fetch("/api/rvc/convert", { method: "POST", body: fd });
     const d = await r.json();
@@ -7030,7 +7111,7 @@ function renderRvcTrainList() {
         ${j.status === "error" ? `<div class="h-sub truncate" title="${escapeHtml(j.error || "")}">${escapeHtml((j.error || "").slice(0, 100))}</div>` : ""}
         ${liveLog ? `<div class="h-sub truncate" style="color:var(--acc-text);" title="${escapeHtml(liveLog)}">${escapeHtml(liveLog)}</div>` : ""}
       </div>
-      ${j.status === "done" ? '<button class="ghost" data-use>去使用</button>' : ''}
+      ${j.status === "done" ? '<button class="ghost" data-copy-name title="复制这个音色名，到 ⑨ 的音色下拉里找它">📋 复制音色名</button>' : ''}
       ${j.status === "error" ? '<button class="ghost" data-resume>↻ 续跑</button>' : ''}
       ${j.status === "done" ? '<button class="ghost" data-resume title="从断点继续；填别的轮数=归档旧检查点从头重训">↻ 重训</button>' : ''}
       ${j.status === "paused" ? '<button class="ghost" data-resume>▶ 继续</button>' : ''}
@@ -7200,19 +7281,9 @@ function renderRvcTrainList() {
         toast("定稿失败：" + friendlyErr(err), "err");
       }
     };
-    const ub = d.querySelector("[data-use]");
-    if (ub) ub.onclick = async (e) => {
-      e.stopPropagation();
-      await renderRvc();
-      const sel = $("rvcModel");
-      const want = j.model || (j.name + ".pth");
-      const found = sel && [...sel.options].some(o => o.value === want);
-      if (found) sel.value = want;
-      // 与历史页同名按钮同口径：只选不切页的话，用户留在制作页，看不到"被选中"这件事
-      switchTab("convert");
-      toast(found ? "已选中音色：" + want.replace(/\.pth$/i, "") + "，切到换声页开跑"
-                  : "下拉里还没有「" + want.replace(/\.pth$/i, "") + "」——定稿/索引可能未就绪，刷新后再试", found ? "ok" : "err");
-    };
+    // 「去使用」（跳到 ⑨ 并替它选中音色）已删：那是别的页面的表单，选哪个音色该由用户在 ⑨ 自己定。
+    const ub = d.querySelector("[data-copy-name]");
+    if (ub) ub.onclick = (e) => { e.stopPropagation(); copyOut(j.model || (j.name + ".pth"), "音色名"); };
     el.appendChild(d);
   });
 }
@@ -7318,8 +7389,12 @@ document.addEventListener("visibilitychange", () => {
 // 素材体检：结果与服务端那份素材的指纹放在一起。换了文件就必须重传，
 // 没换则训练直接复用（dataset_id），几十分钟的素材不必传两遍。
 let rvcChecked = { id: "", sig: "" };
+const rvcTrainSrcIds = () => [...(($("trainSrcPick") || {}).selectedOptions || [])]
+  .map(o => o.value).filter(Boolean);
+// 指纹要把"服务器上选的那几份"一起算进去：只按上传文件算的话，
+// 换了服务器素材却仍"复用刚体检过的这一份"，练出来的就不是用户以为的那批。
 const rvcFileSig = () => [...(($("rvcTrainFiles") || {}).files || [])]
-  .map(f => f.name + ":" + f.size).join("|");
+  .map(f => f.name + ":" + f.size).concat(rvcTrainSrcIds()).join("|");
 
 function rvcCheckText(rep) {
   const min = (rep.total_sec || 0) / 60;
@@ -7347,13 +7422,15 @@ $$("[data-epochs]").forEach(b => {
 
 $("rvcTrainCheck").onclick = async () => {
   const files = $("rvcTrainFiles").files;
-  if (!files || !files.length) {
+  const srcIds = rvcTrainSrcIds();
+  if ((!files || !files.length) && !srcIds.length) {
     $("rvcTrainStatus").className = "status err";
-    $("rvcTrainStatus").textContent = "请先选择样本文件，再点体检。";
+    $("rvcTrainStatus").textContent = "体检要有素材：上传样本文件，或在下面「服务器素材」里勾选几段（⑩ 分离出的人声最直接）。";
     return;
   }
   const fd = new FormData();
   for (const f of files) fd.append("files", f);
+  if (srcIds.length) fd.append("source_ids", srcIds.join(","));
   const box = $("rvcTrainCheckReport");
   $("rvcTrainCheck").disabled = true;
   box.style.display = "block";
@@ -7385,12 +7462,20 @@ $("rvcTrainGo").onclick = async () => {
   if (!engineGate($("rvcTrainStatus"))) return;
   const name = $("rvcTrainName").value.trim();
   const files = $("rvcTrainFiles").files;
+  const srcIds = rvcTrainSrcIds();
   if (!name) { fieldProblem($("rvcTrainName"), $("rvcTrainStatus"), "请先填写音色名称（英文/拼音）。"); return; }
-  if (!files || !files.length) { fieldProblem($("rvcTrainFiles"), $("rvcTrainStatus"), "请选择至少一个人声样本文件（干声最佳）。"); return; }
+  if ((!files || !files.length) && !srcIds.length) {
+    fieldProblem($("rvcTrainFiles"), $("rvcTrainStatus"),
+      "请至少给一段人声样本：上传文件，或在下面「服务器素材」里勾选几段（干声最佳）。");
+    return;
+  }
   const fd = new FormData();
   const reuse = rvcChecked.id && rvcChecked.sig === rvcFileSig();
   if (reuse) fd.append("dataset_id", rvcChecked.id);
-  else for (const f of files) fd.append("files", f);
+  else {
+    for (const f of files) fd.append("files", f);
+    if (srcIds.length) fd.append("source_ids", srcIds.join(","));
+  }
   fd.append("name", name);
   const ep = parseInt($("rvcTrainEpochs").value || "200", 10);
   if (!(ep >= 1 && ep <= 1200)) {
@@ -7425,51 +7510,14 @@ $("rvcTrainGo").onclick = async () => {
 
 // ================= v2.0 · 跨页共享 + 创作五页（①②③④⑤） =================
 
-// ---------- 跨页共享 store ----------
-// 单一真相仍是 #style / #lyrics / #abc 这几个 DOM 节点本身（②⑤ 共用同一份表单 DOM，
-// ③⑤ 共用同一个谱框），所以"跳转后目标页必须已是新值"由 DOM 天然保证。
-// LabStore 存的是页间意图与出处：这段 Style 从哪一页来、对应哪套配方、③ 的谱是哪条 scoreId，
-// 以及给 ⑥ AI 工作台回填用。
-const LabStore = (() => {
-  const KEY = "yue2_lab_store_v2";
-  const subs = new Set();
-  let state = { style: "", asm: null, lyrics: "", abc: "", scoreId: null, params: {}, from: "", ts: 0 };
-  let timer = null;
-  const write = () => {
-    timer = null;
-    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { console.warn("LabStore 写入失败：", e); }
-  };
-  return {
-    get state() { return state; },
-    set(patch) {
-      Object.assign(state, patch || {}, { ts: Date.now() });
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(write, 400);
-      for (const fn of [...subs]) { try { fn(state); } catch (e) { console.warn(e); } }
-    },
-    subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
-    init() {
-      try {
-        const j = JSON.parse(localStorage.getItem(KEY) || "null");
-        if (j && typeof j === "object") Object.assign(state, j);
-      } catch (e) { console.warn("LabStore 读取失败：", e); }
-      // 旧的两条持久化只当"首次升级的搬迁源"。yue2_compose_form 仍然是表单恢复的真源，
-      // 这里只读不回写——两个写入方互写同一个 key 迟早互相覆盖。
-      try {
-        const f = JSON.parse(localStorage.getItem("yue2_compose_form") || "null");
-        if (f) {
-          if (!state.style && f.style) state.style = f.style;
-          if (!state.lyrics && f.lyrics) state.lyrics = f.lyrics;
-          if (!state.abc && f.abc) state.abc = f.abc;
-        }
-        const a = JSON.parse(localStorage.getItem(ASM_KEY) || "null");
-        if (a && !state.asm) state.asm = a;
-      } catch (e) { console.warn("旧持久化搬迁失败：", e); }
-      this.set({});
-    },
-  };
-})();
-LabStore.init();
+// ---------- 页面独立性（v10.12 起的硬规矩）----------
+// 每个页面都必须能单独使用：输入只来自①用户自己填的、②服务器上的库（乐谱库/音色库/历史/
+// 分离产物）、③本页的运行状态。不存在"把 A 页的数据自动填进 B 页"这条路——要带过去就复制。
+//
+// 以前这里有一个 LabStore 跨页 store，实测下来它写的字段几乎没人读（唯一真实用途是用别的页
+// 留下的 scoreId 去预选 ⑤ 的乐谱下拉），删除。②⑤ 共用同一份表单 DOM、③⑤ 共用同一个谱框
+// （switchTab 里 moveInto 搬节点），这是"同一页的不同视图"，不是跨页搬运：用户在哪儿改的都是
+// 同一个控件，没有第二份会漂移的副本。
 
 // ---------- 统一轮询器 ----------
 // 新增的长任务（⑩ 分离、⑫ 模型修复）一律走这里，别再抄第三份、第四份。
@@ -7588,7 +7636,6 @@ function setAsmMode(mode, opts) {
 $("segPreset").onclick = () => setAsmMode("preset");
 $("segSix").onclick = () => setAsmMode("six");
 $("toSettingsModel").onclick = () => switchTab("settings");
-LabStore.subscribe(() => { syncStylePreview(); updateStyleRecipe(); });
 
 // ---------- ② 批次：连发与队列是两件事，摘要写在折叠标题上 ----------
 function updateBatchSummary() {
@@ -7633,10 +7680,6 @@ function bindDropZone(zoneId, inputId, onFiles) {
   });
 }
 bindDropZone("abcDrop", "abcAudio");
-// 把当前谱框内容记进 store（③→⑤ 的出处，也供 ⑤ 的"乐谱来源=用当前谱"判断）
-function pushAbcToStore() {
-  LabStore.set({ abc: (($("abc") || {}).value || "").trim(), from: "score" });
-}
 $("abcCopy").onclick = async () => {
   const v = $("abc").value.trim();
   if (!v) { toast("谱框是空的", "err"); return; }
@@ -7650,9 +7693,11 @@ $("abcRetryPure").onclick = () => {
   $("abcAudio").click();
 };
 // 导出：mid 由转谱时归档，abc 直接给源码
+// 这是 ③ 自己的运行状态（本页正在摆弄哪一份谱），不是跨页状态：别的页面看不到也不需要知道。
+let scoreCurrentId = null;
 async function exportScore(fmt) {
   const st = $("abcIoStatus");
-  const id = LabStore.state.scoreId;
+  const id = scoreCurrentId;
   if (!id) { st.textContent = "还没有可导出的乐谱：先在左边转一份谱，或从乐谱库点一行载入。"; return; }
   st.textContent = "导出中…";
   try {
@@ -7692,8 +7737,8 @@ async function loadScorePicker() {
       o.textContent = (s.time || s.id) + (s.cot ? " [" + s.cot + "]" : "") + " · " + (s.abc_preview || "").replace(/\s+/g, " ").slice(0, 34);
       sel.appendChild(o);
     });
-    if (LabStore.state.scoreId) sel.value = LabStore.state.scoreId;
-  } catch (e) { /* 拉不到列表只是不能"从库里选"，手填与从③带来不受影响 */ }
+    // 不再按"别的页面留下的 scoreId"预选：那等于替用户做选择。默认停在列表第一条。
+  } catch (e) { /* 拉不到列表只是不能"从库里选"，手填不受影响 */ }
 }
 $("scoreSrc").onchange = () => {
   const v = $("scoreSrc").value;
@@ -7711,7 +7756,6 @@ $("scoreLoadBtn").onclick = async () => {
     const sug = rec.analysis && rec.analysis.cot_suggested;
     if (sug) $("cot").value = sug;
     if (typeof renderAbcAnalysis === "function") renderAbcAnalysis(rec.analysis);
-    LabStore.set({ abc: (rec.abc || "").trim(), scoreId: id, from: "lib" });
     if (typeof analyzeAbcDebounced === "function") analyzeAbcDebounced();
     toast("已载入乐谱 " + id, "ok");
     updateLyricBarHint();
@@ -7720,12 +7764,11 @@ $("scoreLoadBtn").onclick = async () => {
 $("scoreClear").onclick = () => {
   if (!confirm("清空乐谱？清空后 ⑤ 就等于 ②：旋律由模型自己规划。")) return;
   $("abc").value = "";
-  LabStore.set({ abc: "", scoreId: null });
   if (typeof renderAbcAnalysis === "function") renderAbcAnalysis(null);
   $("abcAnalysis").textContent = "";
   updateLyricBarHint();
 };
-$("scoreFromAudio").onclick = () => { pushAbcToStore(); switchTab("score"); };
+$("scoreFromAudio").onclick = () => switchTab("score");
 // 填词助手：每段行数对不上谱的段落数/小节数时提前警告，别等生成 5 分钟才发现唱不下
 function updateLyricBarHint() {
   const el = $("lyricBarWarn");
@@ -7758,7 +7801,6 @@ function paintScoreModeTag() {
   const chords = lastAbcAnalysis && lastAbcAnalysis.chord_count;
   tag.textContent = "有谱 · " + (chords ? "带和弦（走 full）" : "纯旋律（走 melody）");
 }
-LabStore.subscribe(paintScoreModeTag);
 
 // ================= v2.0 · ④ 乐谱加工 =================
 // 这一页没有任务、没有进度、没有 GPU：改一个参数就打一次 /api/abc/edit，同步返回新谱。
@@ -7894,12 +7936,8 @@ $("seClear").onclick = () => {
   seScoreId = null;
   seSyncRange(); sePaintChips(); seSyncModeOptions(); seRun();
 };
-$("seFromScore").onclick = () => {
-  const abc = (($("abc") || {}).value || "").trim();
-  if (!abc) { toast("③ 的谱框是空的：先去 ③ 转一份或手填", "err"); return; }
-  $("seSrc").value = abc; seScoreId = null; seSyncModeOptions(); seRun();
-  toast("已取来 ③ 当前的谱", "ok");
-};
+// 「↩ 用 ③ 当前的谱」已删：那是读另一个页面的谱框。③ 每次转谱都自动落进乐谱库，
+// 本页的「📁 从乐谱库载入」和「📋 粘贴」就是自己的两个入口。
 $("seFromLib").onclick = async () => {
   const sel = $("seLibPick");
   if (sel && !sel.hidden && sel.options.length) { sel.hidden = false; sel.focus(); return; }
@@ -7957,15 +7995,8 @@ $("seDownload").onclick = () => {
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 };
-$("seToGen").onclick = () => {
-  const t = $("seOut").value.trim();
-  if (!t) { toast("还没有加工结果", "err"); return; }
-  $("abc").value = t;
-  LabStore.set({ abc: t, scoreId: seScoreId, from: "scoreEdit" });
-  if (typeof analyzeAbcDebounced === "function") analyzeAbcDebounced();
-  switchTab("scoreSing");
-  toast("谱已送进 ⑤（歌词与曲风照旧，不受影响）", "ok");
-};
+// 「→ ⑤ 用这个谱生成」已删：那会把结果写进另一个页面的谱框再替用户切页。
+// 现在只有「💾 存入乐谱库」这一条出路——存进库之后，⑤ 自己从库里挑，两份谱各自留痕。
 sePaintChips(); seSyncRange(); seSyncModeOptions();
 // ================= v2.0 · ⑫ 设置页 =================
 
@@ -8241,12 +8272,8 @@ function renderSepParts(job) {
     row.appendChild(name);
     row.appendChild(mk("▶ 试听", () => playRemoteAudio(url, p.label)));
     row.appendChild(mk("⬇ 下载", () => downloadRemoteAudio(url, assets[p.key])));
-    if (p.key !== "accompaniment") {
-      row.appendChild(mk("→⑨ 换声", () => handoffAudio(p.key, "convert")));
-      row.appendChild(mk("→⑦ 训练素材", () => handoffAudio(p.key, "train")));
-    } else {
-      row.appendChild(mk("→③ 转谱", () => handoffAudio(p.key, "score")));
-    }
+    // 这里不再有「→⑨ 换声 / →⑦ 训练素材 / →③ 转谱」：产物已经在服务器上，
+    // 需要它的页面自己从服务器素材列表里选，不在页面之间递来递去。
     box.appendChild(row);
     const h = document.createElement("div");
     h.className = "hint-xs";
@@ -8273,60 +8300,9 @@ function downloadRemoteAudio(url, fname) {
   a.href = url; a.download = fname || "audio.wav";
   document.body.appendChild(a); a.click(); a.remove();
 }
-// 跨页带音源：服务端文件拉成 File 塞进目标页的 file input。
-// file input 不能被赋路径，只能塞对象——所以"送去⑨/⑦"必须是真把音频取回来。
-async function handoffAudio(part, target) {
-  const id = sepCurrent;
-  if (!id) { toast("还没有可送的产物", "err"); return; }
-  const url = "/api/audio/separate/audio/" + encodeURIComponent(id) + "?part=" + part;
-  const label = (SEP_PARTS.find((p) => p.key === part) || {}).label || part;
-  const fname = id + "_" + part + ".wav";
-  if (target === "score" && !confirm("把这份" + label + "送去 ③ 转谱？\n\n送去后会立刻开始转谱（约 1-2 分钟，占用 GPU 串行队列）。")) return;
-  toast("正在取回" + label + "…", "");
-  const boxId = target === "convert" ? "rvcFile" : (target === "train" ? "rvcTrainFiles" : "abcAudio");
-  try {
-    await pullServerAudioInto(url, boxId, fname, target === "train");
-    switchTab(target);
-    if (target === "convert") {
-      const label2 = (SEP_PARTS.find((p) => p.key === part) || {}).label || part;
-      $("rvcFileNow").textContent = "音源：来自 ⑩ " + id + " · " + label2;
-      // 已经是纯人声了，再让它"先做人声分离"就是白跑一遍 GPU（还会把人声再切一遍）
-      if (part !== "accompaniment" && $("rvcSep").checked) {
-        $("rvcSep").checked = false;
-        $("rvcStatus").textContent = "已导入 " + label2 + "，「先做人声分离」自动取消勾选（再分离一次是白等约 1.5 分钟）。选音色与变调后即可换声。";
-      } else {
-        $("rvcStatus").textContent = "音源已从 ⑩ 分离结果导入（" + label2 + "），选音色与变调后即可换声。";
-      }
-    }
-    if (target === "train") {
-      $("rvcTrainFilesNow").textContent = "样本框里现有 " + $("rvcTrainFiles").files.length + " 个文件（刚从 ⑩ 追加）";
-      $("rvcTrainStatus").textContent = "素材已从 ⑩ 分离结果导入（" + (SEP_PARTS.find((p) => p.key === part) || {}).label + "）。建议先点「先体检素材」看时长/静音/爆音，再决定轮数。";
-      if (part === "vocals_noharmony" && $("rvcTrainClean").value !== "off" && !$("rvcTrainClean").dataset.touched) {
-        $("rvcTrainClean").value = "off";
-        toast("这份已经分离并去过和声，净化档位已切到「不净化」（再净化一遍只会把气声抹掉）", "ok");
-      }
-    }
-    if (target === "score") {
-      // ③ 的既有约定是"选完文件即提交转谱"，所以要真的把 change 发出去，
-      // 不能只写一句"进行中"却什么都没跑
-      $("abcAudio").dispatchEvent(new Event("change"));
-    }
-  } catch (e) {
-    toast("导入失败：" + friendlyErr(e), "err");
-  }
-}
-async function pullServerAudioInto(url, inputId, fname, append) {
-  const el = $(inputId);
-  if (!el) throw new Error("目标页缺少文件框 " + inputId);
-  const blob = await (await fetchT(url, {}, 180000)).blob();
-  if (!blob.size) throw new Error("取回来的文件是空的");
-  const file = new File([blob], fname, { type: blob.type || "audio/wav" });
-  const dt = new DataTransfer();
-  if (append) [...el.files].forEach((f) => dt.items.add(f));
-  dt.items.add(file);
-  el.files = dt.files;
-  return file;
-}
+// （原先这里的 handoffAudio / pullServerAudioInto 负责"把 ⑩ 的产物塞进别的页的文件框"，
+//  连同 ⑨/⑦ 的「从 ⑩ 导入」按钮一起删除：页面之间不递文件，需要这份音频的页面
+//  自己从服务器素材列表里选，由服务端直接取那个文件。）
 
 // ---------- 状态轮询 ----------
 function sepTick(j) {
@@ -8488,7 +8464,7 @@ async function showVoiceInfo(name, force) {
   voiceInfoSel = name;
   const t = $("voiceInfoName"); if (t) t.textContent = name.replace(/\.pth$/i, "");
   $("voiceInfoRecheck").disabled = false;
-  $("voiceInfoGoConvert").disabled = false;
+  $("voiceInfoCopy").disabled = false;
   box.innerHTML = '<div class="empty">读取中…</div>';
   const item = rvcModelsAll.find((m) => m.name === name) || {};
   let check = null, checkErr = "";
@@ -8564,16 +8540,9 @@ $("voiceInfoRecheck").onclick = async () => {
   await showVoiceInfo(voiceInfoSel, true);   // force=1：绕过服务端的 mtime/size 缓存，真重检一遍
   btn.disabled = false; btn.textContent = "↻ 重新体检（不吃缓存）";
 };
-$("voiceInfoGoConvert").onclick = () => {
-  if (!voiceInfoSel) return;
-  switchTab("convert");
-  const sel = $("rvcModel");
-  const found = sel && [...sel.options].some((o) => o.value === voiceInfoSel);
-  if (found) { sel.value = voiceInfoSel; sel.dispatchEvent(new Event("change")); }
-  toast(found ? "已选中音色：" + voiceInfoSel.replace(/\.pth$/i, "")
-              : "⑨ 的音色下拉里还没有「" + voiceInfoSel.replace(/\.pth$/i, "") + "」，请手动选一个",
-        found ? "ok" : "err");
-};
+// 「→ ⑨ 用这个音色换声」已删：它会切页并替 ⑨ 的下拉做选择。
+// 这一页是看这个音色"体检怎么样、音域多少、安全变调区间"的，要拿去用就复制名字。
+$("voiceInfoCopy").onclick = () => { if (voiceInfoSel) copyOut(voiceInfoSel, "音色名"); };
 
 // ---------- 导入外部音色 ----------
 // 后端强制建档：外部 .pth 没有训练实测音域，不建档 ⑨ 就没有变调建议，
@@ -8667,62 +8636,9 @@ $("rvcImportGo").onclick = () => {
 // ---------- ⑩ → ⑨ / ⑦ 的音源通道 ----------
 // 分离完直接换声、直接开练是最高频的两条路。file input 不能塞服务器路径，只能把产物
 // 取回来做成 File 再塞进去——所以"导入"是真取音频，不是记个路径字符串。
-async function sepSourceOptions() {
-  const j = await (await fetchT("/api/audio/separate/list", {}, 25000)).json();
-  const done = (j.items || []).filter((m) => m.status === "done" && (m.parts || []).length);
-  const out = [];
-  done.slice(0, 12).forEach((m) => {
-    const label = (m.task_name || m.src_name || m.id).slice(0, 26);
-    m.parts.forEach((p) => {
-      out.push({ v: m.id + "|" + p, t: label + " · " + ((SEP_PARTS.find((x) => x.key === p) || {}).label || p) + " · " + (m.ts || "").slice(5, 16) });
-    });
-  });
-  return out;
-}
-function pickSepSource(btn, title, onPick) {
-  sepSourceOptions().then((opts) => {
-    if (!opts.length) {
-      toast("⑩ 还没有分离好的产物：先去 ⑩ 人声伴奏分离跑一首", "err");
-      switchTab("sep");
-      return;
-    }
-    inlineForm(btn, {
-      anchor: btn.parentElement, title, okText: "导入", busyText: "取回中…",
-      hint: "取回后要几分钟？产物在服务器本地，只是换一页重新提交，不重跑分离。",
-      fields: [{ id: "src", label: "选一份分离产物", kind: "select", options: opts, value: opts[0].v }],
-    }, async (vals) => {
-      const [id, part] = String(vals.src).split("|");
-      const f = await pullServerAudioInto("/api/audio/separate/audio/" + encodeURIComponent(id)
-        + "?part=" + encodeURIComponent(part), onPick.input, id + "_" + part + ".wav", onPick.append);
-      onPick.after(f, id, part);
-    });
-  }).catch((e) => toast("读分离记录失败：" + friendlyErr(e), "err"));
-}
-$("rvcFromSep").onclick = () => pickSepSource($("rvcFromSep"), "导入 ⑩ 的分离产物当音源", {
-  input: "rvcFile", append: false,
-  after: (f, id, part) => {
-    $("rvcFileNow").textContent = "音源：" + f.name + "（来自 ⑩ " + id + " · " + ((SEP_PARTS.find((x) => x.key === part) || {}).label || part) + "）";
-    // 已经是纯人声了，再让它"先做人声分离"就是白跑一遍 GPU（而且会把人声再切一遍）
-    if (part !== "accompaniment" && $("rvcSep").checked) {
-      $("rvcSep").checked = false;
-      $("rvcStatus").textContent = "已导入纯人声，「先做人声分离」自动取消勾选（再分离一次是白等 1.5 分钟）。";
-    }
-    toast("音源已导入", "ok");
-  },
-});
-$("trainFromSep").onclick = () => pickSepSource($("trainFromSep"), "导入 ⑩ 的分离人声当训练素材", {
-  input: "rvcTrainFiles", append: true,
-  after: (f, id, part) => {
-    const n = $("rvcTrainFiles").files.length;
-    $("rvcTrainFilesNow").textContent = "样本框里现有 " + n + " 个文件（刚从 ⑩ 追加：" + ((SEP_PARTS.find((x) => x.key === part) || {}).label || part) + "）";
-    if (part === "vocals_noharmony" && $("rvcTrainClean").value !== "off" && !$("rvcTrainClean").dataset.touched) {
-      $("rvcTrainClean").value = "off";
-      toast("这份已经分离并去过和声，净化档位已切到「不净化」（再净化一遍只会把气声抹掉）", "ok");
-    }
-    $("rvcTrainStatus").textContent = "素材已从 ⑩ 导入。建议先点「先体检素材」看时长/静音/爆音，再决定轮数。";
-  },
-});
-// 伴奏送去转谱时同理：转谱不需要人声，勾选状态不用管（③ 里没有分离步骤）
+// （原来的 pickSepSource + 「从 ⑩ 导入」两处：把 ⑩ 的产物塞进 ⑨/⑦ 的 file input，
+//  还会顺手取消别的页的勾选——已全部删除。⑩ 产物的标识由下面 serverAudioOptions 供给
+//  每页自己的下拉，提交时只传标识，文件由服务端取。）
 // ================= v2.0 · ⑪ 轻量任务行 / ② 成片出口 / ⑥ 会话与回填 =================
 
 // ---------- ⑪ 乐谱提取与分离两类：轻量行 ----------
@@ -8787,20 +8703,8 @@ function lightTaskRow(h) {
     return b;
   };
   if (isScore) {
-    // ★ 标签必须短：操作簇定宽 236px，4 颗按钮按 min-width:58 排不下 4×58+3×6=250，
-    //   长标签（"↩ 载入到 ③" 7 字）更会把簇撑破、把元信息列挤掉。
-    //   这里用"能看懂的最短形式"，完整含义进 title（悬停可见，读屏也拿得到）。
-    mk("↩ 载入", async () => {
-      try {
-        const rec = await (await fetchT("/api/scores/" + encodeURIComponent(h.id), {}, 25000)).json();
-        $("abc").value = rec.abc || "";
-        if (rec.analysis && rec.analysis.cot_suggested) $("cot").value = rec.analysis.cot_suggested;
-        if (typeof renderAbcAnalysis === "function") renderAbcAnalysis(rec.analysis);
-        LabStore.set({ abc: (rec.abc || "").trim(), scoreId: h.id, from: "history" });
-        switchTab("score");
-        toast("已载入乐谱到 ③", "ok");
-      } catch (e) { toast("载入失败：" + friendlyErr(e), "err"); }
-    }, "ghost", "载入这份乐谱到 ③ 乐谱");
+    // 「↩ 载入到 ③」已删除：那是从任务列表把谱写进另一个页面的谱框。
+    // 这份谱本来就在乐谱库里，③ 与 ⑤ 各自有库选择器，去那儿挑是同一页内的事。
     mk("MIDI", () => exportScoreById(h.id, "mid"), "ghost", "导出 MIDI");
     mk("ABC", () => exportScoreById(h.id, "abc"), "ghost", "导出 ABC 谱");
     mk("删除", async (b) => {
@@ -8819,14 +8723,8 @@ function lightTaskRow(h) {
         downloadRemoteAudio("/api/audio/separate/audio/" + encodeURIComponent(h.id) + "?part=" + encodeURIComponent(part), h.id + "_" + part + ".wav"),
         "ghost", "下载 " + lb);
     });
-    if (parts.includes("vocals") || parts.includes("vocals_noharmony")) {
-      mk("换声", () => {
-        sepCurrent = h.id;
-        const part = parts.includes("vocals_noharmony") ? "vocals_noharmony" : "vocals";
-        handoffAudio(part, "convert");
-      }, "ghost", "送到 ⑨ 换声");
-    }
-    mk("打开", () => { sepCurrent = h.id; switchTab("sep"); loadSepList(); }, "ghost", "在 ⑩ 打开这条分离");
+    // 「换声」「打开」两颗已删除：前者把产物塞进别的页的文件框，后者替另一页记住"当前记录"。
+    // ⑨ 与 ⑦ 现在各自有"从服务器素材里选"的下拉，这份产物就在里面。
     mk("删除", async (b) => {
       if (!confirm("删除这条分离记录与它的产物文件？\n\n人声/伴奏的 wav 会一起从 output/ 清掉，本机不可恢复。")) return;
       b.disabled = true;
@@ -8890,7 +8788,8 @@ function renderGenResult(job) {
   });
   mk("⬇ LRC", (b) => grabTimeline(job.id, "lrc", b, job.task_name || (job.style || "").split(",")[0]));
   mk("⬇ 逐字 eLRC", (b) => grabTimeline(job.id, "elrc", b, job.task_name || (job.style || "").split(",")[0]));
-  mk("🎙 送去 ⑨ 换声", (b) => forwardToConvert(job, b));
+  mk("🎙 送去换声", () => convertServerSong(job.id,
+    job.task_name || (job.style || "").split(",")[0] || job.id, acts));
   mk("↩ 改曲风重跑", () => switchTab("style"), "primary");
 }
 // 时间轴是后台异步构建的：没构建完就先提交构建再等，别把"还没有"说成"失败"
@@ -8932,49 +8831,8 @@ async function grabTimeline(rid, fmt, btn, nameForFile) {
   } finally { btn.disabled = false; btn.textContent = old; }
 }
 // 服务端直接从 output/ 取这份歌去换声，不需要用户重新上传一遍
-function forwardToConvert(job, btn) {
-  let models = [];
-  const sel = $("rvcModel");
-  if (sel) models = [...sel.options].map((o) => o.value);
-  const open = () => {
-    const pitchDefault = (typeof rvcReco !== "undefined" && rvcReco && rvcReco.pitch !== null)
-      ? rvcReco.pitch : (parseInt($("rvcPitch").value, 10) || 0);
-    inlineForm(btn, {
-      anchor: btn.parentElement, title: "🎤 送去换声：" + (job.task_name || (job.style || "").split(",")[0] || job.id),
-      okText: "开始换声", busyText: "提交中…",
-      hint: "变调半音：男转女 +12 / 女转男 -12 / 不变 0；其余档位沿用 ⑨ 页当前设置。",
-      fields: [
-        { id: "model", label: "音色", kind: "select", options: models.map((m) => ({ v: m, t: m.replace(/\.pth$/i, "") })), value: models[0] },
-        { id: "pitch", label: "变调", kind: "number", value: pitchDefault, min: -36, max: 36, maxlen: 4 },
-      ],
-      validate: (v) => {
-        if (!models.length) return { msg: "音色库是空的：先去 ⑦ 训练或 ⑧ 导入一个音色" };
-        if (!/^[+-]?\d{1,3}$/.test(v.pitch)) return { msg: "变调要填整数半音（例如 12、-12、0）", focus: "pitch" };
-        const p = Number(v.pitch);
-        if (p < -36 || p > 36) return { msg: "变调超出 ±36 半音，确认没填错", focus: "pitch" };
-        return null;
-      },
-    }, async (v) => {
-      const r = await fetch("/api/rvc/convert/" + encodeURIComponent(job.id), {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: v.model,
-          task_name: (((job.task_name || (job.style || "").split(",")[0] || "")) + "·" + v.model.replace(/\.pth$/i, "")).slice(0, 100),
-          ...rvcParamValues(Number(v.pitch)),
-        }),
-      });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(j.detail || "提交失败");
-      rvcJobs.unshift({ model: v.model, ...(j.job || {}), id: j.id });
-      renderRvcList();
-      pollRvc(j.id);
-      const ahead = Math.max(0, Number(j.position || 1) - 1);
-      toast(ahead ? "已排队（第 " + j.position + " 位，前面还有 " + ahead + " 个）" : "已送入换声", "ok");
-      switchTab("convert");
-    });
-  };
-  if (!models.length) { renderRvc().then(open); } else open();
-}
+// （forwardToConvert 已删：它把 ⑨ 页的十个滑杆当自己的参数源，
+//  ② 页的按钮却去读另一个页面的控件状态。现在统一走 convertServerSong。）
 
 // ---------- ⑥ 会话侧条与产出回填 ----------
 // 会话里真正能无损接进创作链的是 feed 卡（后端 ai_tools.feed_card 产出的
@@ -9097,24 +8955,8 @@ $("aiFeedCheck").onclick = async () => {
   } catch (e) { $("aiFeedLint").textContent = "校验失败：" + friendlyErr(e); }
   finally { btn.disabled = false; }
 };
-$("aiFeedTo1").onclick = () => {
-  const st = $("aiFeedStyle").value.trim();
-  if (!st) { toast("这条产出里没有 Style", "err"); return; }
-  writeStyleBox(st);
-  styleDirty = true; updateStyleChecks(); updateAsmHint();
-  LabStore.set({ style: st, from: "ailab" });
-  switchTab("style");
-  toast("AI 的 Style 已填进 ① 产出框（可继续手改）", "ok");
-};
-$("aiFeedTo2").onclick = () => {
-  const st = $("aiFeedStyle").value.trim(), ly = $("aiFeedLyrics").value.trim();
-  if (!st && !ly) { toast("这条产出既没 Style 也没歌词", "err"); return; }
-  if (st) { writeStyleBox(st); styleDirty = true; updateStyleChecks(); updateAsmHint(); }
-  if (ly) { pushLyricUndo("⑥ AI 工作台回填"); $("lyrics").value = ly; }
-  LabStore.set({ style: st || undefined, lyrics: ly || undefined, from: "ailab" });
-  switchTab("sing");
-  toast("已填入 ②：" + (st ? "Style " : "") + (ly ? "歌词" : "") + "——检查结构后就能生成", "ok");
-};
+$("aiFeedCopyStyle").onclick = () => copyOut($("aiFeedStyle").value, "Style");
+$("aiFeedCopyLyrics").onclick = () => copyOut($("aiFeedLyrics").value, "歌词");
 // 会话条目点击时记住 sid（fillAiFeed 要按它再取一次详情）
 {
   const mo = new MutationObserver(() => {

@@ -156,7 +156,7 @@ class PageContract(unittest.TestCase):
         """④ 乐谱加工页：控件齐全，且真的打到 /api/abc/edit。"""
         for node in ('id="seSrc"', 'id="seOut"', 'id="seTrans"', 'id="seTransRange"',
                      'id="seMode"', 'id="seTempo"', 'id="seStrip"', 'id="seTransChips"',
-                     'id="seSave"', 'id="seToGen"', 'id="seCopy"', 'id="seAnalysis"'):
+                     'id="seSave"', 'id="seFromLib"', 'id="seCopy"', 'id="seAnalysis"'):
             self.assertIn(node, self.html, "④ 乐谱加工缺控件 %s" % node)
         self.assertIn('"/api/abc/edit"', self.script, "④ 没有接上 /api/abc/edit")
         # 五个调式操作与服务端 _ABC_EDIT_MODES 必须一一对应，少一个就是死选项
@@ -164,6 +164,12 @@ class PageContract(unittest.TestCase):
         for m in ("keep", "major_to_minor", "minor_to_major",
                   "major_to_relative_minor", "minor_to_relative_major"):
             self.assertIn(m, modes, "④ 缺调式选项 %s" % m)
+
+    def test_score_edit_has_no_carry_to_other_pages(self):
+        """④ 不许再读 ③ 的谱框、也不许把结果写进 ⑤ 的谱框：出路只有存库/复制/下载。"""
+        for gone in ('id="seFromScore"', 'id="seToGen"', "LabStore."):
+            self.assertNotIn(gone, self.html, "④ 还留着跨页搬运的控件/写入：%s" % gone)
+        self.assertIn("存入乐谱库", self.html, "④ 的结果应当存库，由 ⑤ 自己从库里挑")
 
     def test_separation_output_dir_wired(self):
         """⑩ 分离页的输出目录要真的提交给服务端，不是摆设。"""
@@ -279,6 +285,71 @@ class PageContract(unittest.TestCase):
         ids = re.findall(r'"([A-Za-z_]+)"', self.src[self.src.index("_FORM_IDS = ["): self.src.index("];", self.src.index("_FORM_IDS = ["))])
         for i in ids:
             self.assertIn('id="%s"' % i, self.html, "持久化清单里的 %s 在页面上已找不到" % i)
+
+
+class PageIndependence(unittest.TestCase):
+    """v10.12 的页面独立性契约：每个页面只从"用户自己填的 + 服务器自己的库"取输入。
+
+    判据只有一条：**没有任何页面的代码可以写另一个页面的控件**。
+    带注释的历史说明会提到被删掉的名字，所以断言前先剥掉注释。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.src = read(INDEX)
+        cls.html = cls.src[: cls.src.index("<script>")]
+        script = cls.src[cls.src.index("<script>"):]
+        # 只剥行注释：块注释正则会贪吃跨行，把中间的代码一起吞掉。
+        # 被删掉的名字只出现在行注释里，块注释里写的是解释性短语。
+        cls.code = re.sub(r"(?<!:)//[^\n]*", "", script)
+
+    def test_no_cross_page_fillers_left(self):
+        """这些名字一旦回到代码里，就是"替你填表"复活了。"""
+        gone = ["LabStore", "handoffAudio", "pullServerAudioInto", "pickSepSource",
+                "sepSourceOptions", "forwardToConvert", "seFromScore", "seToGen",
+                "voiceInfoGoConvert", "rvcFromSep", "trainFromSep",
+                "aiFeedTo1", "aiFeedTo2", "data-restore", "playAndRestore"]
+        for name in gone:
+            self.assertNotIn(name, self.code, "跨页搬运又回来了：%s" % name)
+        # restore() 曾经把历史记录六个控件写进 ② 还不切页，是最隐蔽的一处
+        self.assertNotIn("restore(", self.code, "⑪ 的 restore() 又回来了")
+
+    def test_outlets_are_copy_or_server(self):
+        """替代方案必须在位：要么复制走，要么本页自己从服务器取。"""
+        for need in ("function copyOut(", 'data-copy-style', 'data-copy-lyrics',
+                     'id="aiFeedCopyStyle"', 'id="aiFeedCopyLyrics"', 'id="voiceInfoCopy"',
+                     "function serverAudioOptions(", "function paintSrcPick(",
+                     'id="rvcSrcPick"', 'id="trainSrcPick"',
+                     "function convertServerSong("):
+            self.assertIn(need, self.src, "缺少独立性所需的部件：%s" % need)
+
+    def test_server_source_uses_ids_not_dragged_files(self):
+        """⑨/⑦ 提交服务器素材时只传标识：文件由服务端取，浏览器不绕一圈。"""
+        self.assertIn('fd.append("source_id", srcId)', self.code, "⑨ 没有把 source_id 传给服务端")
+        self.assertIn('fd.append("source_ids", srcIds.join(","))', self.code,
+                      "⑦ 训练/体检没有把 source_ids 传给服务端")
+        self.assertIn("v: m.id + \"|\" + p", self.code, "分离产物的标识格式不是 <rid>|<part>")
+
+    def test_pages_refresh_their_own_pickers(self):
+        st = self.code[self.code.index("function switchTab"):]
+        st = st[: st.index("\n}\n")]
+        self.assertIn('paintSrcPick("rvcSrcPick"', st, "进 ⑨ 不刷新自己的音源列表，会拿着过期的一批提交")
+        self.assertIn('paintSrcPick("trainSrcPick"', st, "进 ⑦ 不刷新自己的素材列表，同上")
+
+    def test_sep_products_are_play_and_download_only(self):
+        """⑩ 的产物只给试听与下载：去向按钮就是"把 A 页的东西塞进 B 页"。"""
+        for gone in ("→⑨ 换声", "→⑦ 训练素材", "→③ 转谱"):
+            self.assertNotIn(gone, self.code, "⑩ 又长出去向按钮：%s" % gone)
+        self.assertIn('mk("▶ 试听"', self.code, "⑩ 的产物至少要能试听")
+        self.assertIn('mk("⬇ 下载"', self.code, "⑩ 的产物至少要能下载")
+
+    def test_convert_from_other_pages_does_not_read_convert_dom(self):
+        """⑪/② 发起换声时不许读 ⑨ 的滑杆——那等于把 ⑨ 的界面当隐式参数源。"""
+        body = self.code[self.code.index("async function convertServerSong"):]
+        body = body[: body.index("\n}\n")]
+        for knob in ("rvcIndexRate", "rvcProtect", "rvcRms", "rvcFilter", "rvcSep", "rvcGate"):
+            self.assertNotIn(knob, body, "convertServerSong 又在读 ⑨ 的 %s" % knob)
+        self.assertIn("/api/rvc/models", body, "官方推荐档应当来自服务端")
 
 
 if __name__ == "__main__":

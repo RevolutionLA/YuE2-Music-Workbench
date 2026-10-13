@@ -1895,6 +1895,121 @@ def _output_write_meta(meta: dict) -> None:
     )
 
 
+# --------------------------------------------------------------------------- #
+# 「服务器素材标识」：让每个页面只从本机自己的库里点名一段音频
+#
+# 页面不再把 A 页的文件递给 B 页，于是⑨换声、⑦音色制作必须能自己指定"服务器上已有
+# 的那段音频"。标识就是 output/ 里产物的文件名，两种写法（_SEP_PARTS 同口径）：
+#   "<rid>"          → output/<rid>.wav            生成成品 / 上传入库的整曲
+#   "<rid>|<part>"   → output/<rid>_<part>.wav     ⑩人声分离的产物
+#                      part ∈ vocals / vocals_noharmony / accompaniment
+# 为什么只认这两种、绝不接受任意路径：这是常驻服务上的读入口，放开路径等于把整块磁盘
+# 变成可选素材（"..\\..\\windows\\…"、绝对路径、别人放在别处的 wav 都能被送进流水线，
+# 换声还会把结果写回 output/ 冒充任务产物）。rid 先过 basename 再限字符集，是双保险：
+# Windows 的 os.path.basename 不认反斜杠，"..\x" 会原样留着——字符集闸门才是挡事的那道。
+# --------------------------------------------------------------------------- #
+_SERVER_AUDIO_PARTS = ("vocals", "vocals_noharmony", "accompaniment")
+_SERVER_AUDIO_RID_RE = re.compile(r"[0-9A-Za-z_-]{1,80}")
+
+
+def _server_audio_spec_note(received) -> str:
+    """标识写错时的统一说法：把"收到什么"和"可以怎么写"一起讲清楚。"""
+    return (f"服务器素材标识不合法：{received!r}。只接受两种写法——"
+            f"『<任务ID>』= output/<任务ID>.wav（生成或入库的整曲）；"
+            f"『<任务ID>|<产物名>』= output/<任务ID>_<产物名>.wav（⑩人声分离的产物，"
+            f"产物名只能是 {' / '.join(_SERVER_AUDIO_PARTS)}）。"
+            f"任务ID 形如 20260101_000000_abcd1234，取自任务卡；"
+            f"标识里不许有路径分隔符、'..' 或其它字符")
+
+
+def _server_audio_path(spec: str) -> Path:
+    """把服务器素材标识解析成 output/ 下的本机音频文件绝对路径（只读，不落任何东西）。
+
+    拒绝面（全部 4xx，解析失败时不建目录、不写文件）：空标识 / rid 含分隔符或非法字符 /
+    超过一个 '|' / 产物名不在白名单（400）/ 文件不存在（404）。
+    另外沿用 POST /api/rvc/convert/{rid} 的现有口径：换声结果（meta kind=rvc）不能当源——
+    换过的声音再送一次换声是叠 buff，再拿去练音色就是让模型学自己的失真。"""
+    raw = str(spec or "").strip()
+    if not raw:
+        raise HTTPException(status_code=404, detail=_server_audio_spec_note(spec))
+    segs = raw.split("|")
+    if len(segs) > 2:
+        raise HTTPException(status_code=404, detail=_server_audio_spec_note(spec))
+    rid_raw, part = segs[0].strip(), (segs[1].strip() if len(segs) == 2 else "")
+    rid = os.path.basename(rid_raw)
+    if rid != rid_raw or not _SERVER_AUDIO_RID_RE.fullmatch(rid):
+        raise HTTPException(status_code=404, detail=_server_audio_spec_note(spec))
+    if len(segs) == 2 and part not in _SERVER_AUDIO_PARTS:
+        # 带 '|' 却不写产物名（"rid|"）也算写错：静默当成整曲会让用户以为拿到的是干声
+        raise HTTPException(
+            status_code=400,
+            detail=f"非法产物名：{part!r}（标识 {spec!r}）。整曲不要带 '|'，直接写『<任务ID>』；"
+                   f"分离产物的产物名只认 {', '.join(_SERVER_AUDIO_PARTS)}。"
+                   f"{_server_audio_spec_note(spec)}")
+    base = Path(os.path.abspath(str(OUTPUT_DIR)))
+    wav = base / (f"{rid}_{part}.wav" if part else f"{rid}.wav")
+    # 名字已被 rid/part 双闸门约束，这里再确认一次"就在 output/ 里、没往上跳"：
+    # 与 /audio/separate/audio 的自定义目录用同一套形状的检查，防的是以后有人改这两个常量。
+    if wav.parent != base or wav == base:
+        raise HTTPException(status_code=400, detail=_server_audio_spec_note(spec))
+    if not wav.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"服务器素材不存在：标识 {spec!r} 解析为 {wav}，那个文件不在。"
+                   f"任务可能已被删除，或它从来没有这份产物（去和声的 vocals_noharmony 只在"
+                   f"⑩勾了「去和声」时才有）。{_server_audio_spec_note(spec)}")
+    meta = _output_read_meta(rid) or {}
+    if meta.get("kind") == "rvc":
+        raise HTTPException(
+            status_code=400,
+            detail=f"换声结果不能再当素材：{spec!r}（任务 {rid} 的产物 kind=rvc）。"
+                   f"换过一次的声音再送换声是套娃失真，拿去练音色则是让模型学自己的电音；"
+                   f"请选生成或上传的整曲，或⑩人声分离的产物")
+    return wav
+
+
+async def _server_audio_copy(src: Path, dst: Path, budget: dict | None = None) -> int:
+    """把已解析的服务器素材复制进 dst，返回落地字节数。
+
+    几十到几百 MB 的整曲，IO 必须丢线程池：放在事件循环里会把整个网关冻住
+    （health/状态/列表一起转圈，见 voices 那条注释）。budget 传字典时累计进
+    budget["used"] 并共用单次请求的 _MAX_UPLOAD_TOTAL 闸门——否则"从服务器取"这条路
+    就成了体积闸门的旁门，素材沓想多大多大。磁盘剩余不足同样在写之前拦下（507）。
+    失败只留一个被删掉的 .part，绝不把半份文件当成功。"""
+    try:
+        size = int((await run_in_threadpool(src.stat)).st_size)
+    except OSError as e:
+        raise HTTPException(status_code=404,
+                            detail=f"服务器素材读不到大小：{src}（{e}）") from e
+    if budget is not None and int(budget.get("used", 0)) + size > _MAX_UPLOAD_TOTAL:
+        raise HTTPException(
+            status_code=413,
+            detail=f"本次请求累计素材将超过 {_MAX_UPLOAD_TOTAL // (1024**3)}GB 上限："
+                   f"已落 {int(budget.get('used', 0)) // (1024 * 1024)}MB，"
+                   f"这一份（{src.name}）还要 {size // (1024 * 1024)}MB。"
+                   f"服务器复制与上传走同一道闸门，请少选几条或先清理旧素材")
+
+    def _copy() -> None:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if _free_bytes(dst.parent) < _DISK_FLOOR_BYTES:
+            raise HTTPException(
+                status_code=507,
+                detail=f"磁盘剩余不足 {_DISK_FLOOR_BYTES // (1024**3)}GB，"
+                       "复制服务器素材同样要占地方，请先清理 runtime/ 下的旧产物")
+        tmp = dst.with_suffix(dst.suffix + ".part")
+        try:
+            shutil.copyfile(src, tmp)
+            os.replace(tmp, dst)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+
+    await run_in_threadpool(_copy)
+    if budget is not None:
+        budget["used"] = int(budget.get("used", 0)) + size
+    return size
+
+
 # 内存中的当前任务（服务重启后靠 output/*.json 的 running 状态恢复为 error/orphan）
 _GEN_JOB: dict | None = None
 _GEN_LOCK = threading.Lock()
@@ -5284,8 +5399,9 @@ def rvc_cancel(rid: str):
 
 @router.post("/rvc/convert")
 async def rvc_convert(
-    file: UploadFile,
+    file: UploadFile | None = File(None),
     model: str = Form(...),
+    source_id: str = Form(""),
     task_name: str = Form(""),
     pitch: int = Form(0),
     f0_method: str = Form("rmvpe"),
@@ -5300,9 +5416,30 @@ async def rvc_convert(
 ):
     """上传音频 + 选音色模型 → 后台转换 → 结果落盘 output/（与生成结果同处可回放）。
 
+    源二选一（给了两个或一个都不给都是 400）：
+      file       —— multipart 上传一段音频；
+      source_id  —— 服务器素材标识『<任务ID>』或『<任务ID>|<产物名>』（见 _server_audio_path），
+                    也就是⑦/⑨/⑩页自己库里的音频。行为与上传同一个文件等价：照样复制进
+                    任务工作目录、照样走下面的 separate_vocal / gate / strip_harmony 流水线。
+                    换声结果（kind=rvc）不能当源，与 POST /api/rvc/convert/{rid} 同口径。
+
     separate_vocal: auto=默认先人声分离（带伴奏歌曲必需）；off=直接换声（输入已是干声）。
     gate: on=换声后按原人声包络做静音门，消除前奏/间奏的底噪（模型会在没人声时自己哼音）。
     strip_harmony: on=分离出的人声再过 HP5 只留主唱（副歌有叠唱时能减少高音电音，多约 1 分钟）。"""
+    spec = str(source_id or "").strip()
+    has_file = file is not None and bool((file.filename or "").strip())
+    if has_file and spec:
+        raise HTTPException(
+            status_code=400,
+            detail=f"换声的源只能给一个：现在同时收到 file（上传）和 source_id={spec!r}。"
+                   f"从页面自己的库里点名就只带 source_id，用户重新选文件就只带 file，"
+                   f"别两个都塞（两个源不可能是同一段音频，结果无法预料）")
+    if not has_file and not spec:
+        raise HTTPException(
+            status_code=400,
+            detail="缺少换声的源：要么带 file（multipart 上传音频），要么带 source_id"
+                   "（服务器素材标识：『<任务ID>』＝ output/<任务ID>.wav，"
+                   "『<任务ID>|vocals / vocals_noharmony / accompaniment』＝⑩分离产物）")
     if not RVC_PY.is_file():
         raise HTTPException(status_code=500, detail="rvc python 环境缺失（py312/python.exe）")
     models = _rvc_models()
@@ -5313,14 +5450,25 @@ async def rvc_convert(
     f0_method, index_rate, protect, rms_mix_rate, filter_radius, resample_sr = \
         _rvc_convert_params(model, f0_method, index_rate, protect, rms_mix_rate,
                             filter_radius, resample_sr)
-    ext = Path(file.filename or "in.wav").suffix.lower()
+    # 服务器素材在建目录之前就解析完（含 kind=rvc 与存在性检查）：一次注定失败的调用
+    # 不该在 jobs/ 下留下半成品目录——与 POST /api/rvc/convert/{rid} 的入队前拦截同口径。
+    server_src = _server_audio_path(spec) if spec else None
+    ext = Path(file.filename or "in.wav").suffix.lower() if file is not None else ".wav"
     if ext not in (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".wma"):
         ext = ".wav"
     rid = _new_id()
     in_dir = RVC_JOB_DIR / rid
     in_dir.mkdir(parents=True, exist_ok=True)
-    src = in_dir / f"src{ext}"
-    await _stream_upload_to(file, src, 200 * 1024 * 1024, "音频")
+    src = in_dir / ("src.wav" if server_src is not None else f"src{ext}")
+    try:
+        if server_src is not None:
+            # 与上传同一个落点（jobs/<rid>/src.wav）、同一条后续流水线；复制走线程池
+            await _server_audio_copy(server_src, src)
+        else:
+            await _stream_upload_to(file, src, 200 * 1024 * 1024, "音频")
+    except BaseException:
+        shutil.rmtree(in_dir, ignore_errors=True)   # 限额/磁盘没过就别留残目录
+        raise
     # 读取源音频时长，供前端估算换声进度（读失败则按 40k 双声道 wav 粗略折算）
     try:
         import soundfile as sf
@@ -5335,12 +5483,16 @@ async def rvc_convert(
         "model": model, "pitch": pitch, "f0_method": f0_method,
         "index_rate": index_rate, "protect": protect, "rms_mix_rate": rms_mix_rate,
         "filter_radius": filter_radius, "resample_sr": resample_sr,
-        "src_name": (file.filename or "")[:120],
+        "src_name": ((file.filename or "") if server_src is None
+                     else f"服务器素材 {spec}")[:120],
         "src_size": src.stat().st_size, "src_duration": src_duration,
         # 前端要靠这个字段区分两套耗时口径：含分离的整条比只换声慢一个量级
         "separate_vocal": separate_vocal != "off",
         "gate": gate != "off", "strip_harmony": strip_harmony == "on",
     }
+    if server_src is not None:
+        # 来源可追溯：任务卡要能说出"这条是从库里哪段音频起的"
+        job["src_spec"] = spec[:160]
     with _RVC_LOCK:
         _RVC_JOBS[rid] = job
     pos = _rvc_submit((rid, job, src, in_dir, model, pitch, f0_method, index_rate,
@@ -7749,39 +7901,65 @@ def _rvc_dataset_scan(ds: Path) -> dict:
 
 
 @router.post("/rvc/train/check")
-async def rvc_train_check(files: list[UploadFile]):
+async def rvc_train_check(files: list[UploadFile] | None = File(None),
+                          source_ids: str = Form("")):
     """上传素材先体检（不启动训练）：报告落盘，确认后用返回的 id 直接开练，不必重传。
 
-    支持 m4a/aac/ogg/opus 等格式，上传后自动转成 40kHz 单声道 wav（RVC 标准口径）。"""
-    if not files:
-        raise HTTPException(status_code=400, detail="需要至少一个音频文件")
+    支持 m4a/aac/ogg/opus 等格式，上传后自动转成 40kHz 单声道 wav（RVC 标准口径）。
+
+    source_ids: 逗号分隔的服务器素材标识（『<任务ID>』或『<任务ID>|<产物名>』，见
+    _server_audio_path）——⑦页从自己的库（生成成品 / ⑩人声分离产物）里点名当训练素材，
+    不必为了用本机已有的音频先下载再传一遍。与 files 至少给一个，两者可以混用；
+    复制进来的字节与上传一样计入本次请求的体积闸门，命名与上传完全一致。"""
+    specs = [s.strip() for s in str(source_ids or "").split(",") if s.strip()]
+    ups = list(files or [])
+    if not ups and not specs:
+        raise HTTPException(status_code=400,
+                            detail="需要至少一份素材：files（上传音频）与 source_ids"
+                                   "（服务器素材标识，逗号分隔）至少给一个")
     if not RVC_PY.is_file():
         raise HTTPException(status_code=500, detail="rvc python 环境缺失（py312/python.exe）")
+    # 标识全部解析完再建目录：写错一条就让整条请求在落任何东西之前失败
+    server_srcs = [_server_audio_path(s) for s in specs]
     rid = _new_id()
     ds = RVC_TRAIN_DIR / rid / "dataset"
     ds.mkdir(parents=True, exist_ok=True)
     budget = {"used": 0}
     converted_count = 0
-    for i, f in enumerate(files):
-        ext = Path(f.filename or "s.wav").suffix.lower() or ".wav"
-        if ext not in _RVC_AUDIO_EXTS:
-            ext = ".wav"
-        raw_path = ds / f"sample_{i:03d}{ext}"
-        await _stream_upload_to(f, raw_path, 200 * 1024 * 1024,
-                                f"第 {i + 1} 个样本", budget=budget)
-        # 非 wav 格式统一转成 40kHz 单声道 wav（RVC 训练标准口径）
-        if ext != ".wav":
-            try:
-                wav_path = ds / f"sample_{i:03d}.wav"
-                _rvc_convert_to_wav(raw_path, wav_path)
-                raw_path.unlink(missing_ok=True)  # 删除原始格式，只保留 wav
-                converted_count += 1
-            except Exception as e:
-                # 转换失败时保留原文件，让体检环节报错提示用户
-                pass
+    n = 0
+    try:
+        for f in ups:
+            ext = Path(f.filename or "s.wav").suffix.lower() or ".wav"
+            if ext not in _RVC_AUDIO_EXTS:
+                ext = ".wav"
+            raw_path = ds / f"sample_{n:03d}{ext}"
+            await _stream_upload_to(f, raw_path, 200 * 1024 * 1024,
+                                    f"第 {n + 1} 个样本", budget=budget)
+            # 非 wav 格式统一转成 40kHz 单声道 wav（RVC 训练标准口径）
+            if ext != ".wav":
+                try:
+                    wav_path = ds / f"sample_{n:03d}.wav"
+                    _rvc_convert_to_wav(raw_path, wav_path)
+                    raw_path.unlink(missing_ok=True)  # 删除原始格式，只保留 wav
+                    converted_count += 1
+                except Exception as e:
+                    # 转换失败时保留原文件，让体检环节报错提示用户
+                    pass
+            n += 1
+        # 服务器素材接着上传的序号往后排：体检与开练两个入口按同一顺序编号，
+        # dataset_id 复用的才是同一批文件（错位复用会让体检报告和实际素材对不上）。
+        # 标识恒为 output/ 里的 wav，不必再转格式。
+        for srcp in server_srcs:
+            await _server_audio_copy(srcp, ds / f"sample_{n:03d}.wav", budget)
+            n += 1
+    except BaseException:
+        shutil.rmtree(RVC_TRAIN_DIR / rid, ignore_errors=True)   # 限额/磁盘没过就别留残目录
+        raise
     report = _rvc_dataset_scan(ds)
     if converted_count > 0:
         report["converted_from"] = f"{converted_count} 个非 wav 文件已转成 wav"
+    if specs:
+        report["from_server"] = f"{len(specs)} 个素材来自本机 output/（复制，不是上传）"
     job = {"id": rid, "name": "", "status": "checked", "step": "体检完成（未开始训练）",
            "ts": datetime.now().isoformat(timespec="seconds"),
            "samples": report["files"], "bytes": budget["used"], "check": report}
@@ -7799,6 +7977,7 @@ async def rvc_train(
     separate_vocal: str = Form("off"),
     clean_tier: str = Form("off"),
     dataset_id: str = Form(""),
+    source_ids: str = Form(""),
 ):
     """上传干声样本（或勾选自动分离后直接传完整歌曲）→ 创建音色制作任务（独占运行，与换声/生成共用 GPU）。
 
@@ -7806,7 +7985,11 @@ async def rvc_train(
     off=直接训练（上传的已是干声）。
     clean_tier: light=去混响+轻降噪 / medium=中档净化（评审 A1，都在分离之后、切片之前做，
     原始素材留档可 A/B）；off=不净化。
-    dataset_id: 带 POST /rvc/train/check 返回的 id 就直接用那份已体检过的素材，几十分钟的歌不必传两遍。"""
+    dataset_id: 带 POST /rvc/train/check 返回的 id 就直接用那份已体检过的素材，几十分钟的歌不必传两遍。
+    source_ids: 没体检过时，直接带逗号分隔的服务器素材标识（『<任务ID>』/『<任务ID>|<产物名>』）
+    从本机 output/ 起一份新素材——复制规则、命名（sample_%03d.wav）、编号顺序、体积闸门都与
+    体检入口同一套，所以同一批标识在两边得到的是同一批文件。
+    三者同时给时按 dataset_id > source_ids > files 取（前者已经决定了素材，不再动盘）。"""
     global _RVC_TRAIN_WORKER, _RVC_TRAIN_PAUSE_REQ
     name = re.sub(r'[\\/:*?"<>|\s]+', "_", name.strip())[:40] or "voice"
     if not 1 <= epochs <= 1200:
@@ -7825,6 +8008,8 @@ async def rvc_train(
                        for j in RVC_TRAIN_JOBS.values())
         if busy:
             raise HTTPException(status_code=409, detail="已有音色制作任务在进行中，请等待完成后再提交")
+    specs = [s.strip() for s in str(source_ids or "").split(",") if s.strip()]
+    converted_note = ""
     if dataset_id:
         rid = os.path.basename(dataset_id)
         ds = RVC_TRAIN_DIR / rid / "dataset"
@@ -7835,10 +8020,28 @@ async def rvc_train(
         if not n_samples:
             raise HTTPException(status_code=400, detail="体检记录里没有素材文件，请重新上传")
         total = sum(p.stat().st_size for p in ds.iterdir() if p.is_file())
+    elif specs:
+        # 标识全部解析完再建目录：写错一条就让整条请求在落任何东西之前失败
+        server_srcs = [_server_audio_path(s) for s in specs]
+        rid = _new_id()
+        ds = RVC_TRAIN_DIR / rid / "dataset"
+        ds.mkdir(parents=True, exist_ok=True)
+        budget = {"used": 0}
+        try:
+            for i, srcp in enumerate(server_srcs):
+                # 命名/编号与体检入口一致（sample_000 起、按给出的顺序），
+                # 复制的字节照样走 _MAX_UPLOAD_TOTAL 与磁盘剩余闸门
+                await _server_audio_copy(srcp, ds / f"sample_{i:03d}.wav", budget)
+        except BaseException:
+            shutil.rmtree(RVC_TRAIN_DIR / rid, ignore_errors=True)
+            raise
+        n_samples = len(specs)
+        total = budget["used"]
     else:
         if not files:
             raise HTTPException(status_code=400,
-                                detail="需要上传素材文件，或带 dataset_id 复用刚体检过的那份")
+                                detail="需要上传素材文件，或带 dataset_id 复用刚体检过的那份，"
+                                       "或带 source_ids 指定本机 output/ 里已有的音频")
         rid = _new_id()
         ds = RVC_TRAIN_DIR / rid / "dataset"
         ds.mkdir(parents=True, exist_ok=True)
@@ -7867,7 +8070,9 @@ async def rvc_train(
         n_samples = len(files)
         total = budget["used"]
         if converted_count > 0:
-            job.setdefault("converted_from", f"{converted_count} 个非 wav 文件已转成 wav")
+            # 评审时这行写的是 `job.setdefault(...)`，可 job 要到下面才存在——
+            # 传一个 m4a 进来就是 NameError(500)。素材说明照体检入口的口径记在 job 里。
+            converted_note = f"{converted_count} 个非 wav 文件已转成 wav"
     if total < 300_000:
         raise HTTPException(status_code=400, detail="样本太少（建议 3-10 分钟干净干声）")
     prev = _rvc_train_read(rid) if dataset_id else {}
@@ -7881,6 +8086,11 @@ async def rvc_train(
         # 体检报告跟着任务走：历史页要能回看"当初这批素材长什么样"
         "check": prev.get("check") or None,
     }
+    if converted_note:
+        job["converted_from"] = converted_note
+    if specs and not dataset_id:
+        # 素材来源写进任务卡：用户点的是"从库里取"，事后得能看出用的是哪几段
+        job["source_ids"] = ",".join(specs)[:500]
     _rvc_train_write(rid, job)
     with RVC_TRAIN_LOCK:
         # 与 resume 同理：清掉上一次运行遗留的暂停标志，防新任务第一步自终止

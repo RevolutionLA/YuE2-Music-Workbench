@@ -65,6 +65,28 @@ so "which step am I on" is self-evident. v10.9 added ⑫ Settings and ⑬ About.
 same DOM node into the target page (`static/index.html: switchTab` / `moveInto`), so there is no second
 copy of a form that can drift out of sync. v1.x bookmarks (`#compose` and friends) redirect to the new pages.
 
+### A hard rule: no page fills in another page
+
+Since v10.12 **every page is usable on its own**. The test is one sentence: no page's code may write
+to another page's controls. Each page's input comes from exactly three places — what the user typed
+here, what this machine's server already holds (score library / voice library / history / separated
+stems), and this page's own runtime state.
+
+Removed accordingly, so don't look for them: ⑪ silently copying style/lyrics/route/seed into ②'s
+form when you click a row (row click now only plays; use **Copy Style / Copy Lyrics**);
+⑥'s "→① / →②" auto-fill-and-jump (now copy buttons); ⑩'s product-row "→⑨ / →⑦ / →③"
+(only play and download remain); ⑨/⑦'s "import from ⑩" (each page now lists server material itself
+and submits **just an ID** — the server reads that file, so nothing travels through the browser);
+④'s "use ③'s current score" and "→⑤ sing this score" (④ loads from the score library, saves back to
+the library, and ⑤ picks it up there); the training/voice cards' "use it" button that preselected a
+voice in ⑨ (now **Copy voice name**).
+
+Kept: every page's own server-side library — ⑤'s score picker, ⑨'s voice dropdown *and* its
+server-material dropdown, ⑦'s multi-select material picker, ②'s "recent lyrics" (from
+`/api/generate/list`), ⑧'s voice list. One behaviour change stated plainly: converting from ⑪ or ②
+used to read ⑨'s ten sliders; it now uses the **server's recommended profile for that voice** —
+come to ⑨ when you want to tune the knobs yourself.
+
 ## 🚀 Quick Start
 
 > **Windows x64 / 16GB+ RAM / 6GB+ VRAM recommended** (CPU-only works too — just slower)
@@ -144,6 +166,10 @@ field is the **day of month of the release**, and the third is the **release ind
 | `v2.0.0` | **Workbench split into 11 pages**: ②④ share one generation panel, ③④ share one ABC editor; new ⑦ separation page, ⑩ settings page, ⑥ voice import, ⑨ unified task view, ⑧ result back-fill; 325 tests green |
 | `v10.9.0` | **Data-dense redesign (13 pages)**: whole UI moved to the GitHub data-dense palette (de-AI-flavored), module boundaries and component recognizability rebuilt, new ⑬ About page (system info + credits), fixed the ⑤ "only plain filenames under model/" model-switch bug; 394 tests green |
 | `v10.9.1` | **Layout & alignment polish**: ⑪ Task Manager unified onto a five-column skeleton (row height collapsed from two values 72/168 to a single 72), ② Style box 540→78px, lyrics box 100→394px, ⑬ system info flattened from 33 rows to 4 grouped two-column blocks, `scrollbar-gutter: stable` removing the 5px jump when switching tabs; plus two real fixes — a `#tab-ailab` magic number that was 26px off, and silent truncation of footer hints; 410 tests green |
+| `v10.9.2` | Round-#2 adversarial-audit fixes plus three issues from real use (the ⋯ menu hidden behind later rows, two sources of tempo truth, hallucinated speech in the outro) |
+| `v10.11.0` | "Stop" split into two scopes (this one job / the whole queue), queued items genuinely resume after a restart, VRAM pre-check stops blaming the wrong process |
+| `v10.11.1` | The auto-added `[Outro]` no longer leaks into stored lyrics; the validator accepts an instrumental ending; the four frontend outlets strip the machine-written line before submitting |
+| `v10.12.0` | **Page independence**: every "fill page B from page A" removed (⑪ rewriting ②'s form on a row click, ⑥→①②, ⑩→⑨⑦③, ④→⑤, the cross-page `LabStore`, preselecting a voice for another page); each page now takes its own input from the server instead (⑨ and ⑦ gained server-material pickers that submit only an ID); 504 tests green |
 
 **Release checklist** — skip one and you may only claim "the code changed", not "it's live":
 
