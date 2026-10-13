@@ -170,6 +170,7 @@ field is the **day of month of the release**, and the third is the **release ind
 | `v10.11.0` | "Stop" split into two scopes (this one job / the whole queue), queued items genuinely resume after a restart, VRAM pre-check stops blaming the wrong process |
 | `v10.11.1` | The auto-added `[Outro]` no longer leaks into stored lyrics; the validator accepts an instrumental ending; the four frontend outlets strip the machine-written line before submitting |
 | `v10.12.0` | **Page independence**: every "fill page B from page A" removed (⑪ rewriting ②'s form on a row click, ⑥→①②, ⑩→⑨⑦③, ④→⑤, the cross-page `LabStore`, preselecting a voice for another page); each page now takes its own input from the server instead (⑨ and ⑦ gained server-material pickers that submit only an ID); 504 tests green |
+| `v10.13.0` | **Each page manages its own tasks**: one shared 「本页任务」 strip that moves to the current page (②⑤ generate / ③④ scores / ⑦ training / ⑨ conversion / ⑩ separation), fed only by `/api/tasks/unified`, with play / download / stop-this-one / cancel-a-queued-cover inline; also fixed a kind-name mismatch that made ⑨'s list permanently empty, now locked by a contract test |
 
 **Release checklist** — skip one and you may only claim "the code changed", not "it's live":
 

@@ -1383,6 +1383,29 @@
   html.embed .tab[data-tab="ailab"] { display: none !important; }
 
   /* ================= v2.0 新增（11 页重构） ================= */
+  /* ===== 每页的「本页任务」条（v10.13）=====
+     一条组件按页搬到每个面板底部，不复制 13 份；折叠态只留标题行。 */
+  .mod-tasks { margin-top:18px; border:1px solid var(--line); border-radius:var(--r-sm);
+               background:var(--panel-2); padding:8px 10px; }
+  .mod-tasks .mod-head { display:flex; align-items:center; gap:8px; font-size:var(--fs-sm); }
+  .mod-tasks .mod-sub { color:var(--muted); font-size:var(--fs-xs); }
+  .mod-tasks .mod-sp { flex:1; }
+  .mod-tasks .mod-head button { padding:2px 8px; font-size:var(--fs-xs); }
+  .mod-tasks .mod-list { margin-top:6px; display:flex; flex-direction:column; gap:4px; }
+  .mod-tasks.folded .mod-list { display:none; }
+  .mod-row { display:flex; align-items:center; gap:8px; font-size:var(--fs-xs);
+             border-bottom:1px solid var(--line-soft); padding:4px 0; }
+  .mod-row:last-child { border-bottom:0; }
+  .mod-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+              cursor:pointer; }
+  .mod-name:hover { color:var(--acc-text); }
+  .mod-st { color:var(--dim); white-space:nowrap; }
+  .mod-st.s-running { color:var(--acc-text); }
+  .mod-st.s-done { color:var(--ok); }
+  .mod-st.s-error, .mod-st.s-lost { color:var(--err); }
+  .mod-act { display:flex; align-items:center; gap:4px; }
+  .mod-act button { padding:2px 7px; font-size:var(--fs-xs); }
+  .mod-note { color:var(--muted); font-size:var(--fs-xs); }
   /* 侧栏：11 项分三组。项高压到 30px、分组标题只做视觉分层不可点；
      nav 自身可滚动（小屏窗口高度不够时不挤掉底部的健康灯）。 */
   .side nav { margin-top: 12px; flex: 1 1 auto; min-height: 0; overflow-y: auto; scrollbar-width: none; }
@@ -3375,6 +3398,8 @@ function switchTab(name) {
   // 换页＝换一屏内容，必须回到顶部。以前进 ① 会直接停在页面最下面：
   // 底部那条粘底产出条撑长了文档，加上浏览器刷新时的滚动恢复，落点就跑到底了。
   // 不归零的话用户打开就看见"下半页"，而页面的标题和左右两栏的关系全在上方，第一眼看不懂。
+  // 每页自己的任务条：把同一条组件搬进当前页的底部插槽，按这页关心的任务类型取数
+  if (typeof modEnter === "function") modEnter(name);
   scrollPageTop();
   // 换页后左右栏内容变了，可滚动状态要重算（渐隐提示跟着更新）
   requestAnimationFrame(syncScrollAffordance);
@@ -8974,6 +8999,162 @@ $("aiFeedCopyLyrics").onclick = () => copyOut($("aiFeedLyrics").value, "歌词")
   });
   mo.observe($("aiSessList") || document.documentElement, { childList: true, subtree: true });
 }
+// ---------- 每页的「本页任务」条（v10.13）----------
+// 做歌不是单程线性的：一首词常要在 ①②③⑤⑨⑪ 之间来回好几趟。以前只有 ⑪ 看得见全局，
+// 于是"切到 ③ 就不知道 ② 那首跑到哪了"。这条组件把每个页签关心的那几类任务就地列出来，
+// 并且能就地处理（停这一条 / 取消还没开跑的 / 播放与下载已完成的产物）。
+// 实现上仍然遵守"页面独立"：一条组件、按页搬家（和 ②⑤ 共用同一份表单 DOM 是同一手法），
+// 数据只来自服务器（/api/tasks/unified），不读也不写别的页面的控件。
+const MOD_KINDS = {
+  style: [], sing: ["generate"], score: ["score"], scoreEdit: ["score"],
+  scoreSing: ["generate"], ailab: [], train: ["train"], voices: [],
+  // 注意 kind 的真名：/api/tasks/unified 里换声类目是 **rvc**，不是 convert（写错就永远空列表）
+  convert: ["rvc"], sep: ["separate"], history: [], settings: [], about: [],
+};
+const MOD_KIND_CN = { generate: "歌曲生成", score: "乐谱提取", rvc: "换声", train: "音色制作", separate: "人声分离", external: "外部任务" };
+const MOD_STATE_CN = { done: "完成", error: "失败", cancelled: "已取消", running: "在算", pending: "排队", queued: "排队", checked: "已体检", paused: "已暂停", lost: "已失联", unknown: "状态未知" };
+let modAll = [];      // 上一次拉到的全量（只给本条组件用，不是跨页状态）
+let modFolded = true;
+
+function modEnsureSlots() {
+  if (!$("modTasks")) {
+    const box = document.createElement("section");
+    box.className = "mod-tasks";
+    box.id = "modTasks";
+    box.hidden = true;
+    box.innerHTML = '<div class="mod-head"><b>本页任务</b><span class="mod-sub"></span>' +
+      '<span class="mod-sp"></span><button class="ghost mod-toggle" type="button">▾</button>' +
+      '<button class="ghost mod-refresh" type="button" title="重新读一遍 /api/tasks/unified">↻</button></div>' +
+      '<div class="mod-list"></div>';
+    document.body.appendChild(box);
+    box.querySelector(".mod-refresh").onclick = () => modLoad(true);
+    box.querySelector(".mod-toggle").onclick = () => { modFolded = !modFolded; modPaint(); };
+  }
+  $$(".panel-tab").forEach((p) => {
+    if (p.querySelector(".mod-slot")) return;
+    const s = document.createElement("div");
+    s.className = "mod-slot";
+    p.appendChild(s);            // 每个面板底部一个插槽，组件按当前页搬进去
+  });
+}
+
+function modAudioUrl(it) {
+  // 三类的产物各有自己的地址：生成/换声/分离。回包里没有就不给播放按钮。
+  if (it.kind === "rvc") return "/api/rvc/audio/" + encodeURIComponent(it.id);
+  if (it.kind === "separate") return "/api/audio/separate/audio/" + encodeURIComponent(it.id) + "?part=vocals";
+  return it.file ? "/api/generate/audio/" + encodeURIComponent(it.id) : "";
+}
+
+async function modLoad(force) {
+  const kinds = MOD_KINDS[curTab] || [];
+  if (!kinds.length) { modStopTimer(); return; }
+  try {
+    const j = await (await fetchT("/api/tasks/unified", {}, 20000)).json();
+    modAll = (j.items || []).filter((x) => kinds.indexOf(x.kind || "generate") >= 0);
+  } catch (e) {
+    modAll = [];
+    const box = $("modTasks");
+    if (box) box.querySelector(".mod-sub").textContent = "读不到：" + friendlyErr(e);
+  }
+  modPaint();
+  // 有在算/排队的才继续轮询，全部停了就把手松开
+  const live = modAll.some((x) => x.status === "running" || x.status === "pending" || x.status === "queued");
+  if (live) { if (!modTimer) modTimer = setInterval(() => modLoad(false), 8000); }
+  else modStopTimer();
+}
+
+function modStopTimer() {
+  if (modTimer) { clearInterval(modTimer); modTimer = null; }
+}
+
+function modBtn(label, fn, cls) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = cls || "ghost";
+  b.textContent = label;
+  b.onclick = () => { Promise.resolve(fn(b)).catch((e) => toast(friendlyErr(e) || String(e), "err")); };
+  return b;
+}
+
+function modPaint() {
+  const box = $("modTasks");
+  if (!box) return;
+  const kinds = MOD_KINDS[curTab] || [];
+  if (!kinds.length) { box.hidden = true; modStopTimer(); return; }
+  box.hidden = false;
+  box.querySelector(".mod-head b").textContent = "本页任务 · " +
+    kinds.map((k) => MOD_KIND_CN[k] || k).join(" / ");
+  const live = modAll.filter((x) => x.status === "running" || x.status === "pending" || x.status === "queued").length;
+  box.querySelector(".mod-sub").textContent = modAll.length
+    ? (modAll.length + " 条" + (live ? " · " + live + " 条在跑或排队" : " · 都没有在跑"))
+    : "这一页还没有任务记录";
+  const tog = box.querySelector(".mod-toggle");
+  tog.textContent = modFolded ? "▾" : "▴";
+  const list = box.querySelector(".mod-list");
+  list.innerHTML = "";
+  if (modFolded && !live) { box.classList.add("folded"); return; }
+  box.classList.remove("folded");
+  const shown = modFolded ? modAll.slice(0, live ? 3 : 6) : modAll.slice(0, 40);
+  shown.forEach((it) => {
+    const row = document.createElement("div");
+    row.className = "mod-row";
+    const nm = document.createElement("span");
+    nm.className = "mod-name";
+    nm.textContent = it.name || it.id;
+    nm.title = it.id + "（点击复制）";
+    nm.onclick = () => copyOut(it.id, "任务 ID");
+    const st = document.createElement("span");
+    st.className = "mod-st s-" + (it.status || "");
+    st.textContent = (MOD_STATE_CN[it.status] || it.status || "?") +
+      (typeof it.progress === "number" && it.status === "running" ? " " + it.progress + "%" : "");
+    row.appendChild(nm); row.appendChild(st);
+    const act = document.createElement("span");
+    act.className = "mod-act";
+    const url = modAudioUrl(it);
+    if (it.status === "done" && url) {
+      act.appendChild(modBtn("▶", () => playRemoteAudio(url, it.name || it.id)));
+      act.appendChild(modBtn("⬇", () => downloadRemoteAudio(url, (it.name || it.id) + ".wav")));
+    }
+    if (it.kind === "generate" && it.status === "running") {
+      act.appendChild(modBtn("⏹ 停这一条", async () => {
+        if (!confirm("只掐正在算的这一条？\n\n队列里没开始的条目不动，接着跑下一条。")) return;
+        await fetchT("/api/generate/stop?scope=current", { method: "POST" }, 15000);
+        toast("已请求终止这一条（后续 take 一起停）", "ok");
+        modLoad(true);
+      }, "danger"));
+    }
+    if (it.kind === "rvc" && (it.status === "pending" || it.status === "queued")) {
+      act.appendChild(modBtn("✕ 取消", async () => {
+        await fetchT("/api/rvc/cancel/" + encodeURIComponent(it.id), { method: "POST" }, 15000);
+        toast("已取消（只有还没开跑的能取消）", "ok");
+        modLoad(true);
+      }, "danger"));
+    } else if (it.kind === "rvc" && it.status === "running") {
+      const s = document.createElement("span");
+      s.className = "mod-note";
+      s.textContent = "正在算的换声不能中途掐（掐了只剩半份文件）";
+      act.appendChild(s);
+    }
+    row.appendChild(act);
+    list.appendChild(row);
+  });
+  if (!modFolded && modAll.length > shown.length) {
+    const s = document.createElement("div");
+    s.className = "mod-note";
+    s.textContent = "只列最近 " + shown.length + " 条，全部请到 ⑪ 任务管理看";
+    list.appendChild(s);
+  }
+}
+
+function modEnter(name) {
+  modEnsureSlots();
+  const box = $("modTasks"), slot = document.querySelector("#tab-" + name + " .mod-slot");
+  if (!box) return;
+  if (slot && box.parentElement !== slot) slot.appendChild(box);
+  if (!(MOD_KINDS[name] || []).length) { box.hidden = true; modStopTimer(); return; }
+  modLoad(true);
+}
+
 // ---------- boot ----------
 // 创作页表单取值/回填：供下面的 localStorage 持久化调用。
 // 字段清单必须与下方监听白名单一致，否则改了控件却悄悄不再保存。

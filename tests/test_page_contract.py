@@ -352,5 +352,36 @@ class PageIndependence(unittest.TestCase):
         self.assertIn("/api/rvc/models", body, "官方推荐档应当来自服务端")
 
 
+    def test_mod_strip_kinds_match_the_backend(self):
+        """「本页任务」条按 kind 过滤——kind 的名字必须和后端发出来的一致。
+
+        真踩过：换声类目在后端叫 rvc，前端写成 convert 就永远是空列表，
+        页面看起来像"这个功能没数据"，其实是筛选条件对不上。
+        """
+        src = read(INDEX)
+        block = src[src.index("const MOD_KINDS = {"):]
+        block = block[: block.index("};")]
+        listed = set(re.findall(r'\[([^\]]*)\]', block))
+        used = set()
+        for inner in listed:
+            used |= set(re.findall(r'"([a-z_]+)"', inner))
+        app_src = read(os.path.join(ROOT, "app.py"))
+        real = set(re.findall(r'"kind": *"([a-z_]+)"', app_src)) | {"generate", "score", "external"}
+        self.assertTrue(used, "MOD_KINDS 里一个 kind 都没写")
+        self.assertFalse(used - real, "前端用了后端不发的 kind：%s（后端实际是 %s）"
+                         % (sorted(used - real), sorted(real)))
+        # 每个页签都得有归属：没列进表的页面等于"这页不需要任务条"，但要显式承认
+        pages = set(PAGES.keys())
+        keys = set(re.findall(r'(\w+)\s*:\s*\[', block))
+        self.assertTrue(keys <= pages, "MOD_KINDS 里有不存在的页签：%s" % sorted(keys - pages))
+        self.assertFalse(pages - keys, "MOD_KINDS 少了页签：%s" % sorted(pages - keys))
+
+    def test_mod_strip_is_moved_not_duplicated(self):
+        """一条组件按页搬家：switchTab 里必须挂 modEnter，且全站只有一个 #modTasks。"""
+        st = self.code[self.code.index("function switchTab"):]
+        self.assertIn("modEnter(name)", st, "切页没搬任务条，用户切过去看到的是上一页的列表")
+        self.assertEqual(1, self.code.count('box.id = "modTasks"'), "任务条被复制成多份")
+
+
 if __name__ == "__main__":
     unittest.main()
