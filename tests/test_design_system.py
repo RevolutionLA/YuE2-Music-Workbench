@@ -906,5 +906,93 @@ class DesignSystem(unittest.TestCase):
         self.assertNotIn("#fff", m.group(1), "勾又写死成白了")
 
 
+    # ---------- 间距尺与死样式（2026-10-14 全站实测） ----------
+
+    def test_gap_values_sit_on_the_scale(self):
+        """CSS 里的字面 gap 只许落在间距尺上（含 2/3px 的光学微档）。
+
+        实测（13 页逐个把 computed gap/padding 全量采样）：改造前 CSS 里同时在用的
+        gap 档位是 **2,3,4,5,6,7,8,9,10,12,14,18,20 —— 13 档**，而令牌尺只有
+        4/6/8/12/16/20/24/32。其中 `gap:7px` 被 860 个元素解出来（⑪ 的每一行、
+        ⑧ 的每一张卡都在用它），`gap:10px` 495 个。
+        "每处都合理、合起来没节奏"就是这 13 档造成的：眼睛数不出规律，
+        改一个组件时又不知道该对齐到哪一档。
+        """
+        SCALE = {"2", "3", "4", "6", "8", "12", "16", "20", "24", "32"}
+        bad = {}
+        for m in re.finditer(r"(?m)^\s*([^{}]*)\{([^{}]*)\}", self.head):
+            sel, body = m.group(1).strip()[:40], m.group(2)
+            for g in re.finditer(r"gap:\s*(\d+)px", body):
+                if g.group(1) not in SCALE:
+                    bad.setdefault(g.group(1) + "px", []).append(sel)
+        self.assertEqual(bad, {},
+                         "这些 gap 档位不在尺上（请改用 var(--sp-*)）：%s"
+                         % {k: v[:3] for k, v in bad.items()})
+        # 尺本身必须还在，否则上面那条会被"把尺改掉"蒙过去
+        for tok, px in (("--sp-2", "6"), ("--sp-3", "8"), ("--sp-4", "12"), ("--sp-5", "16")):
+            self.assertRegex(self.head, r"%s:\s*%spx" % (tok, px))
+
+    def test_no_raw_native_file_input_is_visible(self):
+        """全站不许再裸露原生 file 控件 —— ⑨/⑦ 是最后两处。
+
+        实测（1680×1000 截图）：③⑩ 早就换成 .drop 虚线区，而 ⑨ 换声与 ⑦ 训练
+        仍是浏览器默认的「选择文件 / 未选择任何文件」—— 那是整页唯一一处
+        系统字体 + 系统灰，一眼就能看出"这块没设计过"。
+        现在两处都是 .drop + 隐藏 input，文件名仍由各自的 *Now 提示行报出来；
+        提交前的"没选输入"也必须指向虚线区（对 display:none 的 input
+        scrollIntoView/focus 是空操作，用户只会看到一行红字却不知道该去哪儿）。
+        """
+        for inp in ("rvcFile", "rvcTrainFiles"):
+            m = re.search(r'<input id="%s"[^>]*>' % inp, self.src)
+            self.assertIsNotNone(m, "%s 不见了" % inp)
+            self.assertIn("display:none", m.group(0),
+                          "%s 又裸露成原生控件了" % inp)
+        for zone in ("rvcDrop", "rvcTrainDrop"):
+            self.assertIn('id="%s"' % zone, self.src, "%s 虚线上传区不见了" % zone)
+            self.assertIn('bindDropZone("%s"' % zone, self.src,
+                          "%s 没有接线：点虚线区不会打开选择框" % zone)
+        self.assertIn('fieldProblem($("rvcDrop")', self.src,
+                      "⑨ 空提交的提示没有指向虚线区")
+        self.assertIn('fieldProblem($("rvcTrainDrop")', self.src,
+                      "⑦ 空体检/空训练的提示没有指向虚线区")
+
+    def test_short_cards_hug_content_or_grow_a_real_surface(self):
+        """按视口定高的卡片，剩余高度必须交给"越大多看几行越好"的东西，否则就贴合内容。
+
+        实测（1680×1000，逐页扫每个容器底部空洞）：改造前 ③ 转谱结果栏空 308px、
+        ① 左栏空 229px、⑩ 空 202/193px、④ 空 195px —— 五处"这块还没做完"。
+        裁定分两路：ABC 谱编辑器 / 记录列表 → 吃掉余量（谱一页几十行，多 300px 少滚三屏）；
+        曲风框、⑩ 左栏那种"没有可生长的东西"的卡片 → height:auto 贴合内容。
+        ★ ① 不走"撑框"那条路是有前因的：上一版实测把 #style 拉到 540px 空框后否决，
+          输入框高度应当表达"这里大概写多少"，不是在栏里分蛋糕。
+        """
+        self.assertIn("#tab-score .pane-body > #abcSlotScore", self.head)
+        self.assertIn("#tab-scoreEdit .pane-body > #seSrc", self.head)
+        self.assertIn("#tab-sep .pane-body > #sepList", self.head)
+        self.assertIn("#tab-style .grid.compose .pane { height: auto", self.head)
+        self.assertIn("#tab-sep .grid.compose .pane-in { height: auto", self.head)
+        # 撑框那条被否决的路不许再回来
+        self.assertNotIn("#styleBox > textarea#style { flex: 1", self.head,
+                         "又让曲风框吃掉整栏余量了（540px 空框已被实测否决）")
+
+    def test_dead_iframe_chat_css_stays_deleted(self):
+        """v10.14.0 换成原生对话后，iframe 时代那套 .ai-* 聊天样式必须继续是删掉的。
+
+        判定不是"grep 不到引用"就完事：会话列表点进去、把一条真实历史消息渲染出来之后
+        再数 DOM，`.ai-layout/.ai-chat/.ai-msg/.ai-body/.ai-code/.ai-inputrow` 全部为 0
+        个元素，聊天用的是 .chat-wrap/.chat-log。留着它们，后人会照着这套
+        死规则改聊天，改完一点效果都没有。
+        （`.ai-sess-item` 例外：loadAiSessions 现在仍写这个类名，它在文件里是活的。）
+        """
+        for dead in (".ai-layout", ".ai-chat", ".ai-msg", ".ai-body", ".ai-code",
+                     ".ai-inputrow", ".ai-inputwrap", ".ai-avatar", ".ai-frame-wrap"):
+            self.assertNotIn(dead + " {", self.head,
+                             "%s 又回来了：⑥ 已经是原生对话，这套画不到任何东西" % dead)
+        # 活的必须是 .chat-*，且真的挂在 ⑥ 的面板上
+        self.assertIn(".chat-log", self.head)
+        self.assertIn('id="chatLog"', self.src)
+        self.assertIn('class="chat-wrap"', self.src)
+
+
 if __name__ == "__main__":
     unittest.main()

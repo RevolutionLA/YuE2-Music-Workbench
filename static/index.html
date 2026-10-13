@@ -296,7 +296,7 @@
   }
   .side::before { content: none; }
   .side .brand, .side nav, .side .side-foot { position: relative; z-index: 1; }
-  .brand { display: flex; align-items: center; gap: 10px; padding: 0 6px; }
+  .brand { display: flex; align-items: center; gap: var(--sp-3); padding: 0 6px; }
   .mark {
     width: 34px; height: 34px; color: var(--shell-acc-ink); display: grid; place-items: center; border-radius: var(--r-md); flex-shrink: 0;
     background: var(--shell-acc);
@@ -307,7 +307,7 @@
   .brand-sub { font: var(--fs-xs)/var(--lh-snug) var(--sans); color: var(--shell-muted); margin-top: 2px; letter-spacing: .01em; }
   .side nav { display: flex; flex-direction: column; gap: 2px; margin-top: var(--sp-6); }
   .side-foot { margin-top: auto; border-top: 1px solid var(--shell-line); padding-top: var(--sp-4); display: flex; flex-direction: column; gap: 3px; }
-  .foot-row { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 32px; padding: 5px 10px; border: 0; border-radius: var(--r-sm); background: none; font: var(--fs-sm) var(--sans); color: var(--shell-muted); text-align: left; transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease); box-sizing: border-box; }
+  .foot-row { display: flex; align-items: center; gap: var(--sp-3); width: 100%; min-height: 32px; padding: 5px 10px; border: 0; border-radius: var(--r-sm); background: none; font: var(--fs-sm) var(--sans); color: var(--shell-muted); text-align: left; transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease); box-sizing: border-box; }
   .foot-row svg { width: 14px; height: 14px; flex-shrink: 0; }
   .foot-row .fr-label { flex: 1; }
   .foot-row .fr-value { font: var(--fs-xs) var(--mono); color: var(--shell-muted); max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -337,7 +337,7 @@
   /* 导航项沿用 .tab / data-tab 契约。
      选中态：左侧一条强调色指示条 + 极淡的面 —— 指示条是当代导航最清晰的
      "你在这里"信号，且不依赖颜色对比也能读。 */
-  .tab { position: relative; display: flex; align-items: center; gap: 9px; padding: 7px 10px; min-height: 34px; border-radius: var(--r-sm); color: var(--shell-muted); font: var(--fs-base) var(--sans); cursor: pointer; border: 0; background: none; text-align: left; width: 100%;
+  .tab { position: relative; display: flex; align-items: center; gap: var(--sp-3); padding: 7px 10px; min-height: 34px; border-radius: var(--r-sm); color: var(--shell-muted); font: var(--fs-base) var(--sans); cursor: pointer; border: 0; background: none; text-align: left; width: 100%;
     transition: color var(--dur-1) var(--ease), background var(--dur-1) var(--ease); }
   .tab svg { width: 16px; height: 16px; flex-shrink: 0; opacity: .9; }
   .tab:hover { color: var(--shell-text); background: color-mix(in srgb, var(--shell-text) 6%, transparent); }
@@ -351,7 +351,7 @@
   .tab.active svg { color: var(--shell-acc); opacity: 1; }
   .tab .badge { margin-left: auto; font: var(--fs-xs) var(--mono); color: var(--shell-text); background: color-mix(in srgb, var(--shell-text) 14%, transparent); border-radius: var(--r-full); padding: 2px 7px; min-width: 22px; min-height: 18px; text-align: center; }
 
-  .health { display: flex; align-items: center; gap: 7px; font:  var(--fs-xs) var(--sans); color: var(--muted); }
+  .health { display: flex; align-items: center; gap: var(--sp-3); font:  var(--fs-xs) var(--sans); color: var(--muted); }
   .health .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--shell-warn); flex-shrink: 0; }
   .health.ok .dot { background: var(--shell-ok); }
   .health.err .dot { background: var(--shell-err); }
@@ -556,7 +556,7 @@
      这样"点选"时界面干净（一行放得下十几个），要核对写进去的到底是什么时也不用点开别处。
      英文始终在 title 里，读屏也能拿到。
      宽度随中文自适应（约 33–66px），高度恒定 26px。 */
-  .chip.word { flex-direction: row; align-items: center; gap: 5px;
+  .chip.word { flex-direction: row; align-items: center; gap: var(--sp-2);
                min-height: 26px; padding: 3px 10px; line-height: 1.2; border-radius: var(--r-full); }
   .chip.word b { font: 600 var(--fs-xs) var(--sans); color: inherit; }
   .chip.word i { display: none; font: 400 var(--fs-micro) var(--mono); font-style: normal;
@@ -584,11 +584,11 @@
   /* ============ 曲风装配台 ============ */
   /* 一行的结构：左侧竖排「维度名 + 一句话说明」，右侧该维度的胶囊词表。
      维度名单独占列宽，是为了让六要素从上到下一眼对齐——用户扫一眼就知道还缺哪一格。 */
-  .asm { display: flex; flex-direction: column; gap: 9px; margin-top: 4px; }
+  .asm { display: flex; flex-direction: column; gap: var(--sp-3); margin-top: 4px; }
   /* 行标签列 74px 固定 + 控件列自适应。
      padding-top 4px 是让「1 语言」的基线大约落在右侧 select/chip 首行文字的基线上：
      原来 5px 是按 28px 高的 chip 调出来的，chip 收到 26px 之后就差 1px，读起来像没对齐。 */
-  .arow { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px; align-items: start; }
+  .arow { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: var(--sp-3); align-items: start; }
   .arow > .ak { font: 600 var(--fs-sm)/1.3 var(--sans); color: var(--text); padding-top: 4px; }
   /* 副标题（放最前 / 可多选 / BPM+调性）是这一格的**用法说明**，不是第二行标题：
      压到 fs-micro(10.5px) 并降低颜色权重，让它退到背景里，行标签本身才立得住。 */
@@ -598,7 +598,7 @@
      候选词区另起一行拿满宽。不这样拆的话，定宽控件会与 chips 抢同一行宽度，
      把每个 chip 挤到只剩两个字宽 → 候选词一格能长到 796px（六格里其它格的两三倍）。
      这里让 .av 成为纵向容器，.av-lead 与 .chips 各占一行。 */
-  .arow > .av:has(> .av-lead) { flex-direction: column; align-items: stretch; gap: 7px; }
+  .arow > .av:has(> .av-lead) { flex-direction: column; align-items: stretch; gap: var(--sp-3); }
   /* 首控件行：定宽控件不拉满，但**行高与 chips 行严格一致**（都是 26px 控件 + 6px gap）。
      之前 select 默认 39px、chip 26px，两种行高交替出现，六格看下来忽高忽低。
      宽度也统一到 200px：原来 210/150/96+218 三种宽度混排，
@@ -635,7 +635,7 @@
   .arow.dim { opacity: .42; }
   @media (max-width: 720px) { .arow { grid-template-columns: 1fr; gap: 4px; } }
   /* 曲风大类 → 子风格：两级导航，大类用页签，子风格用卡片（卡片能同时放下中文名+英文曲风，省掉一次悬停查询） */
-  .pfam { display: flex; flex-wrap: wrap; gap: 5px; margin: 2px 0 8px; }
+  .pfam { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: 2px 0 8px; }
   /* 恰好三列（控件数量已知且希望等宽时用）；auto-fit 版留给数量不定的组 */
   .pgrid.g3 { grid-template-columns: repeat(3, 1fr); }
   .pgrid.g2 { grid-template-columns: repeat(2, 1fr); }
@@ -643,7 +643,7 @@
   .pgrid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(126px, 1fr)); gap: 6px; }
   /* 「当前模型」一行：标签 + 值 + 动作按钮横向排开，值吃掉余量，按钮钉在最右。
      以前是裸文字 + margin-left 的按钮，值一长按钮就被挤到贴着文字，右边空一片。 */
-  .model-now { display: flex; align-items: center; gap: 9px; padding: 8px 11px; border-radius: var(--r-sm);
+  .model-now { display: flex; align-items: center; gap: var(--sp-3); padding: 8px 11px; border-radius: var(--r-sm);
     background: var(--bg-2); border: 1px solid var(--line-soft); }
   .model-now .mn-k { font: 600 var(--fs-xs) var(--sans); color: var(--muted); flex: none; letter-spacing: .02em; }
   .model-now b { font: var(--fs-sm) var(--mono); color: var(--text); flex: 1 1 auto; min-width: 0;
@@ -684,12 +684,12 @@
               flex: none; border-radius: 50%; border: 1px solid var(--acc-chip-hi);
               background: var(--acc-soft); color: var(--acc-text); font: 700  var(--fs-xs) var(--mono); }
   /* 信息预算读数（短语数 / 字符数）——超线只变色、不拦人，因为 12 条是均值不是上限 */
-  .budgetrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0 4px; }
+  .budgetrow { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; margin: 8px 0 4px; }
   .budgetrow .hint-xs { margin: 0; }
   /* 信息预算的说明收进一个小折叠：这段解释人人都该看一遍，但不必每次都占四行。
      收起来之后，产出栏上半区就只剩"当前长度"这一个读数，视觉焦点回到 Style 框本身。 */
   .budget-help { margin: 0; }
-  .budget-help > summary { font: var(--fs-xs) var(--sans); color: var(--muted); min-height: 24px; gap: 5px; }
+  .budget-help > summary { font: var(--fs-xs) var(--sans); color: var(--muted); min-height: 24px; gap: var(--sp-2); }
   .budget-help > summary::after { content: "?"; display: inline-grid; place-items: center; width: 15px; height: 15px;
     border-radius: 50%; border: 1px solid var(--line); background: var(--panel-2);
     font: 700 9px var(--sans); color: var(--muted); }
@@ -709,7 +709,7 @@
      ≤1180px 退回整页滚动（上下两栏），不在窄屏里造嵌套滚动条。 */
   .grid.compose { align-items: start; }
   .grid.compose .pane { display: flex; flex-direction: column; min-width: 0; }
-  .pane-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  .pane-head { display: flex; align-items: baseline; gap: var(--sp-3); flex-wrap: wrap;
                margin: -2px 0 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line-soft); }
   .pane-head b { font: 600 var(--fs-base) var(--sans); color: var(--acc-text); letter-spacing: .01em; }
   .pane-head .hint-xs { margin: 0; }
@@ -796,11 +796,15 @@
     .pn .pn-state { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
     .pn .pn-bud { flex: none; font-family: var(--mono); font-weight: 600; white-space: nowrap; }
     .pn .pn-more { flex: none; position: relative; margin-top: 0; }
-    .pn .pn-more > summary { list-style: none; cursor: pointer; user-select: none;
-      width: 15px; height: 15px; min-height: 15px; padding: 0;
+    /* 「?」帮助点：原来 15×15 里塞 10px 的 --dim —— 实测对比度 4.27:1（不到 AA 的 4.5），
+       命中区也只有 15px（WCAG 2.2 AA 要 24px）。放大到 18px 视觉仍是"一个小圆点"，
+       字提到 --fs-xs + --muted（5.7:1），再用 ::before 把可点区域外扩 3px 到 24px。 */
+    .pn .pn-more > summary { list-style: none; cursor: pointer; user-select: none; position: relative;
+      width: 18px; height: 18px; min-height: 18px; padding: 0;
       display: inline-flex; align-items: center; justify-content: center;
       border: 1px solid var(--line); border-radius: var(--r-full);
-      font: 600 10px var(--sans); color: var(--dim); background: var(--panel-2); }
+      font: 600 var(--fs-xs) var(--sans); color: var(--muted); background: var(--panel-2); }
+    .pn .pn-more > summary::before { content: ""; position: absolute; inset: -4px; }
     .pn .pn-more > summary::-webkit-details-marker { display: none; }
     .pn .pn-more[open] > summary { border-color: var(--acc-chip-hi); color: var(--acc-text); background: var(--acc-soft); }
     .pn .pn-more > div { position: absolute; right: 0; bottom: 130%; z-index: 30; width: 300px;
@@ -835,6 +839,19 @@
     .pane-out .pane-head .hint-xs { flex: 1 1 0; min-width: 0; overflow: hidden;
       white-space: nowrap; text-overflow: ellipsis; }
   }
+  /* ① 的两栏悬殊（实测 1680×1000：左栏内容到 430px、右栏到 700px，而两栏都按视口
+     定高 806px）—— 左栏于是空出 229px。
+     ★ "让曲风框吃掉剩余高度"这条路上一轮已经实测否决过（见上面那段：#style 被拉到
+       540px、27 行空框，把整页权重全吸走，心理负担比实际任务大）。输入框高度应当
+       表达"这里大概要写多少"，不是在栏里分蛋糕 —— 所以这里不去撑框，改成
+       **这一页两栏都贴合内容**，与关于页"内容天然偏短且两列悬殊 → 不撑满"同一条规矩。
+     只作用于 ①：#styleBox 是 ①②⑤ 共用的同一份 DOM，别页仍然按视口定高、内部滚动。 */
+  #tab-style .grid.compose { align-items: start; }
+  #tab-style .grid.compose .pane { height: auto; min-height: 0; }
+  /* ⑩ 的左栏同理：里面只有任务名 + 虚线上传区 + 服务器素材下拉，
+     没有任何"越多越好"的东西可以长，撑到 806px 就是留 202px 白。
+     右栏（分离记录）该长的已经让它长了，所以这里只收左栏。 */
+  #tab-sep .grid.compose .pane-in { height: auto; min-height: 0; }
   /* 右边点一下、左边文本框闪一下：视线跳过去就知道刚才那一下生效了（手改过 Style 时不闪，
      因为那一下确实没写进去，闪了反而是骗人）。 */
   @keyframes written { from { box-shadow: 0 0 0 3px var(--acc-glow); }
@@ -884,7 +901,7 @@
      --dim 4.27:1（浅）/ 4.34:1（深）——**都差一点点够不到 AA 的 4.5**，
      而这是 11–12px 的正常字号文本（非大字号，不能按 3:1 放宽）。
      --muted 给到 5.7:1 / 5.6:1，同一套视觉里既保持"次级"又不违规。 */
-  .six > div { display: inline-flex; align-items: center; gap: 5px;
+  .six > div { display: inline-flex; align-items: center; gap: var(--sp-2);
                font: var(--fs-xs) var(--sans); color: var(--muted); white-space: nowrap; }
   .six > div > i { font-style: normal; font-size: var(--fs-sm); line-height: 1; color: var(--muted);
               font-variant-numeric: tabular-nums; }
@@ -909,7 +926,7 @@
      再用 flex 居中把 padding 的作用彻底去掉。
      ★ 两档：次级 28px（.btn-sm / .btn-xs，两者同高不同内边距），主要 36px。 */
   .primary, .ghost, .danger {
-    display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: var(--r-sm);
+    display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-3); border-radius: var(--r-sm);
     height: 36px; padding: 0 17px;
     cursor: pointer; font: 600 var(--fs-base) var(--sans); border: 1px solid transparent;
     box-sizing: border-box;
@@ -983,52 +1000,14 @@
   #tab-ailab { display: flex; flex-direction: column; min-height: 0;
     height: calc(100vh - var(--sp-6) - var(--dock-h) - var(--sp-4)); }
   #tab-ailab .ailab-grid { flex: 1 1 auto; min-height: 0; align-items: stretch; }
-  .ai-frame-wrap {
-    position: relative;
-    height: 100%;
-    min-height: 480px;
-    border-radius: var(--r-lg); overflow: hidden; box-shadow: var(--card-shadow); background: var(--panel); border: 1px solid var(--line-soft);
-  }
-  .ai-frame-wrap iframe { width: 100%; height: 100%; border: 0; display: block; }
-  .ai-frame-wrap .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
-  .ai-layout { display: flex; gap: 14px; align-items: stretch; }
-  .ai-sessions { width: 180px; flex-shrink: 0; background: var(--panel); border-radius: var(--r-lg); box-shadow: var(--card-shadow); border: 1px solid var(--line-soft); padding: var(--sp-3); align-self: flex-start; max-height: 60vh; overflow-y: auto; }
-  .ai-sess-title { font:  var(--fs-xs) var(--sans); color: var(--muted); margin-bottom: 6px; }
+  /* ⑥ 的会话列表条目。★ 这一组只剩三条：v10.14.0 把 iframe 借来的对话界面换成原生
+     对话（.chat-*）之后，下面这套 `.ai-frame-wrap / .ai-layout / .ai-chat / .ai-msg /
+     .ai-body / .ai-code / .ai-inputrow …` 一共 24 条规则在真实点开一个会话之后
+     DOM 计数全为 0 —— 死样式留在文件里，后人会以为聊天还是它画的，照着改一圈没有任何效果。
+     `.ai-sess-item` 是活的（loadAiSessions 就写这一个类名），所以保留。 */
   .ai-sess-item { position: relative; padding: 7px 24px 7px 9px; border-radius: var(--r-sm); cursor: pointer; }
   .ai-sess-item:hover { background: rgba(127,127,127,.1); }
   .ai-sess-item.active { background: var(--acc-soft); }
-  .ai-sess-name { font:  var(--fs-sm) var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .ai-sess-sub { font:  var(--fs-xs) var(--sans); color: var(--muted); }
-  .ai-sess-del { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); border: 0; background: none; color: var(--muted); cursor: pointer; font-size: var(--fs-sm); opacity: 0; }
-  .ai-sess-item:hover .ai-sess-del { opacity: 1; }
-  .ai-main { flex: 1; min-width: 0; display: flex; flex-direction: column; max-width: 820px; margin: 0 auto; width: 100%; }
-  .ai-chat { flex: 1; display: flex; flex-direction: column; gap: 18px; max-height: 56vh; overflow-y: auto; padding: 16px 12px 12px; scroll-behavior: smooth; }
-  .ai-msg { display: flex; gap: 10px; max-width: 100%; }
-  .ai-msg.ai-user { flex-direction: row-reverse; }
-  .ai-avatar { width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font:  var(--fs-base) var(--sans); margin-top: 2px; }
-  .ai-bot .ai-avatar { background: var(--acc); color: #fff; }
-  .ai-user .ai-avatar { background: rgba(127,127,127,.18); color: var(--muted); }
-  .ai-col { min-width: 0; max-width: 86%; display: flex; flex-direction: column; }
-  .ai-user .ai-col { align-items: flex-end; }
-  .ai-who { font:  var(--fs-xs) var(--sans); color: var(--muted); margin-bottom: 4px; padding: 0 4px; }
-  .ai-body { font: var(--fs-base)/var(--lh-loose) var(--sans); padding: 10px 14px; border-radius: var(--r-lg); background: var(--panel); border: 1px solid var(--line-soft); word-break: break-word; }
-  .ai-user .ai-body { background: var(--acc); color: #fff; border-bottom-right-radius: 4px; }
-  .ai-bot .ai-body { border-top-left-radius: 4px; }
-  .ai-body h1, .ai-body h2, .ai-body h3 { font-size: var(--fs-lg); margin: 8px 0 4px; }
-  .ai-body ul, .ai-body ol { margin: 4px 0; padding-left: 20px; }
-  .ai-body table { border-collapse: collapse; margin: 6px 0; font-size: var(--fs-sm); }
-  .ai-body th, .ai-body td { border: 1px solid var(--line-soft, rgba(127,127,127,.3)); padding: 3px 8px; }
-  .ai-code { font:  var(--fs-sm) ui-monospace, Consolas, monospace; background: rgba(127,127,127,.12); border-radius: var(--r-sm); padding: 8px 10px; margin: 6px 0; overflow-x: auto; white-space: pre-wrap; }
-  .ai-body code { font:  var(--fs-sm) ui-monospace, Consolas, monospace; background: rgba(127,127,127,.14); border-radius: var(--r-xs); padding: 1px 5px; }
-  .ai-body pre code { background: none; padding: 0; }
-  .ai-code-bar { display: flex; justify-content: space-between; align-items: center; font:  var(--fs-xs) var(--sans); color: var(--muted); margin-top: 8px; }
-  .ai-code-copy { border: 0; background: rgba(127,127,127,.14); color: var(--muted); border-radius: var(--r-xs); padding: 3px 9px; cursor: pointer; font-size: var(--fs-sm); }
-  .ai-code-copy:hover { background: rgba(127,127,127,.24); }
-  .ai-inputwrap { position: sticky; bottom: 0; background: linear-gradient(transparent, var(--bg, #e9edf2) 40%); padding: 14px 0 6px; }
-  .ai-inputrow { display: flex; gap: 8px; align-items: flex-end; background: var(--panel); border-radius: var(--r-lg); box-shadow: 0 4px 18px rgba(0,0,0,.10); padding: 10px 12px; border: 1px solid rgba(127,127,127,.12); }
-  .ai-inputrow textarea { flex: 1; resize: none; min-height: 40px; border: 0; background: none; box-shadow: none; font:  var(--fs-lg) var(--sans); }
-  .ai-inputrow textarea:focus { outline: none; }
-  .ai-inputrow .primary { border-radius: var(--r-md); padding: 8px 18px; }
   .status.err { color: var(--err); }
   .status.ok { color: var(--ok); }
   /* 进度条：浅槽轨道 + 强调色液柱 */
@@ -1050,7 +1029,7 @@
   .hint-xs { font: var(--fs-sm)/var(--lh-base) var(--sans); color: var(--muted); margin-top: 5px; min-height: 15px; }
 
   /* 列表行（历史 / 音色） */
-  .row-list { display: flex; flex-direction: column; gap: 7px; }
+  .row-list { display: flex; flex-direction: column; gap: var(--sp-3); }
   /* 会随使用无限增长的列表：自身封顶滚动，不然同一页的另一栏永远空半截 */
   .row-list.cap { max-height: 430px; overflow-y: auto; padding-right: 4px; scrollbar-width: thin; }
 
@@ -1248,7 +1227,7 @@
     #histList .hist-item .h-col-meta, #histList .h-head .hh-meta { display: none; }
   }
 
-  .voice-card { display: flex; flex-direction: column; gap: 7px; padding: var(--sp-4); border-radius: var(--r-md); background: var(--bg-2); border: 1px solid var(--line-soft); }
+  .voice-card { display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-4); border-radius: var(--r-md); background: var(--bg-2); border: 1px solid var(--line-soft); }
   .voice-card .v-name { font-weight: 600; font-size: var(--fs-base); }
   .voice-card .v-text { color: var(--muted); font-size: var(--fs-sm); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .voice-card .v-meta { font:  var(--fs-xs) var(--mono); color: var(--muted); }
@@ -1257,7 +1236,7 @@
   .voice-card .preview { height: 30px; margin-top: 2px; }
 
 
-  .head-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; width: 100%; max-width: 1680px; margin-left: auto; margin-right: auto; }
+  .head-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); margin-bottom: 12px; width: 100%; max-width: 1680px; margin-left: auto; margin-right: auto; }
   .head-row .sec { margin: 0; padding-bottom: 0; }
 
   audio { width: 100%; }
@@ -1289,8 +1268,8 @@
      改之前先确认主区那套（--r-sm + 26/36）有没有跟着一起变，三块外壳要能互相解释。
      曾经的问题是三个高度 28/30/36 + 两个圆角 8/10 混在一个 50px 高的条里，
      看起来像从三个不同界面里各剪了一块贴过来 —— 这正是用户说的"风格完全不一样"。 */
-  .dock .dock-file { display: flex; flex-direction: row; align-items: center; gap: 9px; flex-shrink: 0; }
-  .dock-pick { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; min-height: 28px;
+  .dock .dock-file { display: flex; flex-direction: row; align-items: center; gap: var(--sp-3); flex-shrink: 0; }
+  .dock-pick { display: inline-flex; align-items: center; gap: var(--sp-2); flex-shrink: 0; min-height: 28px;
     font: 600 var(--fs-sm) var(--sans); color: var(--shell-text); cursor: pointer;
     border: 1px solid var(--shell-line); border-radius: var(--r-sm); padding: 4px 12px; background: color-mix(in srgb, var(--shell-text) 7%, transparent);
     transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
@@ -1322,7 +1301,7 @@
      （旧注释写的"实体播放键 / 凹槽轨道 / 铜色液柱"是暖色拟物改版的残留，早就不适用。）
      32px 是"主要动作"那一档（对应主区 .primary）；圆角从 --r-md(10) 收到 --r-sm(8)：
      30px 的方块配 10px 圆角在这个高度上已经接近胶囊，和同条里 8px 的按钮并排很跳。 */
-  .dock-transport { flex: 1; min-width: 200px; display: flex; align-items: center; gap: 10px; }
+  .dock-transport { flex: 1; min-width: 200px; display: flex; align-items: center; gap: var(--sp-3); }
   .dock-btn {
     display: grid; place-items: center; width: 32px; height: 32px; flex-shrink: 0; padding: 0;
     border-radius: var(--r-sm); border: 0; cursor: pointer; color: var(--shell-acc-ink);
@@ -1389,7 +1368,7 @@
 
   @media (max-width: 860px) {
     body { display: block; }
-    .side { position: static; width: auto; height: auto; flex-direction: row; align-items: center; gap: 10px; padding: 10px 16px; border-right: 0; border-bottom: 1px solid var(--shell-line); }
+    .side { position: static; width: auto; height: auto; flex-direction: row; align-items: center; gap: var(--sp-3); padding: 10px 16px; border-right: 0; border-bottom: 1px solid var(--shell-line); }
     .side nav { flex-direction: row; margin: 0 0 0 auto; }
     .side-foot { margin: 0; border: 0; padding: 0; }
     .brand-sub { display: none; }
@@ -1500,7 +1479,7 @@
   /* 主题色预设色板（⑫ 外观）。
      每格＝一个色片 + 一个中文名：名字比色值好记，也不逼用户去读 #2f7d5d 这种串。 */
   .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 8px; margin-top: 8px; }
-  .swatch { display: flex; flex-direction: column; align-items: stretch; gap: 7px; padding: 8px 8px 9px;
+  .swatch { display: flex; flex-direction: column; align-items: stretch; gap: var(--sp-3); padding: 8px 8px 9px;
             border: 1px solid var(--line); border-radius: var(--r-md); cursor: pointer; background: var(--bg-2);
             transition: border-color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease); }
   .swatch:hover { border-color: var(--line-strong); transform: translateY(-1px); }
@@ -1517,14 +1496,14 @@
   }
 
   /* ②⑤ 顶部的曲风来源条：回答"这词的曲风从哪来" */
-  .srcbar { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px;
+  .srcbar { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: var(--sp-3);
     border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px 11px; background: var(--bg-2); margin: 0 0 var(--sp-4); }
   .srcbar .sb-k { font: 600 var(--fs-xs) var(--sans); color: var(--muted); letter-spacing: .02em; }
   .srcbar .sb-v { font: var(--fs-sm)/var(--lh-snug) var(--mono); color: var(--text); max-height: 44px; overflow: hidden; }
   .srcbar .sb-a { display: flex; gap: 6px; flex: none; }
 
   /* ③⑩ 的上传区：整块可点，等价于一个大号文件按钮 */
-  .drop { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px;
+  .drop { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--sp-2);
     min-height: 104px; border: 1.5px dashed var(--line); border-radius: var(--r-md); background: var(--bg-2);
     cursor: pointer; text-align: center; padding: var(--sp-4);
     transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease); }
@@ -1533,6 +1512,18 @@
   .drop:hover, .drop.over { border-color: var(--acc); background: var(--acc-soft); }
   .drop.on { opacity: .5; pointer-events: none; }
   #abcSlotScore textarea.abc { min-height: 300px; }
+  /* ③⑩ 的卡片按视口定高，但里面的固定高度零件排完就剩一截白（实测 1680×1000：
+     ③ 转谱结果栏空 308px、④ 加工栏空 195px、⑩ 记录栏空 193px）。
+     这三处剩下的东西**本来就是越大多看几行越好的**（乐谱编辑器、分离记录列表），
+     所以让"真正的工作面"吃掉余量，而不是留白：
+     ABC 谱一页 30~60 行，多 300px 就是少滚三屏；列表同理。
+     （① 的曲风框不走这条路 —— 那是 20 词的逗号串，撑成 540px 空框反而吓人，
+       见上面 772-784 那段实测否决。） */
+  #tab-score .pane-body > #abcSlotScore { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  #tab-score #abcBlock { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+  #tab-score #abcBlock > textarea.abc { flex: 1 1 auto; }
+  #tab-scoreEdit .pane-body > #seSrc, #tab-scoreEdit .pane-body > #seOut { flex: 1 1 auto; min-height: 140px; }
+  #tab-sep .pane-body > #sepList { flex: 1 1 auto; min-height: 0; }
   /* ④ 乐谱加工：原谱与结果上下两框，各给一半高度，剩下的由右栏参数区占满。 */
   #tab-scoreEdit textarea.abc { min-height: 140px; }
   #tab-scoreEdit #seOut { background: var(--bg-2); }
@@ -1545,7 +1536,7 @@
 
   /* ⑫ 系统信息键值表 */
   .kv { display: grid; gap: 2px; }
-  .kv > div { display: flex; gap: 10px; font: var(--fs-sm) var(--sans); border-bottom: 1px solid var(--line-soft); padding: 6px 0; }
+  .kv > div { display: flex; gap: var(--sp-3); font: var(--fs-sm) var(--sans); border-bottom: 1px solid var(--line-soft); padding: 6px 0; }
   .kv .k { color: var(--muted); flex: none; min-width: 96px; }
   .kv .v { color: var(--text); font: var(--fs-xs) var(--mono); word-break: break-all; }
   /* ★ 关于页的系统信息：33 行平铺会顶出视口（1021px 高的单列），
@@ -1571,10 +1562,10 @@
   /* 关于页里的外链：跟着主题色走，但在深浅两套主题下都要够 4.5:1，
      所以不直接用 --acc（纯主色在浅色主题下作为文字只有 3:1）。 */
   /* 行内链接的下划线用 border-bottom 画（可控粗细与颜色），但纯行内盒子只有 17px 高，
-     点不准。补 4px 上下内边距把命中区顶到 24px（WCAG 2.2 AA 最小目标尺寸），
-     外边距收回 -4px，视觉上仍与正文同一行高。 */
+     点不准。补 6px 上下内边距把命中区顶到 24px+（WCAG 2.2 AA 最小目标尺寸），
+     外边距收回同样的 6px，视觉上仍与正文同一行高。 */
   .about-link { color: var(--acc-text); text-decoration: none; border-bottom: 1px solid var(--acc-soft2);
-                display: inline-block; padding: 4px 1px; margin: -4px -1px; }
+                display: inline-block; padding: 6px 2px; margin: -6px -2px; }
   .about-link:hover { border-bottom-color: var(--acc); }
 
   /* ★ 任务行的"更多"菜单：它展开后是**一整块面板**，不是"行内多几个按钮"。
@@ -1601,7 +1592,7 @@
     width: 100%; font: var(--fs-sm) var(--sans); flex: none; }
 
   /* ⑥ 三栏：会话侧条 / iframe / 产出回填。窄屏退回单列（iframe 那一栏优先保住高度） */
-  .ailab-grid { display: grid; grid-template-columns: 196px minmax(0, 1fr) 300px; gap: 14px; align-items: start; }
+  .ailab-grid { display: grid; grid-template-columns: 196px minmax(0, 1fr) 300px; gap: var(--sp-5); align-items: start; }
   .ailab-side, .ailab-back { background: var(--panel); border: 1px solid var(--line-soft);
     border-radius: var(--r-lg); box-shadow: var(--card-shadow); padding: var(--sp-5); }
   @media (max-width: 1400px) { .ailab-grid { grid-template-columns: 1fr; } .ailab-side { order: 2; } .ailab-back { order: 3; } }
@@ -2388,7 +2379,14 @@ We will sing beyond the night</textarea>
         <label for="rvcTaskName" style="margin-top:0;">任务名称（用于历史展示与下载命名）</label>
         <input id="rvcTaskName" placeholder="例如：稻香·女声版" maxlength="100" />
         <label for="rvcFile" style="margin-top:10px;">选择音频文件（wav / mp3 / flac / m4a…，如生成历史里的歌曲）</label>
-        <input id="rvcFile" type="file" accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" />
+        <!-- 原生 file 控件是这一页唯一没被主题接管的零件（"选择文件 / 未选择任何文件"
+             是系统字体+系统灰）。③⑩ 早就换成 .drop 虚线区 + 隐藏 input，这里跟上，
+             文件名仍由下面的 #rvcFileNow 报出来。 -->
+        <div class="drop" id="rvcDrop" tabindex="0" role="button" aria-label="选择或拖入音频文件">
+          <b>点选或拖入音频文件</b>
+          <small>wav / mp3 / flac / m4a / ogg / opus / aac / wma</small>
+        </div>
+        <input id="rvcFile" type="file" accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" style="display:none;" />
         <div class="actions" style="margin-top:6px;">
           <select id="rvcSrcPick" aria-label="从服务器素材里选一首" style="flex:1;"></select>
           <button class="ghost" id="rvcSrcRefresh" title="重新拉一遍服务器上的歌与分离产物">↻</button>
@@ -2523,7 +2521,11 @@ We will sing beyond the night</textarea>
         <label for="rvcTrainName">音色名称（英文/拼音，训练完成后出现在上方音色下拉框）</label>
         <input id="rvcTrainName" placeholder="例如：myvoice" />
         <label for="rvcTrainFiles" style="margin-top:10px;">人声样本（可多选；干声最佳，完整歌曲也可以——勾选下方自动分离即可）</label>
-        <input id="rvcTrainFiles" type="file" multiple accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" />
+        <div class="drop" id="rvcTrainDrop" tabindex="0" role="button" aria-label="选择或拖入人声样本（可多选）">
+          <b>点选或拖入人声样本（可多选）</b>
+          <small>wav / mp3 / flac / m4a / ogg / opus / aac / wma</small>
+        </div>
+        <input id="rvcTrainFiles" type="file" multiple accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" style="display:none;" />
         <div class="actions" style="margin-top:6px;">
           <select id="trainSrcPick" multiple size="5" aria-label="从服务器素材里选若干段" style="flex:1;"></select>
           <button class="ghost" id="trainSrcRefresh" title="重新拉一遍服务器上的分离产物与历史歌曲">↻</button>
@@ -6812,7 +6814,9 @@ $("rvcGo").onclick = async () => {
   const f = $("rvcFile").files && $("rvcFile").files[0];
   const srcId = ($("rvcSrcPick") || {}).value || "";
   if (!f && !srcId) {
-    fieldProblem($("rvcFile"), $("rvcStatus"),
+    // 指到虚线区，不是 input：input 现在是 display:none，
+    // 对它 scrollIntoView/focus 都是空操作，用户只会看到一行字却不知道该去哪儿。
+    fieldProblem($("rvcDrop") || $("rvcFile"), $("rvcStatus"),
       "换声要有输入：要么在上面选一个音频文件，要么在下面「服务器素材」里挑一首已经在本机上的歌/干声。");
     return;
   }
@@ -7601,8 +7605,10 @@ $("rvcTrainCheck").onclick = async () => {
   const files = $("rvcTrainFiles").files;
   const srcIds = rvcTrainSrcIds();
   if ((!files || !files.length) && !srcIds.length) {
-    $("rvcTrainStatus").className = "status err";
-    $("rvcTrainStatus").textContent = "体检要有素材：上传样本文件，或在下面「服务器素材」里勾选几段（⑩ 分离出的人声最直接）。";
+    // 与"开始制作音色"那条同一个出口：写状态 + 把视线带到该操作的地方。
+    // 以前这里只写一行字就走，用户在长页面里看到红字，却不知道去哪儿补。
+    fieldProblem($("rvcTrainDrop") || $("rvcTrainFiles"), $("rvcTrainStatus"),
+      "体检要有素材：上传样本文件，或在下面「服务器素材」里勾选几段（⑩ 分离出的人声最直接）。");
     return;
   }
   const fd = new FormData();
@@ -7642,7 +7648,7 @@ $("rvcTrainGo").onclick = async () => {
   const srcIds = rvcTrainSrcIds();
   if (!name) { fieldProblem($("rvcTrainName"), $("rvcTrainStatus"), "请先填写音色名称（英文/拼音）。"); return; }
   if ((!files || !files.length) && !srcIds.length) {
-    fieldProblem($("rvcTrainFiles"), $("rvcTrainStatus"),
+    fieldProblem($("rvcTrainDrop") || $("rvcTrainFiles"), $("rvcTrainStatus"),
       "请至少给一段人声样本：上传文件，或在下面「服务器素材」里勾选几段（干声最佳）。");
     return;
   }
@@ -7848,15 +7854,23 @@ function bindDropZone(zoneId, inputId, onFiles) {
   ["dragleave", "drop"].forEach((ev) => zone.addEventListener(ev, (e) => { e.preventDefault(); zone.classList.remove("over"); }));
   zone.addEventListener("drop", (e) => {
     if (input.disabled) return;
-    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    if (!f) return;
+    const dropped = (e.dataTransfer && e.dataTransfer.files) || [];
+    if (!dropped.length) return;
     const dt = new DataTransfer();
-    dt.items.add(f);
+    // input.multiple 时要把整拖进来的都收下（⑦ 的训练样本一次拖 5 段是常态），
+    // 只取 files[0] 会让用户以为"拖了 5 段"，实际只交了 1 段去体检。
+    if (input.multiple) { for (const f of dropped) dt.items.add(f); }
+    else dt.items.add(dropped[0]);
     input.files = dt.files;
-    if (onFiles) onFiles(f); else input.dispatchEvent(new Event("change"));
+    if (onFiles) onFiles(input.files[0]); else input.dispatchEvent(new Event("change"));
   });
 }
 bindDropZone("abcDrop", "abcAudio");
+// ⑨ 与 ⑦ 的上传口：以前直接裸露原生 file 控件，现在是同一套虚线区。
+// 隐藏 input 仍然收 change（选完文件由各自的 *Now 提示行报文件名），
+// 提交前的"没选输入"提示也改指到虚线区，否则对 display:none 的元素滚动/聚焦都是空操作。
+bindDropZone("rvcDrop", "rvcFile");
+bindDropZone("rvcTrainDrop", "rvcTrainFiles");
 $("abcCopy").onclick = async () => {
   const v = $("abc").value.trim();
   if (!v) { toast("谱框是空的", "err"); return; }
