@@ -52,7 +52,7 @@ so "which step am I on" is self-evident. v10.9 added ⑫ Settings and ⑬ About.
 | | ② Lyrics → song | Style + lyrics → song (includes repeat-N and batch queueing) |
 | | ③ Score from a reference song | Upload a song → ABC score, editable / analyzable / storable / MIDI export |
 | | ④ Score → song | Style + score + lyrics → sing *your* score (route auto-paired with score type) |
-| | ⑧ Lyric & style AI workbench | The DeepSeek assistant (embedded iframe); results fill back into ① or ② |
+| | ⑥ Lyric & style AI workbench | The DeepSeek assistant: the conversation and its 9 tools run inside this machine's gateway; the result cards offer **Copy Style / Copy lyrics** — where you paste them is your call |
 | **Sound** | ⑤ Voice training | Upload material → checkup → train → audition each tier → promote |
 | | ⑥ Voice library | Two libraries (YuE2 reference voices, RVC conversion voices) + import + checkup/f0/merge |
 | | ⑪ Voice conversion | Pick voice + pitch + params → RVC conversion (the only route that keeps the original melody and arrangement) |
@@ -117,7 +117,7 @@ git clone https://github.com/RevolutionLA/YuE2-Music-Workbench.git
 ## 🏗 Architecture
 
 ```
-Browser ── 3081 integrated workbench (dsh-plugin)
+Browser ── 7863 workbench (the gateway serves the page itself; since v10.14 3081 is no longer the entry)
               │ /lab-api/* reverse proxy
               ▼
         7863 FastAPI gateway (app.py: job hosting / batch queue / RVC / LRC align)
@@ -170,6 +170,7 @@ field is the **day of month of the release**, and the third is the **release ind
 | `v10.11.0` | "Stop" split into two scopes (this one job / the whole queue), queued items genuinely resume after a restart, VRAM pre-check stops blaming the wrong process |
 | `v10.11.1` | The auto-added `[Outro]` no longer leaks into stored lyrics; the validator accepts an instrumental ending; the four frontend outlets strip the machine-written line before submitting |
 | `v10.12.0` | **Page independence**: every "fill page B from page A" removed (⑪ rewriting ②'s form on a row click, ⑥→①②, ⑩→⑨⑦③, ④→⑤, the cross-page `LabStore`, preselecting a voice for another page); each page now takes its own input from the server instead (⑨ and ⑦ gained server-material pickers that submit only an ID); 504 tests green |
+| `v10.14.0` | **Entry moved back to the gateway, AI chat made native**: upstream started masking the dsh ticket in its log, so the launcher looped 24× on HTTP 401 and nobody could open the workbench. `gateway_serve_ui=True` makes `http://127.0.0.1:7863/` the entry; ⑥'s iframe became a real chat panel (`POST /api/ai/chat` → in-process `ai_lab.chat_turn`, no more spawning node), the launcher stopped verifying tickets, and a real bug surfaced — the session id was never returned, so every message silently started a new conversation. dsh itself still exists (LAN + watchdog); removing it is in progress |
 | `v10.13.0` | **Each page manages its own tasks**: one shared 「本页任务」 strip that moves to the current page (②⑤ generate / ③④ scores / ⑦ training / ⑨ conversion / ⑩ separation), fed only by `/api/tasks/unified`, with play / download / stop-this-one / cancel-a-queued-cover inline; also fixed a kind-name mismatch that made ⑨'s list permanently empty, now locked by a contract test |
 
 **Release checklist** — skip one and you may only claim "the code changed", not "it's live":

@@ -60,9 +60,11 @@ class ChatBody(BaseModel):
 def ai_status():
     return {
         "ready": ai_lab.ai_ready(),
-        "via": "dsh",
+        # 对话跑在网关自己的 Python 循环里。这里以前写 "dsh"：2026-10-14 上游把启动日志
+        # 里的门票打了码，"借 dsh 跑一轮"这条路不可能稳定工作，已切回网关，不能再报旧值。
+        "via": "gateway:ai_lab.chat_turn",
         "model": ai_lab.MODEL,
-        "runner_exists": DSH_RUNNER.is_file(),
+        "runner_exists": DSH_RUNNER.is_file(),   # 仅诊断用；dsh 摘除（阶段四）时删
     }
 
 
@@ -244,68 +246,30 @@ def ai_session_delete(sid: str):
     raise HTTPException(status_code=404, detail="会话不存在")
 
 
-def _task_from_session(sid: str, user_message: str, confirm: bool) -> str:
-    """把系统提示词（两个 skill 全文）+ 会话历史注入 task（dsh headless 是一次性任务）。"""
-    import ai_prompt
-    s = ai_lab.session_load(sid)
-    msgs = [m for m in s.get("messages", []) if m.get("role") in ("user", "assistant")]
-    recent = msgs[-8:]  # 最近 4 轮
-    parts = [f"[系统指令]\n{ai_prompt.SYSTEM_PROMPT}\n[/系统指令]"]
-    if recent:
-        hist = "\n".join(f"{'用户' if m['role'] == 'user' else 'AI'}: {str(m.get('content', ''))[:400]}"
-                         for m in recent)
-        parts.append(f"[对话历史]\n{hist}\n[/对话历史]")
-    if confirm:
-        parts.append("[用户已确认刚才的删除操作，直接执行对应工具]")
-    parts.append(f"用户：{user_message}")
-    return "\n\n".join(parts)
-
-
 @router.post("/chat")
 def ai_chat(body: ChatBody):
+    """一轮 AI 对话。v10.14 起直接跑网关内的 Python 循环（ai_lab.chat_turn）：
+    系统提示词与两个 skill 由 ai_prompt 注入，9 个工具在 ai_tools 里，
+    全程不经过 dsh —— 上游 openclaw 把启动日志里的门票打码后，
+    "借 dsh 的 agent 跑一轮"这条路已经不可能稳定工作。"""
     sid = re.sub(r"[^0-9A-Za-z_-]", "", body.session_id)[:64] or ai_lab.uuid.uuid4().hex[:12]
-    if not body.message.strip():
+    # 空消息只允许出现在"确认执行刚才那个删除操作"这一种情况
+    if not body.message.strip() and not body.confirm:
         raise HTTPException(status_code=400, detail="消息不能为空")
     if not ai_lab.ai_ready():
         raise HTTPException(status_code=400, detail="未配置 DEEPSEEK_API_KEY 环境变量，AI 工作台不可用")
-    if not DSH_RUNNER.is_file():
-        raise HTTPException(status_code=500, detail="dsh runner 不存在（dsh-plugin/src/runner.mjs）")
-
-    task = _task_from_session(sid, body.message.strip(), body.confirm)
-    # 审计 B-T6：Windows CreateProcess 命令行上限约 32K 字符，超限会直接
-    # CreateProcess 失败并报成 502"dsh 内核失败"，误导排查——前置校验给可读错误。
-    if len(task) > 30000:
-        raise HTTPException(status_code=400,
-                            detail="消息过长（含注入的对话历史共 %d 字符，上限 30000）。"
-                                   "请缩短本条消息或开新会话减少历史" % len(task))
     try:
-        r = subprocess.run(
-            ["node", str(DSH_RUNNER), task],
-            cwd=str(DSH_RUNNER.parent.parent), capture_output=True, timeout=300,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=504, detail="AI 回复超时（300s），请重试或缩短问题")
-    if r.returncode != 0:
-        err = (r.stderr or b"").decode("utf-8", "replace")[-300:]
-        raise HTTPException(status_code=502, detail=f"dsh 内核失败：{err}")
-
-    out = r.stdout.decode("utf-8", "replace")
-    payload = {}
-    m = re.search(r"@@JSON@@(.+)", out)
-    if m:
-        try:
-            payload = json.loads(m.group(1))
-        except Exception:
-            payload = {}
-    reply = (payload.get("reply") or "").strip() or "（AI 没有返回内容，请重试）"
-
-    # 会话记录：保存用户消息与 AI 回复（与 dsh 内核无关，网关侧持久化）
-    s = ai_lab.session_load(sid)
-    s["messages"].append({"role": "user", "content": body.message.strip()})
-    s["messages"].append({"role": "assistant", "content": reply})
-    ai_lab.session_save(s)
-
-    return {"session_id": sid, "reply": reply,
-            "feeds": payload.get("feeds", []),
-            "needs_confirm": False, "confirm_hint": ""}
+        out = ai_lab.chat_turn(sid, body.message.strip(), bool(body.confirm))
+    except Exception as e:
+        # 网络/额度/工具异常都如实报，并说清会话有没有被写坏：
+        # chat_turn 只在拿到最终回复后才落盘，异常时历史不会多出一半轮
+        raise HTTPException(status_code=502,
+                            detail=f"AI 这轮没跑成：{type(e).__name__}: {str(e)[:300]}"
+                                   "（会话未写入本轮，可直接重发）")
+    reply = str(out.get("reply") or "").strip() or "（AI 没有返回内容，请重试）"
+    # 会话 id 必须以 chat_turn 返回的那条为准：空 session_id 时它自己新建一条，
+    # 前端只有拿到真 id 才能接着这条聊，否则每发一句就开一条新会话、历史当场丢
+    return {"session_id": str(out.get("session_id") or sid), "reply": reply,
+            "feeds": out.get("feeds") or [],
+            "needs_confirm": bool(out.get("needs_confirm")),
+            "confirm_hint": str(out.get("confirm_hint") or "")}

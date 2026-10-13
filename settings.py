@@ -25,10 +25,12 @@ class Settings:
     # dsh 工作台（UI 宿主）端口：UI 归属 3081，网关只在 gateway_serve_ui=False 时
     # 退化成纯 API；此处保留端口供网关侧拼 3081 链接与看门狗共用。
     dsh_port: int = _port("dsh")
-    # True：7863 的 / 仍直出页面（应急/调试入口）。False：7863 纯 API，/ 只返回
-    # 指向 3081 的引导页 —— 想彻底消除双入口就置 False。
-    # 现置 False：UI 唯一入口为 3081，7863 只暴露 /api/*。
-    gateway_serve_ui: bool = False
+    # True：7863 的 / 直出页面。False：7863 纯 API，/ 只返回指向 3081 的引导页。
+    # 2026-10-14 改回 True：上游 openclaw/dsh 升级后把启动日志里的门票打码
+    # （`token=***redacted***`），3081 那条"读日志拿票"的入口就此失效——启动脚本连续
+    # 24 轮验票全 401，用户完全进不了工作台。工作台从此以 7863 为唯一入口，
+    # dsh 摘除是正在进行中的迁移（见 CHANGELOG 与 README 的入口说明）。
+    gateway_serve_ui: bool = True
 
     audiocpp_base_url: str = f"http://127.0.0.1:{_port('audiocpp')}"
     audiocpp_timeout_sec: float = 86400.0  # 24h：不限时长，生成多久等多久

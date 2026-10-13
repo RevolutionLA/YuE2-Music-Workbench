@@ -42,7 +42,7 @@ set HF_ENDPOINT=https://hf-mirror.com
 set "HF_HOME=%cd%\runtime\hf_download"
 set NO_PROXY=127.0.0.1,localhost,::1
 set no_proxy=127.0.0.1,localhost,::1
-rem 静默启动器调用时禁止网关自行开浏览器（由 vbs 统一开 3081）
+rem 静默启动器调用时禁止网关自行开浏览器（由 vbs 统一开工作台页面）
 if "%~1"=="no-open" (echo > "%TEMP%\_lab_no_open.marker" && set "_LAB_NO_OPEN_MARKER=1") else (del /q "%TEMP%\_lab_no_open.marker" 2>nul)
 set CU_PATH=%PYTHON_PATH%\Lib\site-packages\torch\lib
 set CUDA_HOME=%PYTHON_PATH%\Library
@@ -102,7 +102,7 @@ rem 那种情况按"没起来"处理，交给下面正常启动一次，别再�
 if not errorlevel 1 goto wait
 echo     端口 :%DSH_PORT% 有监听但不回话（假死/占位进程），按未启动处理
 :dshstart
-echo [3/3] 启动 dsh AI 工作台 :%DSH_PORT% ...
+echo [3/3] 启动 dsh :%DSH_PORT%（局域网兼容用；工作台入口已是 %GATEWAY_PORT%，不靠它）...
 rem 启动参数集中在 scripts\启动dsh工作台.bat（看门狗重启 3081 时复用同一份）
 call "%~dp0启动dsh工作台.bat"
 
@@ -131,64 +131,32 @@ goto dshwait
 echo.
 echo ================================================
 echo   全部就绪！
-echo   工作台:  http://127.0.0.1:%DSH_PORT%
+echo   工作台:  http://127.0.0.1:%GATEWAY_PORT%
 echo   AI 助手: 页面内 "AI 工作台" 页签
 echo ================================================
-rem 等待 dsh web 就绪后，打开带 token 的 3081 地址（无 token 则回退 7863）
+rem 打开网关直出的工作台页面（v10.14 起 UI 的家就是 %GATEWAY_PORT%）
 set /a DSH_TRIES=0
 set /a DSH_VT=0
 set "DSH_CODE=000"
 :dshwait
-ping -n 3 127.0.0.1 >nul
-call :read_dsh_url
-if defined DSH_URL goto dshverify
-set /a DSH_TRIES+=1
-if %DSH_TRIES% lss 15 goto dshwait
+rem 以前这里要等 3081 的门票、并实测 24 轮。v10.14 起门票不再是入口条件：
+rem 上游 openclaw/dsh 把日志里的 token 打了码，读到的永远是 ***redacted***，验票必然 401。
 goto open
-
-:dshverify
-rem 门票必须实测再开浏览器：dsh 每重启一次就换一张，日志里那条可能是上一代进程留下的。
-rem 实测踩过（2026-09-30 07:59）：3081 假死 → 本脚本见端口在 LISTENING 就跳过启动 →
-rem 直接把旧 token 开进浏览器 → 401，Edge 画成一页"找不到页面"；60 秒后看门狗才把它救活，
-rem 而那时新门票已经换好了，没人再开一次。所以现在：先验，不通就等看门狗自愈并回读新票。
-set "DSH_CODE=000"
-del /q "%TEMP%\_lab_dsh_verify.tmp" 2>nul
-"%SystemRoot%\System32\curl.exe" -s --noproxy "*" -m 5 -o nul -w "%%{http_code}" "%DSH_URL%" > "%TEMP%\_lab_dsh_verify.tmp" 2>nul
-set /p DSH_CODE=<"%TEMP%\_lab_dsh_verify.tmp"
-if "%DSH_CODE%"=="303" goto open
-if "%DSH_CODE%"=="200" goto open
-set /a DSH_VT+=1
-if %DSH_VT% geq 24 goto open
-if "%DSH_CODE%"=="000" (
-    echo     工作台 :%DSH_PORT% 连不上（HTTP 000 = 请求压根没发出去），服务还没起来
-) else (
-    echo     门票未生效（HTTP %DSH_CODE%），等工作台自愈换票...
-)
-echo     等待第 %DSH_VT%/24 轮；看门狗约 30 秒内会自愈拉起，急用可再双击一次本脚本
-ping -n 4 127.0.0.1 >nul
-call :read_dsh_url
-if defined DSH_URL goto dshverify
-goto dshwait
 
 :open
 rem 静默启动器（计划任务 no-open）不负责开浏览器，直接退出
 if "%~1"=="no-open" exit /b 0
-rem 只打开 3081 工作台；门票没验通时宁可不弹，也绝不弹 7863 迷惑用户
-if not defined DSH_URL (
-    echo   dsh token 未就绪，请手动打开 3081 工作台页面
+rem 打开网关直出的工作台：先实测一次 HTTP 200 再弹，免得"页面开了但是空的"
+set "LAB_URL=http://127.0.0.1:%GATEWAY_PORT%/"
+set "GW_CODE=000"
+"%SystemRoot%\System32\curl.exe" -s --noproxy "*" -m 5 -o nul -w "%%{http_code}" "%LAB_URL%" > "%TEMP%\_lab_gw_verify.tmp" 2>nul
+set /p GW_CODE=<"%TEMP%\_lab_gw_verify.tmp"
+del /q "%TEMP%\_lab_gw_verify.tmp" 2>nul
+if not "%GW_CODE%"=="200" (
+    echo   工作台页面没起来（HTTP %GW_CODE%）：%GATEWAY_PORT% 可能正在重启，稍后再双击本脚本
+    echo   也可以先手动打开 %LAB_URL%
     exit /b 0
 )
-if not "%DSH_CODE%"=="303" if not "%DSH_CODE%"=="200" (
-    echo   工作台地址仍未生效（HTTP %DSH_CODE%），%DSH_PORT% 可能正在重启，稍后再双击本脚本
-    echo   最新门票: %DSH_URL%
-    exit /b 0
-)
-echo   打开 AI 工作台: %DSH_URL%
-start "" "%DSH_URL%"
-exit /b 0
-
-:read_dsh_url
-rem 从 _dsh_web.log 取最后一条带 token 的工作台地址；读不到就置空 DSH_URL
-set "DSH_URL="
-for /f "tokens=*" %%u in ('powershell -NoProfile -Command "if(Test-Path 'dsh-plugin\_dsh_web.log'){Select-String -Path 'dsh-plugin\_dsh_web.log' -Pattern 'http://127\.0\.0\.1:%DSH_PORT%/\?token=\S+' | ForEach-Object { $_.Matches[0].Value } | Select-Object -Last 1}" 2^>nul') do set "DSH_URL=%%u"
+echo   打开工作台: %LAB_URL%
+start "" "%LAB_URL%"
 exit /b 0

@@ -1383,6 +1383,25 @@
   html.embed .tab[data-tab="ailab"] { display: none !important; }
 
   /* ================= v2.0 新增（11 页重构） ================= */
+  /* ⑥ 原生对话：消息流、产出卡、确认条 */
+  .chat-wrap { display:flex; flex-direction:column; gap:8px; min-height:420px; }
+  .chat-log { flex:1; overflow:auto; max-height:56vh; border:1px solid var(--line-soft);
+              border-radius:var(--r-sm); background:var(--panel); padding:8px 10px; }
+  .chat-msg { display:flex; gap:8px; margin:0 0 8px; }
+  .chat-msg .chat-who { flex:0 0 26px; font-size:var(--fs-xs); color:var(--dim); padding-top:2px; }
+  .chat-msg .chat-body { flex:1; white-space:pre-wrap; word-break:break-word; font-size:var(--fs-sm);
+              border-left:2px solid var(--line); padding-left:8px; }
+  .chat-msg.user .chat-body { border-left-color:var(--acc); }
+  .chat-feed { border:1px solid var(--line); border-radius:var(--r-sm); background:var(--panel-2);
+              padding:8px 10px; margin:0 0 8px; }
+  .chat-feed-line { color:var(--muted); font-size:var(--fs-xs); margin:2px 0 6px; }
+  .chat-feed-pre { max-height:120px; overflow:auto; background:var(--bg-2); border:1px solid var(--line-soft);
+              border-radius:var(--r-sm); padding:6px 8px; font-family:var(--mono, ui-monospace, monospace);
+              font-size:var(--fs-xs); white-space:pre-wrap; margin:0 0 6px; }
+  .chat-confirm { display:flex; align-items:center; gap:8px; border:1px solid var(--err);
+              border-radius:var(--r-sm); padding:6px 10px; font-size:var(--fs-sm); }
+  .chat-confirm span { flex:1; }
+  .chat-in label { display:block; }
   /* ===== 每页的「本页任务」条（v10.13）=====
      一条组件按页搬到每个面板底部，不复制 13 份；折叠态只留标题行。 */
   .mod-tasks { margin-top:18px; border:1px solid var(--line); border-radius:var(--r-sm);
@@ -2279,10 +2298,10 @@ We will sing beyond the night</textarea>
   <section class="panel-tab" id="tab-ailab" style="display:none;">
     <div class="page-head">
       <h1 class="page-title">歌词曲风 AI 工作台</h1>
-      <p class="page-sub">内嵌完整 AI 对话界面：让 AI 帮你写词、改曲风描述，再把产出回填到对应页面。</p>
+      <p class="page-sub">让 AI 帮你写词、改曲风描述：对话与工具都跑在本机网关里，产出点复制带走。</p>
     </div>
     <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l1.7 3.5 3.8.5-2.8 2.7.7 3.8L8 10.5l-3.4 1.8.7-3.8L2.5 5.8l3.8-.5z"/></svg>AI 音乐制作人
-      <button class="ghost" id="aiReload" style="margin-left:auto;">↻ 重新加载</button>
+      <button class="ghost" id="aiReload" style="margin-left:auto;">↻ 刷新这轮状态</button>
     </div>
     <div class="ailab-grid">
       <div class="ailab-side">
@@ -2291,12 +2310,24 @@ We will sing beyond the night</textarea>
         <div class="actions" style="margin-top:8px;">
           <button class="ghost btn-xs" id="aiSessReload">↻ 刷新会话</button>
         </div>
-        <div class="hint-xs" style="margin-top:6px;">这里只读：点开一条是把它最后交给创作链的产出取回来，对话本体仍在右边的工作台里进行（本期不做原生对话）。</div>
+        <div class="hint-xs" style="margin-top:6px;">这里只读：点开一条会话，右边的对话区就换到那一条；产出卡也按它来取。</div>
       </div>
-      <div class="ai-frame-wrap">
-        <iframe id="aiFrame" title="DeepSeek Harness AI 工作台" allow="clipboard-write; clipboard-read" style="display:none;"></iframe>
-        <div class="empty" id="aiFrameLoading">AI 工作台加载中（首次需启动 dsh 内核，约 10-30 秒）…</div>
-        <div class="empty" id="aiFrameError" style="display:none;">加载失败：点击「↻ 重新加载」重试，或查看 dsh-plugin/_dsh_web.log。</div>
+      <div class="chat-wrap">
+        <div class="chat-log" id="chatLog" aria-live="polite">
+          <div class="empty">还没有对话。下面说一句你想要什么样的歌。</div>
+        </div>
+        <div class="chat-confirm" id="chatConfirm" hidden></div>
+        <div class="chat-in">
+          <label for="chatInput" class="lbl" style="margin:0 0 4px;">对本地的 AI 音乐制作人说（Ctrl+Enter 发送）</label>
+          <textarea id="chatInput" rows="3" placeholder="例：写一首中文民谣，雨天旧车站、错过与释怀，女声清澈，88BPM"></textarea>
+          <div class="actions" style="margin-top:6px;">
+            <button class="primary" id="chatSend">发送</button>
+            <button class="ghost" id="chatNew">＋ 新会话</button>
+            <span class="row-label" id="chatState"></span>
+          </div>
+        </div>
+        <div class="hint-xs" style="margin-top:8px;">对话跑在本机网关里（DeepSeek + 9 个工具），不经过任何外部界面；
+          AI 交出来的 Style / 歌词会出现在下面的卡片上，<b>要带去 ① 或 ② 请点复制</b>——页面之间不代填。</div>
       </div>
       <div class="ailab-back">
         <div class="sec" style="margin-top:0;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 12.5V3.5M8 3.5 4.5 7M8 3.5 11.5 7"/></svg>产出回填</div>
@@ -6808,41 +6839,137 @@ $("rvcGo").onclick = async () => {
   } finally { $("rvcGo").disabled = false; }
 };
 
-// ---------- AI 工作台：内嵌 dsh 原生界面（点页签自动拉起内核）----------
-let aiFrameLoaded = false;
+// ---------- ⑥ AI 工作台：原生对话 ----------
+// v10.14 起对话不再借外部界面：POST /api/ai/chat → 网关内的 ai_lab.chat_turn
+// （DeepSeek + 9 个工具，skill 由 ai_prompt 注入）。产出卡只给"复制"，不代填别的页面。
+let chatSid = "", chatBusy = false, chatBooted = false;
 
-function aiLoadFrame() {
-  const fr = $("aiFrame"), ld = $("aiFrameLoading"), er = $("aiFrameError");
-  if (!fr) return;
-  ld.style.display = "";
-  er.style.display = "none";
-  fr.style.display = "none";
-  // 网关返回 JSON {ok,url}（含 token；未运行时它会先自动拉起，最长 60s）
-  fetch("/api/ai/web")
-    .then(r => r.json())
-    .then(j => {
-      if (!j.ok || !j.url) throw new Error(j.detail || "启动失败");
-      fr.src = j.url;
-      fr.onload = () => {
-        fr.style.display = "";
-        ld.style.display = "none";
-        aiFrameLoaded = true;
-      };
-      setTimeout(() => {
-        if (!aiFrameLoaded) { er.style.display = ""; ld.style.display = "none"; }
-      }, 90000);
-    })
-    .catch(() => { er.style.display = ""; ld.style.display = "none"; });
+function chatSay(text, cls) {
+  const el = $("chatState");
+  if (el) { el.textContent = text; el.className = "row-label" + (cls ? " " + cls : ""); }
 }
 
-// 首次切到 AI 页签时才加载（避免拖慢首屏）
-if ($("aiReload")) {
-  $("aiReload").onclick = () => { aiFrameLoaded = false; aiLoadFrame(); };
+function chatCard(role, text) {
+  const d = document.createElement("div");
+  d.className = "chat-msg " + role;
+  const who = document.createElement("span");
+  who.className = "chat-who";
+  who.textContent = role === "user" ? "我" : "AI";
+  const body = document.createElement("div");
+  body.className = "chat-body";
+  body.textContent = text;
+  d.appendChild(who); d.appendChild(body);
+  return d;
 }
+
+function chatFeedCard(f) {
+  const d = document.createElement("div");
+  d.className = "chat-feed";
+  const t = document.createElement("b");
+  t.textContent = f.type === "generate" ? "🎵 已交给生成链" : "产出卡";
+  d.appendChild(t);
+  const line = document.createElement("div");
+  line.className = "chat-feed-line";
+  line.textContent = (f.job_id ? "任务 " + f.job_id + (f.cot ? " · 档位 " + f.cot : "") : "");
+  d.appendChild(line);
+  [["Style", f.style], ["歌词", f.lyrics]].forEach(([label, val]) => {
+    if (!val) return;
+    const pre = document.createElement("pre");
+    pre.className = "chat-feed-pre";
+    pre.textContent = val;
+    d.appendChild(pre);
+    const b = document.createElement("button");
+    b.className = "ghost"; b.type = "button"; b.textContent = "📋 复制 " + label;
+    b.onclick = () => copyOut(val, label);
+    d.appendChild(b);
+  });
+  return d;
+}
+
+async function chatShow(sid) {
+  const log = $("chatLog");
+  if (!log) return;
+  chatSid = sid || "";
+  log.innerHTML = "";
+  if (!sid) {
+    log.innerHTML = '<div class="empty">还没有对话。下面说一句你想要什么样的歌。</div>';
+    return;
+  }
+  try {
+    const j = await (await fetchT("/api/ai/session/" + encodeURIComponent(sid), {}, 25000)).json();
+    (j.messages || []).forEach((m) => {
+      if (!m || (m.role !== "user" && m.role !== "assistant")) return;
+      log.appendChild(chatCard(m.role, String(m.content || "")));
+    });
+    (j.feeds || []).forEach((f) => log.appendChild(chatFeedCard(f)));
+    if (!log.children.length) log.innerHTML = '<div class="empty">这条会话还是空的。</div>';
+  } catch (e) { chatSay("读会话失败：" + friendlyErr(e), "err"); }
+}
+
+async function chatSend(confirm) {
+  if (chatBusy) return;
+  const inp = $("chatInput");
+  const msg = confirm ? "" : (inp.value || "").trim();
+  if (!msg && !confirm) { chatSay("先说要什么样的歌。", "err"); return; }
+  chatBusy = true;
+  $("chatSend").disabled = true;
+  if (!confirm) {
+    const log = $("chatLog");
+    const ph = log.querySelector(".empty");
+    if (ph) ph.remove();
+    log.appendChild(chatCard("user", msg));
+    inp.value = "";
+    log.scrollTop = log.scrollHeight;
+  }
+  chatSay(confirm ? "执行确认的操作中…" : "AI 正在想并调工具，可能要 1-2 分钟…");
+  try {
+    const r = await fetchT("/api/ai/chat", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: chatSid, message: msg, confirm: !!confirm }),
+    }, 300000);
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.detail || ("HTTP " + r.status));
+    chatSid = j.session_id || chatSid;
+    $("chatLog").appendChild(chatCard("assistant", String(j.reply || "（空回复）")));
+    (j.feeds || []).forEach((f) => $("chatLog").appendChild(chatFeedCard(f)));
+    const cf = $("chatConfirm");
+    if (j.needs_confirm) {
+      cf.hidden = false;
+      cf.innerHTML = "";
+      const tip = document.createElement("span");
+      tip.textContent = "AI 要执行一个不可恢复的操作：" + (j.confirm_hint || "请确认");
+      cf.appendChild(tip);
+      const ok = document.createElement("button");
+      ok.className = "danger"; ok.type = "button"; ok.textContent = "确认执行";
+      ok.onclick = () => { cf.hidden = true; chatSend(true); };
+      const no = document.createElement("button");
+      no.className = "ghost"; no.type = "button"; no.textContent = "取消这次操作";
+      no.onclick = () => { cf.hidden = true; chatSay("已取消，什么都没执行。"); };
+      cf.appendChild(ok); cf.appendChild(no);
+    } else { cf.hidden = true; }
+    chatSay("");
+    if (typeof loadAiSessions === "function") loadAiSessions();
+  } catch (e) {
+    chatSay("这轮没跑成：" + friendlyErr(e), "err");
+  } finally {
+    chatBusy = false;
+    $("chatSend").disabled = false;
+  }
+}
+
+$("chatSend").onclick = () => chatSend(false);
+$("chatInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); chatSend(false); }
+});
+$("chatNew").onclick = () => { chatShow(""); chatSay("新会话：下一条消息开一条新的记录", ""); };
+if ($("aiReload")) $("aiReload").onclick = () => chatShow(chatSid);
 const _origSwitchTab = switchTab;
 switchTab = function (name) {
   _origSwitchTab(name);
-  if (name === "ailab" && !aiFrameLoaded) aiLoadFrame();
+  if (name === "ailab") {
+    // 首次进这页才拉会话列表；对话区保持上一次的会话，不空转
+    if (!chatBooted) { chatBooted = true; if (typeof loadAiSessions === "function") loadAiSessions(); }
+  }
   // 回到创作页时把"最近歌词"刷新一次：刚生成完的那首应该立刻能被点回来
   if (name === "sing") loadRecentLyrics(true);
 };
@@ -8878,7 +9005,7 @@ async function loadAiSessions() {
       d.className = "ai-sess-item";
       d.textContent = (it.title || it.id || "会话").slice(0, 34);
       d.title = (it.title || "") + "\n" + (it.updated || it.ts || "") + "\n" + (it.id || "");
-      d.onclick = () => loadAiSession(it.id);
+      d.onclick = () => { loadAiSession(it.id); chatShow(it.id); };
       box.appendChild(d);
     });
   } catch (e) {
