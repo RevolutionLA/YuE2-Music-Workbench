@@ -493,7 +493,27 @@
   /* 复选框：浏览器默认只有 13×13，点起来像在用针尖（WCAG 2.2 目标尺寸建议 24×24）。
      框体放大到 18px 并跟随主题色，整行 label 又高又宽，实际命中区足够；
      上面的 width:100% 会把方框拉成长条，所以这里必须显式收回宽高并禁止伸缩。 */
-  input[type="checkbox"] { width: 18px; height: 18px; padding: 0; flex: none; cursor: pointer; accent-color: var(--acc); }
+  input[type="checkbox"] { appearance: none; -webkit-appearance: none; position: relative;
+    width: 18px; height: 18px; padding: 0; margin: 0; flex: none; cursor: pointer;
+    border: 1px solid var(--line-strong); border-radius: var(--r-xs); background: var(--panel);
+    transition: background .12s ease, border-color .12s ease; }
+  input[type="checkbox"]:hover:not(:disabled) { border-color: var(--acc); }
+  input[type="checkbox"]::before { content: ""; position: absolute; inset: -4px; }   /* 命中区 26×26 */
+  input[type="checkbox"]:checked { background: var(--acc); border-color: var(--acc); }
+  /* 勾的颜色用 --panel 而不是写死白：深色下 --acc 是提亮蓝 #4493f8，白勾压上去只有
+     3.10:1（连非文本图形的 3:1 都踩线）；换成"这一层的底色"后是 5.58:1，
+     而且用户用主题色选择器换成浅色强调时，勾会自动变深而不是消失。 */
+  input[type="checkbox"]:checked::after { content: ""; position: absolute; left: 5px; top: 2px;
+    width: 5px; height: 9px; border: 2px solid var(--panel);
+    border-top: 0; border-left: 0; transform: rotate(42deg); }
+  input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
+  /* 复选框整行 = 命中区。以前这 8 行各自写了一份行内 `display:flex;align-items:center;
+     gap:8px;cursor:pointer`，行盒只有 18px 高：同一件事重复 8 遍，还全都比
+     WCAG 2.2 AA 的最小目标 24px 短 6px。收成一个类，高度只在一处定义。 */
+  .check { display: flex; align-items: center; gap: var(--sp-3); min-height: 24px; cursor: pointer; }
+  /* 紧凑档：塞在控件行里的那种（⑨ 分析条上的"分离后再分析"）。 */
+  .check.check-inline { display: inline-flex; gap: var(--sp-2); width: auto;
+                        font-size: var(--fs-sm); }
   label { cursor: pointer; }
 
   .frow { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); }
@@ -866,10 +886,11 @@
      --muted 给到 5.7:1 / 5.6:1，同一套视觉里既保持"次级"又不违规。 */
   .six > div { display: inline-flex; align-items: center; gap: 5px;
                font: var(--fs-xs) var(--sans); color: var(--muted); white-space: nowrap; }
-  .six > div > i { font-style: normal; font-size: 11px; line-height: 1; color: var(--line-strong); }
+  .six > div > i { font-style: normal; font-size: var(--fs-sm); line-height: 1; color: var(--muted);
+              font-variant-numeric: tabular-nums; }
   .six > div.hit { color: var(--text); font-weight: 600; }
   .six > div.hit > i { color: var(--ok); }
-  .six em { font-style: normal; margin-left: 2px; font: var(--fs-micro) var(--mono); color: var(--muted); max-width: 74px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .six em { font-style: normal; margin-left: 2px; font: var(--fs-xs) var(--mono); color: var(--muted); max-width: 74px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .lint { font: var(--fs-sm)/var(--lh-base) var(--sans); color: var(--muted); margin-top: 8px; }
   .lint b { color: var(--muted); font-weight: 600; }
   .lint.ok { color: var(--ok); }
@@ -1549,7 +1570,11 @@
   @media (max-width: 1400px) { #sysInfo { grid-template-columns: 1fr; } }
   /* 关于页里的外链：跟着主题色走，但在深浅两套主题下都要够 4.5:1，
      所以不直接用 --acc（纯主色在浅色主题下作为文字只有 3:1）。 */
-  .about-link { color: var(--acc-text); text-decoration: none; border-bottom: 1px solid var(--acc-soft2); }
+  /* 行内链接的下划线用 border-bottom 画（可控粗细与颜色），但纯行内盒子只有 17px 高，
+     点不准。补 4px 上下内边距把命中区顶到 24px（WCAG 2.2 AA 最小目标尺寸），
+     外边距收回 -4px，视觉上仍与正文同一行高。 */
+  .about-link { color: var(--acc-text); text-decoration: none; border-bottom: 1px solid var(--acc-soft2);
+                display: inline-block; padding: 4px 1px; margin: -4px -1px; }
   .about-link:hover { border-bottom-color: var(--acc); }
 
   /* ★ 任务行的"更多"菜单：它展开后是**一整块面板**，不是"行内多几个按钮"。
@@ -2026,7 +2051,7 @@ We will sing beyond the night</textarea>
             <button class="primary" id="extractAbc">🎸 选择歌曲开始转谱</button>
             <span class="status" id="abcStatus" style="padding:0;"></span>
           </div>
-          <label for="abcChords" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px;">
+          <label for="abcChords" class="check" style="margin-top:10px;">
             <input id="abcChords" type="checkbox" />
             <span>提取时带和弦（出「旋律+和弦」完整谱）</span>
           </label>
@@ -2143,7 +2168,7 @@ We will sing beyond the night</textarea>
           <div class="hint-xs" style="margin-top:5px;">两个都填时以 <b>目标 BPM</b> 为准（倍速忽略）。速度只改 <code>Q:</code> 这一行，不改变音符时值。</div>
 
           <div class="sec" style="margin-top:18px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10v9H3zM6 6.5h4M6 9h5"/></svg>④ 其他</div>
-          <label for="seStrip" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:0;">
+          <label for="seStrip" class="check" style="margin-top:0;">
             <input id="seStrip" type="checkbox" />
             <span>去掉和弦记号（"Am7" 这类）</span>
           </label>
@@ -2390,7 +2415,7 @@ We will sing beyond the night</textarea>
           </div>
           <div class="preset-row" style="grid-column: 1 / -1;">
             <button class="ghost" type="button" id="rvcAnalyze">分析音域 → 变调建议</button>
-            <label for="rvcAnalyzeSep" style="display:inline-flex; align-items:center; gap:5px; cursor:pointer; font-size:12px; width:auto;">
+            <label for="rvcAnalyzeSep" class="check check-inline">
               <input id="rvcAnalyzeSep" type="checkbox" />
               <span>先做人声分离（整曲必勾，慢 1~2 分钟但准）</span>
             </label>
@@ -2442,19 +2467,19 @@ We will sing beyond the night</textarea>
             <button class="ghost btn-sm" type="button" data-preset="0.3,0.15" title="检索大幅减弱、清辅音/呼吸多保留；长音与高音电音明显时用它">🔇 防电音</button>
           </div>
           <div style="grid-column: 1 / -1;">
-            <label for="rvcSep" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <label for="rvcSep" class="check">
               <input id="rvcSep" type="checkbox" checked />
               <span>先做人声分离再换声（歌曲带伴奏时必勾；官方 PyMSS 分离，约 1.5 分钟/3.5 分钟歌）</span>
             </label>
           </div>
           <div style="grid-column: 1 / -1;">
-            <label for="rvcHarmony" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <label for="rvcHarmony" class="check">
               <input id="rvcHarmony" type="checkbox" />
               <span>分离后再去和声（HP5 只留主唱；副歌有叠唱/和声时能减少高音电音，多约 1 分钟）</span>
             </label>
           </div>
           <div style="grid-column: 1 / -1;">
-            <label for="rvcGate" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <label for="rvcGate" class="check">
               <input id="rvcGate" type="checkbox" checked />
               <span>静音门：前奏/间奏这些没人声的地方自动压到接近无声（推荐开——模型会在静音处自己"哼"出一个音，即底噪）</span>
             </label>
@@ -2506,7 +2531,7 @@ We will sing beyond the night</textarea>
         <div class="hint-xs">这里列的是<b>本机服务器上已有的音频</b>（⑩ 的分离产物、生成过的歌），按住 Ctrl 可多选；训练素材要干净人声，优先选「人声（去和声）」。<b>上传的文件与这里选的可以并用</b>，体检会把两者一起算。</div>
         <div class="hint-xs" id="rvcTrainFilesNow"></div>
         <div style="margin-top:8px;">
-          <label for="rvcTrainSep" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <label for="rvcTrainSep" class="check">
             <input id="rvcTrainSep" type="checkbox" />
             <span>上传的是完整歌曲（含伴奏）→ 自动分离出干净人声再训练（官方 PyMSS，约 1.5 分钟/3.5 分钟歌）</span>
           </label>
@@ -2585,7 +2610,7 @@ We will sing beyond the night</textarea>
           </div>
           <input type="file" id="sepFile" accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" style="display:none;">
           <div class="hint-xs" id="sepFileName"></div>
-          <label for="sepHarmony" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px;">
+          <label for="sepHarmony" class="check" style="margin-top:10px;">
             <input id="sepHarmony" type="checkbox" />
             <span>分离后再去和声（只留主唱干声；翻唱与训练素材建议开，多约 1 分钟）</span>
           </label>
@@ -5637,7 +5662,7 @@ async function loadScoreList() {
   try {
     const list = await (await fetch("/api/scores")).json();
     if (!list.length) { el.innerHTML = ""; return; }
-    el.innerHTML = '<div style="font-size:12px;color:var(--text2,#888);margin:2px 0 4px;">已保存乐谱（点击回填，✕ 删除）</div>';
+    el.innerHTML = '<div style="font-size:12px;color:var(--dim);margin:2px 0 4px;">已保存乐谱（点击回填，✕ 删除）</div>';
     list.forEach((s) => {
       const row = document.createElement("div");
       row.style.cssText = "display:flex;align-items:center;gap:8px;padding:4px 8px;margin:2px 0;border-radius:var(--r-sm);font-size:12px;cursor:pointer;background:rgba(127,127,127,.06);";
@@ -9142,6 +9167,9 @@ const MOD_KIND_CN = { generate: "歌曲生成", score: "乐谱提取", rvc: "换
 const MOD_STATE_CN = { done: "完成", error: "失败", cancelled: "已取消", running: "在算", pending: "排队", queued: "排队", checked: "已体检", paused: "已暂停", lost: "已失联", unknown: "状态未知" };
 let modAll = [];      // 上一次拉到的全量（只给本条组件用，不是跨页状态）
 let modFolded = true;
+let modTimer = null;  // 8 秒心跳的句柄。以前漏了声明：进"没有任务类型"的页（①⑥⑧⑪⑫⑬）
+                      // 时 modStopTimer() 直接 ReferenceError，把 switchTab 后半段和启动脚本
+                      // 剩下的初始化全打断——现象就是侧栏健康灯永远停在"正在连接…"。
 
 function modEnsureSlots() {
   if (!$("modTasks")) {

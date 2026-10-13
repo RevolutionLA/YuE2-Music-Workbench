@@ -382,6 +382,22 @@ class PageIndependence(unittest.TestCase):
         self.assertIn("modEnter(name)", st, "切页没搬任务条，用户切过去看到的是上一页的列表")
         self.assertEqual(1, self.code.count('box.id = "modTasks"'), "任务条被复制成多份")
 
+    def test_mod_strip_names_are_declared(self):
+        """任务条用到的每个 mod* 变量/函数都必须有声明。
+
+        真炸过：modTimer 忘了 let 声明，进 ① 这种"没有任务类型"的页时 modStopTimer()
+        抛 ReferenceError，把 switchTab 后半段和启动脚本剩下的初始化全打断——
+        现象只是侧栏健康灯永远停在"正在连接…"，谁也猜不到根因在这儿。
+        """
+        block = self.code[self.code.index("const MOD_KINDS = {"):]
+        start = block.index("function modEnter")       # 组件的最后一个函数，到此为止
+        end = block.index("\n}\n", start) + 3
+        block = block[:end]
+        block = re.sub(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|`(?:[^`\\]|\\.)*`', " ", block)
+        used = set(re.findall(r"(?<![\w.])mod[A-Za-z][A-Za-z0-9]*\b", block))
+        declared = set(re.findall(r"(?:let|const|var|function)\s+(mod[A-Za-z][A-Za-z0-9]*)", block))
+        self.assertFalse(used - declared, "这些名字用了但没声明：%s" % sorted(used - declared))
+
 
 if __name__ == "__main__":
     unittest.main()

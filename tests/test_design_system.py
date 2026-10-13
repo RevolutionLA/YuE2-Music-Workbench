@@ -862,5 +862,49 @@ class DesignSystem(unittest.TestCase):
                          "syncFootHintTitles 没有跟随 resize 重算（栏宽变化会改变截断与否）")
 
 
+    # ---------- 控件命中区与勾色（2026-10-14 实测） ----------
+
+    def test_checkbox_row_is_one_class_at_24px(self):
+        """复选框整行必须是 .check，且 min-height 24px。
+
+        实测（530px 视口，逐页量 `label.getBoundingClientRect()`）：全站 8 个复选框
+        的行盒都是 **18px 高**，低于 WCAG 2.2 AA 的最小目标尺寸 24×24；
+        而且每一处都各自抄了一遍行内样式
+        `display:flex;align-items:center;gap:8px;cursor:pointer` —— 同一个决定写 8 遍，
+        还 8 遍都短了 6px。这正是设计系统要防的"每处合理、合起来没规矩"。
+        """
+        m = re.search(r"\.check\s*\{([^}]*)\}", self.head)
+        self.assertIsNotNone(m, "找不到 .check 规则")
+        rule = m.group(1)
+        self.assertRegex(rule, r"min-height:\s*24px", "复选框行没有钉到 24px 命中区")
+        self.assertIn("align-items: center", rule)
+        self.assertIn("cursor: pointer", rule)
+        # 8 个复选框的 label 全部换成了类，行内那份重复样式必须清零
+        boxes = re.findall(r'<input id="(\w+)" type="checkbox"', self.src)
+        self.assertEqual(len(boxes), 8, "复选框数量变了（%s），这条锁要一起看" % boxes)
+        for bid in boxes:
+            lm = re.search(r'<label for="%s"([^>]*)>' % re.escape(bid), self.src)
+            self.assertIsNotNone(lm, "复选框 %s 的 label 不见了" % bid)
+            attrs = lm.group(1)
+            self.assertIn('class="', attrs, "%s 的 label 没有挂 .check" % bid)
+            self.assertNotIn("display:flex", attrs.replace(" ", ""),
+                             "%s 还在用行内 flex：又把同一个决定抄第二遍，且绕过 24px" % bid)
+        self.assertNotIn("display:flex;align-items:center;gap:8px;cursor:pointer", self.src,
+                         "行内复选框行样式又回来了")
+
+    def test_checkbox_tick_color_follows_the_layer(self):
+        """勾的颜色必须跟着"这一层的底色"，不许写死白。
+
+        实测：深色主题 --acc 是提亮蓝 #4493f8，白勾压上去只有 **3.10:1**
+        （非文本图形的 3:1 都只算踩线）；改用 var(--panel) 后是 **5.58:1**。
+        更重要的是用户可以用主题色选择器换任意强调色 —— 写死白时，
+        换成浅色系强调（青瓷/石墨亮档）勾就"糊"进底面，而 --panel 会自动翻。
+        """
+        m = re.search(r'input\[type="checkbox"\]:checked::after\s*\{([^}]*)\}', self.head)
+        self.assertIsNotNone(m, "找不到复选框勾的规则")
+        self.assertRegex(m.group(1), r"border:\s*2px solid var\(--panel\)")
+        self.assertNotIn("#fff", m.group(1), "勾又写死成白了")
+
+
 if __name__ == "__main__":
     unittest.main()
