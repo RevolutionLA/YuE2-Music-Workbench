@@ -559,26 +559,17 @@
   }
   .chip.tag-on { border-color: var(--acc); color: var(--acc-text); background: var(--acc-soft); }
   html[data-theme="dark"] .chip.tag-on { color: var(--acc-text); }
-  /* 候选词芯片：中文是可见标签（点哪个词不用先翻译一遍），
-     英文真值（送进 Style 的那一串）挂在同一芯片内的 <i> 上，默认隐藏、悬停/聚焦时显示。
-     这样"点选"时界面干净（一行放得下十几个），要核对写进去的到底是什么时也不用点开别处。
-     英文始终在 title 里，读屏也能拿到。
-     宽度随中文自适应（约 33–66px），高度恒定 26px。 */
+  /* 候选词芯片：中文是可见标签（点哪个词不用先翻译一遍），英文真值只在 title / aria 里，
+     DOM 内不再挂 <i>。
+     ★ 尺寸恒定是这条规矩的全部理由：以前 hover 会把英文从 display:none 翻成 inline，
+       芯片从 ~60px 撑到 135–175px，同一行 8 个词加尾组立刻超过容器宽 → 尾组换行、
+       这一格凭空多 32px、下面每格都往下跳，鼠标要追着按钮跑。
+       用户明确要求：不要 hover 显示英文；要显示也只能小小的，但按钮大小不许变。
+     要核对真正写进 Style 的那串英文，看左边的产出框——那里本来就完整可见。
+     宽度随中文自适应（约 33–66px），高度恒定 26px，任何状态下都不改变。 */
   .chip.word { flex-direction: row; align-items: center; gap: var(--sp-2);
-               min-height: 26px; padding: 3px 10px; line-height: 1.2; border-radius: var(--r-full); }
-  .chip.word b { font: 600 var(--fs-xs) var(--sans); color: inherit; }
-  .chip.word i { display: none; font: 400 var(--fs-micro) var(--mono); font-style: normal;
-                 color: var(--dim); max-width: 118px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* 英文真值的显示时机：**悬停或键盘聚焦时**，而不是"选中就常驻"。
-     原因（实测）：选中常驻会把 chip 从 44px 撑到 175px（"乐句从容 unchurried phrasing"），
-     一行 8 个词 + 一个 175px 长 chip + 140px 尾组必然超过 642px 容器宽 →
-     尾组被顶到第二行，这一格凭空多 32px，而且长得像两个孤儿按钮。
-     已选词的英文在左侧 Style 产出框里本来就是完整可见的，
-     所以这里换成"按需查看"是纯粹的净收益：常态紧凑，想核对时悬停即得。 */
-  .chip.word:hover i, .chip.word:focus-visible i { display: inline; }
-  .chip.word.tag-on i { display: none; color: var(--acc-text); opacity: .8; }
-  .chip.word.tag-on:hover i, .chip.word.tag-on:focus-visible i { display: inline; }
-  html[data-theme="dark"] .chip.word.tag-on i { color: var(--acc-chip-hi); opacity: .9; }
+               min-height: 26px; padding: 3px 10px; line-height: 1.2; border-radius: var(--r-full);
+               font: 600 var(--fs-xs) var(--sans); }
   /* 「其余 N 个」与「已选 N · 清空」曾经各占一格 .av 的子项，在 flex-wrap 下必然换行——
      于是每一格底部都多出 24px + 6px gap = 30px 的"第二行按钮带"，
      六格就是 180px 纯浪费，而且看着像每格都有两个跑题的孤儿按钮。
@@ -854,8 +845,14 @@
        表达"这里大概要写多少"，不是在栏里分蛋糕 —— 所以这里不去撑框，改成
        **这一页两栏都贴合内容**，与关于页"内容天然偏短且两列悬殊 → 不撑满"同一条规矩。
      只作用于 ①：#styleBox 是 ①②⑤ 共用的同一份 DOM，别页仍然按视口定高、内部滚动。 */
-  #tab-style .grid.compose { align-items: start; }
-  #tab-style .grid.compose .pane { height: auto; min-height: 0; }
+  /* ① 左右两栏各自独立滚动（用户 2026-10-15 明确要求，也是装配台改成"恒定全展开"之后
+     必须配的：词表全摊开后右栏远高于视口，如果整页一起滚，滚到下面挑词时
+     左边那个 Style 产出框就滚出视野了 —— 而它恰恰是"我这么选，最后写出什么"的反馈面。
+     ★ 这一条撤销了我上一版给 ① 加的"两栏贴合内容(height:auto)"：
+       独立滚动要求每栏都是视口高的滚动容器，左栏底部因此会留白，
+       但那是滚动视口的余量、不是"没做完的洞"，②⑤ 两栏本来就是这个形态。 */
+  #tab-style .grid.compose { align-items: stretch; }
+  #tab-style .grid.compose .pane-body { overflow-y: auto; overscroll-behavior: contain; }
   /* ⑩ 的左栏同理：里面只有任务名 + 虚线上传区 + 服务器素材下拉，
      没有任何"越多越好"的东西可以长，撑到 806px 就是留 202px 白。
      右栏（分离记录）该长的已经让它长了，所以这里只收左栏。 */
@@ -4000,8 +3997,6 @@ function saveAsm() {
 // 取到"刚好放满一行"，尾组就跟在同一行末尾（靠 .wtail 的 margin-left:auto 吸住）。
 // 窄屏时容器更窄，flex-wrap 会自然把尾组落到下一行 —— 这是可接受的降级，
 // 不会出现"词莫名消失"。
-const MULTI_LIMIT = { moodChips: 10, timbreChips: 10, instChips: 8, feelChips: 8 };
-const multiOpen = {};
 // ★ 折叠方式重做（用户："这种折叠、滚动方式太呆了"）。旧做法有两处呆：
 //   ① 每格词表自带一条 92px 内滚动条——小滚动条嵌在整页滚动条里，滚轮经过就抢走滚动，
 //      看着像页面出了 bug；② 展开只靠词表末尾那个虚线「更多 N 个 ▾」芯片，
@@ -4026,21 +4021,11 @@ function renderMulti(elId, vocab, key) {
   const shown = [...extras, ...vocab];
   const q = wordQuery.trim().toLowerCase();
   const pool = q ? shown.filter(v => wordHit(v, q)) : shown;
-  // limit 是静态常量（取值依据见 MULTI_LIMIT 定义处，按分栏态容器 642px 精算）。
-  // ★ 已选词必须显示，且**占用额度**：
-  //   早期写法 `i < limit || sel.includes(v)` 是"前 limit 个 + 全部已选"，
-  //   已选词额外加进来 → 实际渲染数 = limit + 已选数，直接突破算好的行宽，
-  //   尾组被挤到第二行（实测节奏格 8+1=9 个 chip 恰好差 3px 换行）。
-  //   现在先放已选词（它们是不可省的），再用剩余额度按原序补未选词，
-  //   总数恒等于 limit，行宽可控。顺序仍按词表原序（不把已选词提到最前，
-  //   免得词的位置每点一下就跳一次，用户找不到刚才点的那个）。
-  let limit = (q || multiOpen[elId]) ? Infinity : (MULTI_LIMIT[elId] || 12);
-  const selSet = new Set(sel);
-  let quota = limit;
-  const keep = new Set();
-  pool.forEach(v => { if (quota > 0 && selSet.has(v)) { keep.add(v); quota--; } });
-  pool.forEach(v => { if (quota > 0) { keep.add(v); quota--; } });
-  const list = (q || multiOpen[elId]) ? pool : pool.filter(v => keep.has(v));
+  // ★ 四格默认全展开（用户 2026-10-15 明确要求："不要折叠，要默认全部展开"）。
+  //   以前按 642px 容器精算出"每格只露 8~10 个常用词 + 一个「+N ▾」"，省了高度，
+  //   代价是情绪/人声/配器/节奏四格各自藏着一半可选词，用户根本不知道还有别的词。
+  //   现在全部摊开；超出栏高的部分交给右栏自己的滚动条（见 .grid.compose .pane-body）。
+  const list = pool;
   const row = el.closest(".arow");
   if (row) row.classList.toggle("dim", !!q && pool.length === 0);   // 搜的时候这一格没命中：压暗而不是留个空框
   if (!pool.length) {
@@ -4054,35 +4039,23 @@ function renderMulti(elId, vocab, key) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "chip mini word" + (on ? " tag-on" : "");
-    // 芯片**默认只露中文**：英文真值放进 <i>，但由 CSS 在未选中时隐藏、选中时显示。
-    // 原因是"10 行才排下 16 个词"——acoustic piano / electric piano 这类长词
-    // 把每个芯片撑到 135–152px，310px 的栏宽一行只放得下 2 个。
-    // 只露中文后芯片降到 ~60px，一行 4–5 个，整格从 312px 压到 ~140px。
-    // 选中后把英文露出来，是为了让用户**能核对真正写进 Style 的那串是什么**——
-    // 这是"中文可选 + 英文可验"的折中，而不是把英文藏死。
-    b.innerHTML = "<b>" + escapeHtml(wordZh(v)) + "</b><i>" + escapeHtml(v) + "</i>";
+    // 芯片**只露中文**：英文真值放进 title 与 aria-label，DOM 里不再挂 <i>。
+    // 以前 <i> 靠 hover 翻出来，那一下会把芯片从 ~60px 撑到 135–175px，
+    // 310px 的栏宽立刻换行、整格往下跳（见 CSS .chip.word 那段）。
+    // 只露中文后芯片恒定 ~60px，一行 4–5 个，尺寸在任何状态下都不变。
+    b.textContent = wordZh(v);
+    b.setAttribute("aria-label", wordZh(v) + " / " + v);
     b.title = wordZh(v) + " / " + v + "\n" + (on ? "已选入 Style · 再点一下取消" : "点击选入 Style");
     b.setAttribute("aria-pressed", on ? "true" : "false");
     b.onclick = () => toggleWord(elId, vocab, key, v, on);
     el.appendChild(b);
   });
-  // 「+N ▾」+「已选 N · 清空」：两个都是"读词表的附属动作"，
-  // 用 .wfill（弹性填充）+ .wtail 的组合让它们**贴着词表最后一行末尾**，
+  // 「已选 N · 清空」是"读词表的附属动作"，
+  // 用 .wfill（弹性填充）+ .wtail 的组合让它**贴着词表最后一行末尾**，
   // 不会被挤成孤零零的第二行（见 CSS 里 .wfill 那段注释）。
+  // ★ 这里以前还有一个「+N ▾ / 收起 ▴」的逐格折叠钮，已按用户要求删除：四格恒定全展开。
   const tail = document.createElement("span");
   tail.className = "wtail";
-  // 搜索态不显示展开按钮（命中的词本来就已经全摊开了）
-  if (!q && pool.length > limit) {
-    const t = document.createElement("button");
-    t.type = "button"; t.className = "chip mini more";
-    // 文案压到最短：「其余 42 个 ▾」在 6 字 chip + 尾组同行的约束下太占宽，
-    // 情绪格（42 个待展开）会因此把尾组挤到第二行 —— 而这一格恰好是最常被点的。
-    t.textContent = multiOpen[elId] ? "收起 ▴" : "+" + (pool.length - list.length) + " ▾";
-    t.title = multiOpen[elId] ? "收回只显示常用词（已选中的仍留在原地）"
-                              : "这一格共 " + pool.length + " 个词，全部摊开看；展开后由右栏的滚动条接手";
-    t.onclick = () => { multiOpen[elId] = !multiOpen[elId]; renderMulti(elId, vocab, key); updateWordToggle(); };
-    tail.appendChild(t);
-  }
   if (sel.length) {
     const c = document.createElement("button");
     c.type = "button"; c.className = "chip mini cnt";
@@ -4121,21 +4094,16 @@ function renderAllMulti() {
   renderMulti("feelChips", FEELS, "feel");
   updateWordToggle();
 }
-// 右上角那一个总开关：四格一起展开/收起，省得逐格点。
-// 搜索态下它换成"清掉搜索词"——那个位置此时唯一有用的动作就是这个。
+// 右上角那个按钮：以前是「全部展开 / 全部收起」的折叠总开关。
+// 现在四格恒定全展开（用户要求），它只在搜索态出现，做那个位置唯一还有用的动作——清掉搜索词。
 function updateWordToggle() {
   const b = $("wordExpand");
   if (!b) return;
-  const ids = Object.keys(MULTI_LIMIT);
-  if (wordQuery.trim()) {
+  b.hidden = !wordQuery.trim();
+  if (!b.hidden) {
     b.textContent = "清掉搜索词 ✕";
-    b.title = "取消筛选，恢复每格的常用词列表";
-    return;
+    b.title = "取消筛选，恢复完整词表";
   }
-  const allOpen = ids.every(i => multiOpen[i]);
-  b.textContent = allOpen ? "全部收起 ▴" : "全部展开 ▾";
-  b.title = allOpen ? "四格都收回常用词（已选中的仍留在原地）"
-                    : "四格一次性全摊开（情绪 / 人声 / 配器 / 节奏），展开后由右栏的滚动条接手";
 }
 function renderFamTabs() {
   const el = $("famTabs");
@@ -4800,16 +4768,11 @@ function initAssembler() {
   const ws = $("wordSearch");
   if (ws) ws.oninput = () => { wordQuery = ws.value; renderAllMulti(); };
   const we = $("wordExpand");
+  // 这个按钮只剩"清掉搜索词"一个动作（四格恒定全展开，折叠总开关已按用户要求删除）。
   if (we) we.onclick = () => {
-    if (wordQuery.trim()) {
-      wordQuery = "";
-      if (ws) ws.value = "";
-      renderAllMulti();
-      return;
-    }
-    const ids = Object.keys(MULTI_LIMIT);
-    const allOpen = ids.every(i => multiOpen[i]);
-    ids.forEach(i => { multiOpen[i] = !allOpen; });
+    if (!wordQuery.trim()) return;
+    wordQuery = "";
+    if (ws) ws.value = "";
     renderAllMulti();
   };
   const ps = $("presetSearch");

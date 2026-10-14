@@ -976,11 +976,68 @@ class DesignSystem(unittest.TestCase):
         self.assertIn("#tab-score .pane-body > #abcSlotScore", self.head)
         self.assertIn("#tab-scoreEdit .pane-body > #seSrc", self.head)
         self.assertIn("#tab-sep .pane-body > #sepList", self.head)
-        self.assertIn("#tab-style .grid.compose .pane { height: auto", self.head)
         self.assertIn("#tab-sep .grid.compose .pane-in { height: auto", self.head)
         # 撑框那条被否决的路不许再回来
         self.assertNotIn("#styleBox > textarea#style { flex: 1", self.head,
                          "又让曲风框吃掉整栏余量了（540px 空框已被实测否决）")
+
+    def test_style_page_columns_scroll_independently(self):
+        """① 左右两栏必须是各自独立滚动的视口高容器。
+
+        用户 2026-10-15："Style 设计页面，左右两页可以分别独立滚动。"
+        这条在装配台改成"词表恒定全展开"之后尤其重要：词全摊开，右栏远高于视口，
+        若整页一起滚，滚到下面挑词时左栏那个 Style 产出框就出视野了 ——
+        而它正是"我这么选会写出什么"的反馈面，看不见就没法边选边看。
+        """
+        self.assertIn("#tab-style .grid.compose { align-items: stretch; }", self.head)
+        self.assertIn("#tab-style .grid.compose .pane-body { overflow-y: auto", self.head)
+        # 上一版给 ① 加的"两栏贴合内容"必须已经撤销（它和独立滚动是互斥的）
+        self.assertNotIn("#tab-style .grid.compose .pane { height: auto", self.head,
+                         "① 又回到整页一起滚了：右栏滚起来左边的 Style 产出会出视野")
+
+    def test_word_lists_are_always_expanded(self):
+        """装配台四格恒定全展开，折叠机器整个拆掉。
+
+        用户 2026-10-15："右侧的六要素装配台下，折叠的按钮，我不想要折叠，要默认全部展开。"
+        以前每格按 642px 容器精算成"只露 8~10 个常用词 + 一个「+N ▾」"，
+        省了高度，代价是情绪/人声/配器/节奏四格各自藏着一半可选词，用户不知道还有别的词。
+        ★ 这里断言的是"藏不回去"：不仅默认展开，连收起的路径都没有 ——
+          留着 multiOpen 就会有人把默认值改回 false，用户下次打开又是折叠态。
+        """
+        for gone in ("MULTI_LIMIT", "multiOpen"):
+            self.assertNotIn(gone, self.src, "%s 还在：折叠路径没拆干净" % gone)
+        self.assertNotIn('className = "chip mini more"', self.src,
+                         "逐格「+N ▾ / 收起 ▴」按钮又回来了")
+        self.assertIn("const list = pool;", self.src,
+                      "词表不再是全量渲染（四格应当恒定全展开）")
+        # 右上角那颗钮只剩一个动作：清掉搜索词，且非搜索态必须藏起来
+        ut = self.src[self.src.index("function updateWordToggle()"):]
+        ut = ut[:ut.index("\n}")]
+        self.assertIn('b.hidden = !wordQuery.trim()', ut,
+                      "wordExpand 不再只服务搜索态？它应当只在有搜索词时出现")
+        self.assertNotIn("全部展开", ut, "折叠总开关的文案又回来了")
+
+    def test_word_chips_never_change_size(self):
+        """词 chip 在任何状态下都不许改变宽高。
+
+        用户 2026-10-15："我也不需要鼠标放到按钮上来之后显示英文，不需要，
+        或者你可以显示一个小小的英文，但按钮的大小不要变化。"
+        根因实测：英文原本压在 chip 内的 <i> 上，CSS 用 hover/focus 把它从
+        display:none 翻成 inline —— 芯片从 ~60px 撑到 135–175px，
+        一行 8 个词加尾组立刻超过容器宽 → 尾组换行、这一格凭空多 32px、
+        下面每格都往下跳，鼠标要追着按钮跑。
+        现在 chip 里根本没有 <i>，英文只在 title / aria-label 里。
+        """
+        self.assertNotIn(".chip.word:hover i", self.head,
+                         "hover 展开英文的规则又回来了（chip 会当场变宽）")
+        self.assertNotIn(".chip.word i {", self.head, ".chip.word i 样式还在但已无对应 DOM")
+        self.assertNotIn('"<i>" + escapeHtml(v)', self.src,
+                         "chip 里又塞了 <i>：hover 时它会撑宽按钮")
+        # 中文标签的字重必须还在（<b> 没了，得挂在 chip 本体上）
+        m = re.search(r"\.chip\.word \{([^}]*)\}", self.head)
+        self.assertIsNotNone(m, "找不到 .chip.word 规则")
+        self.assertRegex(m.group(1), r"font:\s*600", "chip 丢了中文字重（<b> 已删）")
+        self.assertRegex(m.group(1), r"min-height:\s*26px", "chip 高度不再恒定")
 
     def test_dead_iframe_chat_css_stays_deleted(self):
         """v10.14.0 换成原生对话后，iframe 时代那套 .ai-* 聊天样式必须继续是删掉的。
