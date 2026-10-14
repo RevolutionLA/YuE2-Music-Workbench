@@ -454,7 +454,7 @@
      这里用 height 钉死 36px（与 .primary/.ghost 主要档同高），
      textarea 是**多行**控件，必须保留 padding 累加（它是"这里要写多少"的表达），
      所以用 :not(textarea) 排除。 */
-  input:not([type="checkbox"]):not([type="file"]):not([type="range"]), select { height: 36px; box-sizing: border-box; }
+  input:not([type="checkbox"]):not([type="file"]):not([type="range"]), select:not([multiple]) { height: 36px; box-sizing: border-box; }
   textarea { box-sizing: border-box; }
   /* 占位提示：用弱化灰，和已填内容（--text 深色）明确区分 */
   textarea::placeholder, input::placeholder { color: var(--dim); opacity: 1; }
@@ -470,7 +470,11 @@
   #lyrics { min-height: 240px; }
   @media (min-width: 1181px) { #lyrics { min-height: 200px; } }
   textarea.abc { min-height: 64px; font: var(--fs-sm) var(--mono); }
-  select { cursor: pointer; height: 36px; padding-top: 0; padding-bottom: 0; }
+  select:not([multiple]) { cursor: pointer; height: 36px; padding-top: 0; padding-bottom: 0; }
+  /* ★ 多选列表框不能被上面两条钉成单行 —— ⑦ 的「服务器素材」是 `<select multiple size="5">`，
+     被压成 36px 后一次只看得见 2 条，而它的用法恰恰是"按住 Ctrl 从一屏里勾几段"。
+     列表框的高度就是"这里能一次看见几条"，和 textarea 同理，交给 size/min-height。 */
+  select[multiple] { cursor: pointer; height: auto; min-height: 120px; padding: 4px 6px; }
   input[type="file"] { font: var(--fs-sm) var(--sans); color: var(--muted); padding: 6px 10px; }
   /* 原生文件控件的"选择文件"按钮是浏览器默认外观，是页面上唯一没被主题接管的零件。
      ::file-selector-button 能直接把它改成主题化的胶囊，无需 label 包装。
@@ -514,6 +518,10 @@
   /* 紧凑档：塞在控件行里的那种（⑨ 分析条上的"分离后再分析"）。 */
   .check.check-inline { display: inline-flex; gap: var(--sp-2); width: auto;
                         font-size: var(--fs-sm); }
+  /* 滑杆：以前只有 .inline-form 里的滑杆跟着主题走，④ 的「半音数」是裸的原生控件
+     ——Chrome 默认那条蓝轨道 + 系统高度，是整页唯一没被主题接管的零件。
+     accent-color 同时管住滑块与已填充段，24px 高度保证命中区。 */
+  input[type="range"] { accent-color: var(--acc); height: 24px; min-height: 24px; background: none; }
   label { cursor: pointer; }
 
   .frow { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); }
@@ -852,6 +860,12 @@
      没有任何"越多越好"的东西可以长，撑到 806px 就是留 202px 白。
      右栏（分离记录）该长的已经让它长了，所以这里只收左栏。 */
   #tab-sep .grid.compose .pane-in { height: auto; min-height: 0; }
+  /* ⑧ 右栏实测底下空 489px（全站最大的一片白）：卡片按规矩要撑满可视高
+     （见 test_short_pages_fill_the_viewport —— 留白放框外更像没做完），
+     可里面的分析卡只有 220px。让分析卡去吃这份高度：没选音色时占位文案本来就会
+     垂直居中，于是整块是"等着被填"；选了音色时报告能多看几行、内部滚动。 */
+  #tab-voices .grid > div:last-child { display: flex; flex-direction: column; min-height: 0; }
+  #tab-voices #voiceInfo { flex: 1 1 auto; max-height: none; }
   /* 右边点一下、左边文本框闪一下：视线跳过去就知道刚才那一下生效了（手改过 Style 时不闪，
      因为那一下确实没写进去，闪了反而是骗人）。 */
   @keyframes written { from { box-shadow: 0 0 0 3px var(--acc-glow); }
@@ -1067,7 +1081,7 @@
     background: var(--panel-2); border: 1px dashed var(--line); border-radius: var(--r-md); }
   /* 空状态撑满它所在的那一栏：任务管理这种"列表骨架长期为空"的页，
      如果空状态只有 100px 高，下面会留一大片死白，整页看着像没做完。 */
-  .row-list > .empty:only-child, .empty.fill { display: flex; align-items: center; justify-content: center; min-height: 220px; }
+  .row-list > .empty:only-child, .empty.fill { display: flex; align-items: center; justify-content: center; min-height: 220px; flex: 1 1 auto; }
 
   /* ★ ⑪ 任务管理的列表：它是"这页的主角"，必须占满剩下的高度、自身滚动。
      旧实现让列表自然生长（30 条 = 2430px），页面整体滚 —— 于是筛选栏一滚就没了，
@@ -2752,7 +2766,7 @@ We will sing beyond the night</textarea>
       <!-- 右：关于（出处 / 许可 / 声明） -->
       <div>
         <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 11.2V8M8 5.2v.2"/></svg>关于</div>
-        <div class="hint-xs" id="aboutLine">音乐工作台 v10.9.0 · 数据密集改版（13 页）</div>
+        <div class="hint-xs" id="aboutLine">音乐工作台 · 版本号在左边「系统信息」的「版本」一行</div>
         <!-- 作者与仓库：这三行是"这东西是谁做的、源码在哪、还能去哪找更多"，
              以前关于页只有许可与限制，唯独缺了出处，想给项目点星或提 issue 得先去翻聊天记录。 -->
         <div class="kv" style="margin-top:8px;">
@@ -8235,7 +8249,7 @@ const SYS_LABEL = {
   "disk.output_free_mb": "输出盘剩余", "disk.output_total_mb": "输出盘总量",
   "disk.output_files": "产物文件数", "disk.upload_floor_mb": "上传闸门",
   "gpu.mode": "引擎模式", "gpu.total_mb": "显存总量", "gpu.free_mb": "显存空闲",
-  "gpu.used_mb": "显存已用", "gpu.headroom_mb": "显存留白", "gpu.query_failed": "显存查询失败",
+  "gpu.used_mb": "显存已用", "gpu.headroom_mb": "显存留白", "gpu.query_failed": "显存查询",
   "engines.audiocpp_alive": "音频引擎在线", "engines.vocal_separation_ready": "人声分离可用",
   "engines.sheetsage2_ready": "SheetSage2 权重",
   "engines.ai_workbench.ready": "AI 工作台就绪", "engines.ai_workbench.key_configured": "对话模型密钥",
@@ -8244,6 +8258,10 @@ const SYS_LABEL = {
 };
 function fmtSysVal(k, v) {
   if (v && typeof v === "object") return JSON.stringify(v);
+  // ★ 反向标签要翻着说：`gpu.query_failed` 为 false 是**好事**，
+  //   但通用规则会打成"⛔ 否"，一眼看过去像出了故障（实测 ⑬ 就这一行红着，
+  //   而同一屏的显存空闲 5.1GB 明明是查成功才有数）。这类键直接说结论。
+  if (typeof v === "boolean" && /_failed$/.test(k)) return v ? "⛔ 失败" : "✅ 正常";
   if (typeof v === "boolean") return v ? "✅ 是" : "⛔ 否";
   if (typeof v === "number" && /_mb$/.test(k)) return v >= 1024 ? (v / 1024).toFixed(1) + " GB" : v + " MB";
   return String(v);
@@ -8261,6 +8279,10 @@ function kvAdd(rows, k, v) {
 function renderSys(j) {
   const box = $("sysInfo");
   if (!box) return;
+  // ⑬ 右栏那句自我介绍以前写死 "v10.9.0"：左栏系统信息已经显示 v10.14.1，
+  // 同一屏两个版本号，用户不知道该信哪个。改由同一份 payload 填，只有一个真源。
+  const line = $("aboutLine");
+  if (line && j && j.version) line.textContent = "音乐工作台 " + j.version + " · 13 页 · 全部跑在本机";
   const rows = [];
   const walk = (obj, prefix) => {
     Object.entries(obj || {}).forEach(([k, v]) => {

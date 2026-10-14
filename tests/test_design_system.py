@@ -620,8 +620,15 @@ class DesignSystem(unittest.TestCase):
         self.assertIsNotNone(m2, "找不到单行 input 的高度规则")
         self.assertIn("height: 36px", m2.group(1),
                       "单行 input 没有钉死高度（select 会被 UA 内边距撑到 39px）")
-        self.assertIn("select { cursor: pointer; height: 36px;", self.head,
-                      "select 没有钉死高度")
+        self.assertIn("select:not([multiple]) { cursor: pointer; height: 36px;", self.head,
+                      "单行 select 没有钉死高度")
+        # ★ 但"钉死高度"只能管单行下拉：⑦ 的服务器素材是 <select multiple size="5">，
+        #   被一起压成 36px 后一次只看得见 2 条，而它的用法就是"按住 Ctrl 勾几段"。
+        m3 = re.search(r"select\[multiple\]\s*\{([^}]*)\}", self.head)
+        self.assertIsNotNone(m3, "多选列表框没有自己的高度规则")
+        self.assertNotIn("height: 36px", m3.group(1),
+                         "多选列表框又被钉成单行了（size= 白写）")
+        self.assertIn("min-height:", m3.group(1))
         # textarea 是唯一允许"高度表达内容量"的控件，必须保留 padding 累加
         m3 = re.search(r"textarea \{ min-height: 84px;([^}]*)\}", self.head)
         self.assertIsNotNone(m3, "textarea 基础规则不见了")
