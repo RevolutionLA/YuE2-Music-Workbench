@@ -2761,6 +2761,13 @@ We will sing beyond the night</textarea>
           <button class="ghost" id="sysRefresh">↻ 刷新</button>
         </div>
         <div class="hint-xs" style="margin-top:6px;">端口与目录刻意不做成可改：它们由 <code>ports.json</code> 与启动脚本/看门狗共同决定，改了会与三者不一致，风险大于收益。</div>
+        <!-- 用户会问"界面都搬回 7863 了，这行 dsh 是不是没删干净"——它不是残留，是还在承重：
+             局域网那条路目前仍然经 3081 转发，而 7863 故意没开防火墙入站规则。
+             这句话就写在他看到这一行的地方，别让人自己猜。 -->
+        <div class="hint-xs" style="margin-top:4px;">上面那行 <b>局域网入口 (dsh)</b> 不是没删干净的残留：
+          工作台界面已经全部跑在网关 7863 上，但<b>从局域网设备访问仍然经 3081 的内部代理转发</b>
+          （<code>开放局域网</code> 故意不给 7863 开入站规则）。摘除它需要先把访问令牌这道门搬进网关，
+          在那之前停掉 3081 只会让手机/平板打不开。详见 <code>docs/3081与7863架构优化建议.md</code>。</div>
       </div>
 
       <!-- 右：关于（出处 / 许可 / 声明） -->
@@ -8241,7 +8248,7 @@ const SYS_LABEL = {
   version: "版本", read_only: "只读说明",
   // 后三个是 /api/system/info 缺席时退回 /api/health 用的裸键
   gateway: "网关", backend: "引擎模式", audiocpp: "音频引擎",
-  "ports.gateway": "网关端口", "ports.dsh": "界面端口 (dsh)", "ports.audiocpp": "引擎端口",
+  "ports.gateway": "网关端口", "ports.dsh": "局域网入口 (dsh)", "ports.audiocpp": "引擎端口",
   "ports.ports_file": "端口真源文件", "ports.ports_file_exists": "端口文件在位",
   "paths.root": "项目根目录", "paths.output_dir": "输出目录", "paths.runtime_dir": "运行目录",
   "paths.scores_dir": "乐谱目录", "paths.records_dir": "听歌记录目录",
