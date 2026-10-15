@@ -468,6 +468,44 @@
      240px 就是一个"够写两段歌词"的固定高度）。宽屏下由下面 .pane-out #lyrics
      的 flex 规则接管（起点 200px、随窗口长高）。两处都要改，别只改一处。 */
   #lyrics { min-height: 240px; }
+  /* ★ 这一整块原先写在 @media (min-width: 1181px) 里面，于是窄屏（实测 749px 内置浏览器）
+     根本没有 .pn{display:flex} —— .pn 退回 block，<details> 撑满整行宽（实测 666px），
+     那个 18px 的「?」被甩成孤零零一行。行排版本身与栏宽无关，任何宽度都该成立，故提到基础层。
+     顺带：块里那条 @media (max-width:1180px) 与外层 min-width:1181px 互斥，写在里面永远不可能命中。 */
+  /* 状态行（原 presetNote）：一行一个状态 + 一个预算数字 + 一个「?」。
+     以前这里是三段长句，是左栏高度的最大占用者；现在恒定单行，
+     说明文字收进 <details>，鼠标/键盘都能展开，不展开就不占高度。 */
+  /* 直接让 .pn 自己当 flex 容器，不再套一层 <span class="pn-row">：
+     行内 flex 子元素会落进父级的行盒(line box)，被 .hint-xs 的 line-height
+     再撑高 12px（实测 row 31px / 子元素 19px）。去掉中间层，高度就贴住内容。 */
+  .pn { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; min-width: 0;
+        /* 右侧留 4px：下面 .pn-more > summary::before 把命中区外扩了 4px，
+           不留这点余量，那 4px 就记进行容器的 scrollWidth —— 实测 749px 窄屏下
+           左栏因此凭空多出一条 4px 的横向滚动条（666 容器 / 670 内容）。 */
+        padding-right: 4px; }
+  .pn > * { flex: none; }
+  /* 状态文字必须能缩到 0（min-width:0 是 flex 里唯一能让 ellipsis 生效的开关），
+     否则它会以内容宽度(427px)把「?」挤到第二行 —— 那正是 40px 双行的来源。 */
+  .pn .pn-state { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+  .pn .pn-bud { flex: none; font-family: var(--mono); font-weight: 600; white-space: nowrap; }
+  .pn .pn-more { flex: none; position: relative; margin-top: 0; }
+  /* 「?」帮助点：原来 15×15 里塞 10px 的 --dim —— 实测对比度 4.27:1（不到 AA 的 4.5），
+     命中区也只有 15px（WCAG 2.2 AA 要 24px）。放大到 18px 视觉仍是"一个小圆点"，
+     字提到 --fs-xs + --muted（5.7:1），再用 ::before 把可点区域外扩 3px 到 24px。 */
+  .pn .pn-more > summary { list-style: none; cursor: pointer; user-select: none; position: relative;
+    width: 18px; height: 18px; min-height: 18px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--line); border-radius: var(--r-full);
+    font: 600 var(--fs-xs) var(--sans); color: var(--muted); background: var(--panel-2); }
+  .pn .pn-more > summary::before { content: ""; position: absolute; inset: -4px; }
+  .pn .pn-more > summary::-webkit-details-marker { display: none; }
+  .pn .pn-more[open] > summary { border-color: var(--acc-chip-hi); color: var(--acc-text); background: var(--acc-soft); }
+  .pn .pn-more > div { position: absolute; right: 0; bottom: 130%; z-index: 30; width: 300px;
+    padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--r-sm);
+    background: var(--panel); color: var(--text); font: var(--fs-sm)/1.55 var(--sans);
+    box-shadow: 0 10px 28px rgba(20,30,45,.18); }
+  /* 窄窗：说明气泡改成整宽、钉在本行下方，避免超出左栏被裁 */
+  @media (max-width: 1180px) { .pn .pn-more > div { width: min(340px, 82vw); } }
   @media (min-width: 1181px) { #lyrics { min-height: 200px; } }
   textarea.abc { min-height: 64px; font: var(--fs-sm) var(--mono); }
   select:not([multiple]) { cursor: pointer; height: 36px; padding-top: 0; padding-bottom: 0; }
@@ -781,37 +819,6 @@
     .pane-out .pane-body > #styleSlotAsm { flex: none; display: flex; flex-direction: column; }
     .pane-out .pane-body > #styleSlotAsm > #styleBox { display: flex; flex-direction: column; flex: none; }
     .pane-out .pane-body > #styleSlotAsm > #styleBox > #style { flex: none; min-height: 108px; max-height: 240px; }
-    /* 状态行（原 presetNote）：一行一个状态 + 一个预算数字 + 一个「?」。
-       以前这里是三段长句，是左栏高度的最大占用者；现在恒定单行，
-       说明文字收进 <details>，鼠标/键盘都能展开，不展开就不占高度。 */
-    .pn { display: block; }
-    /* 直接让 .pn 自己当 flex 容器，不再套一层 <span class="pn-row">：
-       行内 flex 子元素会落进父级的行盒(line box)，被 .hint-xs 的 line-height
-       再撑高 12px（实测 row 31px / 子元素 19px）。去掉中间层，高度就贴住内容。 */
-    .pn { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; min-width: 0; }
-    .pn > * { flex: none; }
-    /* 状态文字必须能缩到 0（min-width:0 是 flex 里唯一能让 ellipsis 生效的开关），
-       否则它会以内容宽度(427px)把「?」挤到第二行 —— 那正是 40px 双行的来源。 */
-    .pn .pn-state { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
-    .pn .pn-bud { flex: none; font-family: var(--mono); font-weight: 600; white-space: nowrap; }
-    .pn .pn-more { flex: none; position: relative; margin-top: 0; }
-    /* 「?」帮助点：原来 15×15 里塞 10px 的 --dim —— 实测对比度 4.27:1（不到 AA 的 4.5），
-       命中区也只有 15px（WCAG 2.2 AA 要 24px）。放大到 18px 视觉仍是"一个小圆点"，
-       字提到 --fs-xs + --muted（5.7:1），再用 ::before 把可点区域外扩 3px 到 24px。 */
-    .pn .pn-more > summary { list-style: none; cursor: pointer; user-select: none; position: relative;
-      width: 18px; height: 18px; min-height: 18px; padding: 0;
-      display: inline-flex; align-items: center; justify-content: center;
-      border: 1px solid var(--line); border-radius: var(--r-full);
-      font: 600 var(--fs-xs) var(--sans); color: var(--muted); background: var(--panel-2); }
-    .pn .pn-more > summary::before { content: ""; position: absolute; inset: -4px; }
-    .pn .pn-more > summary::-webkit-details-marker { display: none; }
-    .pn .pn-more[open] > summary { border-color: var(--acc-chip-hi); color: var(--acc-text); background: var(--acc-soft); }
-    .pn .pn-more > div { position: absolute; right: 0; bottom: 130%; z-index: 30; width: 300px;
-      padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--r-sm);
-      background: var(--panel); color: var(--text); font: var(--fs-sm)/1.55 var(--sans);
-      box-shadow: 0 10px 28px rgba(20,30,45,.18); }
-    /* 窄窗：说明气泡改成整宽、钉在本行下方，避免超出左栏被裁 */
-    @media (max-width: 1180px) { .pn .pn-more > div { width: min(340px, 82vw); } }
     .pane-out .pane-body > .lint { flex: 0 1 auto; }
     /* 配合上面那条：把左栏的行距收紧几px（只收左栏，别的页不动），
        省下来的高度全部让给歌词框，843px 的窗口里一屏看完整首。 */
@@ -1237,6 +1244,15 @@
     #histList .hist-item, #histList .h-head { grid-template-columns: var(--hcol-task) var(--hcol-state) var(--hcol-lyric) var(--hcol-act); }
     #histList .hist-item .h-col-meta, #histList .h-head .hh-meta { display: none; }
   }
+  /* 再窄一档（实测 749px）：四列的最小宽度合 180+96+160+208 + 3×gap(12) = 680，
+     而列表容器只有 671 可用 —— 差的这 18px 不会去挤列，而是整行溢出，
+     结果"操作"列被裁掉半截，播放/下载按钮点不全。
+     这里只收固定轨道，不藏列：任务行里"摘要"格与"任务"格同为 .h-col，
+     靠类名去藏其中一格会连任务名一起藏掉。 */
+  @media (max-width: 820px) {
+    :root { --hcol-task: minmax(132px, 1fr); --hcol-state: 84px;
+            --hcol-lyric: minmax(104px, 1fr); --hcol-act: 196px; }
+  }
 
   .voice-card { display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-4); border-radius: var(--r-md); background: var(--bg-2); border: 1px solid var(--line-soft); }
   .voice-card .v-name { font-weight: 600; font-size: var(--fs-base); }
@@ -1380,8 +1396,25 @@
   @media (max-width: 860px) {
     body { display: block; }
     .side { position: static; width: auto; height: auto; flex-direction: row; align-items: center; gap: var(--sp-3); padding: 10px 16px; border-right: 0; border-bottom: 1px solid var(--shell-line); }
-    .side nav { flex-direction: row; margin: 0 0 0 auto; }
-    .side-foot { margin: 0; border: 0; padding: 0; }
+    .side nav { flex-direction: row; margin: 0 0 0 auto; flex-wrap: nowrap; overflow-x: auto;
+                max-width: 76vw; scrollbar-width: thin; padding-bottom: 2px; }
+    /* ★ 窄屏横排时页签必须收回内容宽度：基础层 .tab{width:100%} 是为竖排侧栏写的，
+       放到横排里等于"13 个各要 100% 宽"，flex 只能把它们压成均分的小格 ——
+       实测 749px 下"参考歌曲提取乐谱"被排成一列一个字、竖着 6 行，整条导航不可读。
+       改成 nowrap + 单行横向滚动（而不是让它换行）：换行实测要占 5 行 180px，
+       一条导航吃掉 20% 的视口高，比挤成一列字更糟。当前页签由 switchTab 滚进视野。 */
+    .side nav .tab { width: auto; flex: none; white-space: nowrap; }
+    /* 同一个坑的另外两处：横排里品牌与分组标签也被 flex 挤到 1ch 宽，
+       "音乐工作台"竖成一列 5 行、"系统"竖成 2 行（实测 749px 截图）。 */
+    .brand { flex: none; }
+    .brand-name { white-space: nowrap; }
+    .side nav .nav-group { white-space: nowrap; padding: 0 6px; align-self: center; }
+    .side-foot { margin: 0; border: 0; padding: 0; flex: none; }
+    /* 同一根因的第四处：.side 横排后 side-foot 只剩几十 px 宽，
+       "引擎就绪 · yue2 · CUDA" 被逐字断成 4 行（实测 749px 截图右上角）。
+       状态灯与主题开关都是"一行读完"的东西，不许换行。
+       （#health 挂的是 .foot-row 这个类，不是 .health。） */
+    .side-foot .foot-row { white-space: nowrap; flex: none; }
     .brand-sub { display: none; }
     main { padding: 16px; }
     .dock { left: 0; padding: 8px var(--sp-5); height: auto; }
@@ -3423,6 +3456,11 @@ function moveInto(node, slotId) {
 function switchTab(name) {
   curTab = name;
   $$(".tab").forEach(x => x.classList.toggle("active", x.dataset.tab === name));
+  // 窄屏（≤1180px）侧栏是单行横向滚动的，13 个页签装不下一屏：
+  // 切换后把当前这个滚进视野，否则人点了却不知道自己在哪一页。
+  // block:'nearest' 保证已经在垂直方向可见时不会顺手把整页滚走。
+  const act = document.querySelector('.side nav .tab.active');
+  if (act) { try { act.scrollIntoView({ inline: "nearest", block: "nearest" }); } catch {} }
   $$(".panel-tab").forEach(p => p.style.display = p.id === "tab-" + name ? "" : "none");
   // 共用件归位：先搬生成表单，再往它内部的谱槽放 #abcBlock（⑤ 用右侧乐谱区，其余页回 ③）
   const scoreMode = name === "scoreSing";
