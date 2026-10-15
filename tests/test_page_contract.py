@@ -104,24 +104,37 @@ class PageContract(unittest.TestCase):
         self.assertEqual(bad, [], "这些请求 URL 既不是 /api/ 也不是 /lab/ 首页：" + "、".join(bad))
 
     def test_shared_dom_pieces_present(self):
-        # ②⑤ 共用生成表单、③⑤ 共用谱框、①②⑤ 共用曲风框：靠搬家实现，用具必须都在位
+        # ②⑤ 共用生成表单、③⑤ 共用谱框：靠搬家实现，用具必须都在位。
+        # ★ 曲风框不在这一列里了 —— 它以前也靠搬家实现"①②⑤ 同一份 DOM"，
+        #   结果就是"在 ① 写了风格，点别的页面它还在那儿"。用户两次要求页面之间独立、
+        #   不要自动带内容，所以 ① 现在有自己的 #styleAsm，②⑤ 有自己的 #style。
         for node in ('id="genForm"', 'id="genSlotSing"', 'id="genSlotScore"',
                      'id="abcBlock"', 'id="abcSlotScore"', 'id="abcSlotSing"',
                      'id="scoreSection"', 'id="flowBar"', 'id="flowBarSing"',
-                     'id="styleBox"', 'id="styleSlotAsm"', 'id="styleSlotGen"'):
+                     'id="styleBox"', 'id="styleBoxAsm"', 'id="styleSlotAsm"', 'id="styleSlotGen"'):
             self.assertIn(node, self.html, "缺 %s：共用实现被打断" % node)
         self.assertIn("moveInto(gen", self.src, "switchTab 里没有把 #genForm 搬进目标槽位")
         self.assertIn('moveInto($("abcBlock")', self.src, "switchTab 里没有把 #abcBlock 搬进目标槽位")
-        self.assertIn('moveInto($("styleBox")', self.src, "switchTab 里没有把 #styleBox 搬进目标槽位")
+        self.assertNotIn('moveInto($("styleBox")', self.src,
+                         "#styleBox 又被搬回家了：曲风框必须 ① 与 ②⑤ 各一份，不随切页流动")
 
     def test_style_box_exists_once(self):
-        """曲风框只能有一份：① 装配出来的和 ②⑤ 手写的必须是同一个值。
+        """曲风框恰好两份：① 一份 #styleAsm，②⑤ 一份 #style，谁也不流向谁。
 
-        如果哪天有人图省事在生成页再抄一个 textarea id="style"，页面上就有两个"真值"，
-        用户在 A 页改的词不会出现在 B 页 —— 这类分叉极难发现，所以这里钉死。
+        以前是"一份 DOM 在三个页面之间搬家"，理由是"不存在哪边才是真的"。
+        实测到的却是用户理解的"页面独立"被破坏：在 ① 写了风格，切到 ② 它还在，
+        用户认为这就是被自动带过去的脏内容（他明确要求过两次）。
+        现在钉死成两份，并且 ① 的那份不得出现在 ②⑤ 的槽里。
         """
-        self.assertEqual(len(re.findall(r'id="styleBox"', self.html)), 1, "曲风框只能有一份")
+        self.assertEqual(len(re.findall(r'id="styleBox"', self.html)), 1, "#styleBox 应当只有 ②⑤ 那一份")
         self.assertEqual(len(re.findall(r'<textarea id="style"', self.html)), 1, "#style 只能有一个")
+        self.assertEqual(len(re.findall(r'<textarea id="styleAsm"', self.html)), 1,
+                         "① 应当有且只有自己的那一个 #styleAsm")
+        asm = self.html[self.html.index('id="styleSlotAsm"'):][:240]
+        gen = self.html[self.html.index('id="styleSlotGen"'):][:240]
+        self.assertIn('id="styleAsm"', asm, "① 的槽里没有 ① 自己的曲风框")
+        self.assertIn('id="styleBox"', gen, "②⑤ 的槽里没有自己的曲风框")
+        self.assertNotIn('<textarea id="style"', asm, "① 的槽里不该再放 ②⑤ 那个 #style")
 
     def test_generation_pages_have_inline_style_input(self):
         """②⑤ 的曲风必须是可编辑输入框，不是只读来源条。

@@ -817,8 +817,8 @@
        现在改成封顶 240px（≈12 行，仍够写长 prompt），且不参与拉伸
        （去掉 flex-grow）：高度由内容量决定 —— 写得多就长到 240 封顶再内部滚动。 */
     .pane-out .pane-body > #styleSlotAsm { flex: none; display: flex; flex-direction: column; }
-    .pane-out .pane-body > #styleSlotAsm > #styleBox { display: flex; flex-direction: column; flex: none; }
-    .pane-out .pane-body > #styleSlotAsm > #styleBox > #style { flex: none; min-height: 108px; max-height: 240px; }
+    .pane-out .pane-body > #styleSlotAsm > #styleBoxAsm { display: flex; flex-direction: column; flex: none; }
+    .pane-out .pane-body > #styleSlotAsm > #styleBoxAsm > #styleAsm { flex: none; min-height: 108px; max-height: 240px; }
     .pane-out .pane-body > .lint { flex: 0 1 auto; }
     /* 配合上面那条：把左栏的行距收紧几px（只收左栏，别的页不动），
        省下来的高度全部让给歌词框，843px 的窗口里一屏看完整首。 */
@@ -851,7 +851,7 @@
        540px、27 行空框，把整页权重全吸走，心理负担比实际任务大）。输入框高度应当
        表达"这里大概要写多少"，不是在栏里分蛋糕 —— 所以这里不去撑框，改成
        **这一页两栏都贴合内容**，与关于页"内容天然偏短且两列悬殊 → 不撑满"同一条规矩。
-     只作用于 ①：#styleBox 是 ①②⑤ 共用的同一份 DOM，别页仍然按视口定高、内部滚动。 */
+     只作用于 ①： 现在用的是自己的 #styleAsm（不再与 ②⑤ 共用一份 DOM），别页仍按视口定高、内部滚动。 */
   /* ① 左右两栏各自独立滚动（用户 2026-10-15 明确要求，也是装配台改成"恒定全展开"之后
      必须配的：词表全摊开后右栏远高于视口，如果整页一起滚，滚到下面挑词时
      左边那个 Style 产出框就滚出视野了 —— 而它恰恰是"我这么选，最后写出什么"的反馈面。
@@ -1728,11 +1728,13 @@
               <div class="hint-xs">短语 / 词 / 字符：官方样本平均 12 条、约 20 词、200 字符；本机最长的一条成功生成是 20 条短语 / 330 字符。所以这是信息预算不是上限，词越多每个词越轻，重点要素记得放前面。</div>
             </details>
           </div>
-          <!-- #styleBox 整块搬到 ②/⑤ 的左栏顶部（见 switchTab 里的 moveInto）：
-               曲风只有一个输入框、一个值，① 装配出来的和 ②⑤ 手写的永远是同一份。 -->
-          <div id="styleSlotAsm"><div id="styleBox">
-            <label for="style" style="margin-top:0;">Style / 曲风描述（英文效果最佳 · 这里就是提交给模型的内容）</label>
-            <textarea id="style">English, warm piano pop, expressive female voice, acoustic piano, rounded bass and light drums, lyrical memorable melody, unhurried phrasing, 88 BPM</textarea>
+          <!-- ① 自己的曲风框。★ 它以前是 #styleBox —— 同一份 DOM 在 ①②⑤ 之间搬家，
+               于是"在 ① 写了风格，点别的页面它还在那儿"。用户两次要求页面之间独立、
+               不要自动带内容，所以改成各页各一个框：① 的装配结果留在 ①，
+               要带去 ②⑤ 就点下面那颗「复制这段 Style」自己粘。 -->
+          <div id="styleSlotAsm"><div id="styleBoxAsm">
+            <label for="styleAsm" style="margin-top:0;">Style / 曲风描述（英文效果最佳 · 装配结果就在这）</label>
+            <textarea id="styleAsm">English, warm piano pop, expressive female voice, acoustic piano, rounded bass and light drums, lyrical memorable melody, unhurried phrasing, 88 BPM</textarea>
           </div></div>
           <div class="six" id="sixBox" style="margin-top:9px;"></div>
           <div class="lint" id="styleLint"></div>
@@ -1778,7 +1780,6 @@
           <div class="step"><span class="sn">②</span>选一张曲风卡片 —— 一次采用这套配方</div>
           <div class="wtools">
             <label class="srch" for="presetSearch"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.2"/><path d="M10.4 10.4L14 14"/></svg><input id="presetSearch" placeholder="搜曲风（中文或英文，如 国风 / city pop / 808）· 不填只在本大类里挑" aria-label="搜索曲风配方" /></label>
-            <button class="ghost" id="presetExpand" type="button">▾</button>
           </div>
           <div class="pgrid2" id="presetGrid"></div>
           <div class="hint-xs" style="margin-top:7px;">点一张曲风卡片 = 这套配方一次性写进左边的 Style；想再逐个词改，切到「六要素装配台」。</div>
@@ -1874,11 +1875,13 @@
       <div class="pane pane-out">
         <div class="pane-head"><b>成品 · 要提交给模型的就是这些</b><span class="hint-xs">曲风 + 歌词（+ 乐谱）都在这边填，参数在右边</span></div>
         <div class="pane-body">
-          <!-- 曲风输入框：就是 ① 那个 Style 框本体（#styleBox 在两页之间搬家），
-               所以"① 装配出来的"和"这里手写的"是同一个值，不存在哪边才是真的。
-               以前这里只是一条只读的来源条 + 两个跳转按钮，想改一个词都得跳回 ①。 -->
-          <div id="styleSlotGen"></div>
-          <div class="hint-xs" style="margin-top:5px;" title="想用配方库点选或六要素微调，去「① Style 设计」页 —— 那边和这里是同一个输入框，改哪边都一样。">英文效果最佳。想点选配方去「① Style 设计」页，与这里是同一个输入框。</div>
+          <!-- 这一页自己的曲风框。它以前是空的落位槽，靠 switchTab 把 ① 的 #styleBox 搬进来，
+               于是 ① 写的风格会"自己跟过来"—— 与页面独立性相违，现在两页各一份。 -->
+          <div id="styleSlotGen"><div id="styleBox">
+            <label for="style" style="margin-top:0;">Style / 曲风描述（英文效果最佳 · 这里就是提交给模型的内容）</label>
+            <textarea id="style"></textarea>
+          </div></div>
+          <div class="hint-xs" style="margin-top:5px;" title="① 是另一个独立的框，不会自动流到这里 —— 想用它装配好的那句，点 ① 的「复制这段 Style」再粘进来。">英文效果最佳。这一页的曲风框是独立的：① 装配的结果不会自动带过来，要么用「① 复制这段 Style」贴进来，要么在这儿直接写。</div>
 
           <label for="taskName">任务名称（用于历史展示与下载命名）</label>
           <input id="taskName" placeholder="例如：稻香" maxlength="100" />
@@ -3469,7 +3472,6 @@ function switchTab(name) {
   moveInto($("abcBlock"), scoreMode ? "abcSlotSing" : "abcSlotScore");
   // 曲风输入框跟着当前页走：在 ① 就回 ① 的槽，在 ②⑤ 就进生成表单左栏顶部。
   // 只有一份 DOM，所以"① 装配出来的 Style"和"②⑤ 手写的 Style"必然是同一个值。
-  moveInto($("styleBox"), (name === "style") ? "styleSlotAsm" : "styleSlotGen");
   const ss = $("scoreSection"); if (ss) ss.hidden = !scoreMode;
   const fb = $("flowBar"); if (fb) fb.hidden = !scoreMode;
   // ② 的关系条讲两段（Style + 歌词），⑤ 讲三段（+ 乐谱）。两条互斥，不同时出现。
@@ -3988,8 +3990,14 @@ function budgetOf(text) {
   return { phrases, words, chars, level: sev === 2 ? "hard" : sev === 1 ? "soft" : "ok", over };
 }
 function writeStyleBox(text) {
-  const box = $("style");
+  const box = $("styleAsm");
   if (!box) return;
+  // 启动时如果存有"用户手改过的那句"，第一笔写入要用它覆盖按六要素重算的结果，
+  // 否则刷新会把用户改的词悄悄换回机器拼的那句。
+  if (window.__asmTextPending) {
+    text = window.__asmTextPending; window.__asmTextPending = "";
+    styleDirty = true;
+  }
   suppressStyleWatch = true;
   box.value = text;
   try { box.dispatchEvent(new Event("input", { bubbles: true })); } catch {}
@@ -4018,6 +4026,9 @@ function saveAsm() {
       lang: ($("aLang") || {}).value || "", genre: ($("aGenre") || {}).value || "",
       more: ($("aMore") || {}).value || "", key: ($("aKey") || {}).value || "",
       bpm: ($("bpm") || {}).value || "", gender: ($("gender") || {}).value || "",
+      // ① 那个框现在是 ① 自己的（不与 ②⑤ 共用 DOM），所以它的手改也得自己存一份，
+      // 否则刷新就只剩"按六要素重算"的那句，用户改过的词会凭空回去。
+      asmText: (($("styleAsm") || {}).value || "").trim(),
     }));
   } catch {}
 }
@@ -4113,7 +4124,7 @@ function toggleWord(elId, vocab, key, v, wasOn) {
   renderMulti(elId, vocab, key);
   if (wasOn) return;
   // 提示说的是"真正会提交的那一句"：文本被手改过之后装配台不再覆盖它，就该按文本框算。
-  const submitted = styleDirty ? ((($("style") || {}).value || "").trim() || compileStyle()) : compileStyle();
+  const submitted = styleDirty ? ((($("styleAsm") || {}).value || "").trim() || compileStyle()) : compileStyle();
   const b = budgetOf(submitted);
   if (b.level === "hard") {
     toast("加入「" + wordZh(v) + "」后 Style 是 " + b.phrases + " 条短语 / " + b.words + " 词 / " + b.chars +
@@ -4153,16 +4164,15 @@ function renderFamTabs() {
     b.className = "chip mini" + (f.id === asm.fam ? " active" : "");
     b.textContent = f.zh;
     b.title = f.zh + " · " + f.items.length + " 条配方";
-    b.onclick = () => { asm.fam = f.id; presetOpen = false; renderFamTabs(); renderPresetGrid(); saveAsm(); };
+    b.onclick = () => { asm.fam = f.id; renderFamTabs(); renderPresetGrid(); saveAsm(); };
     el.appendChild(b);
   });
 }
-// 曲风卡片同样"就地展开"：一个大类最多 12 张，收起态只露前 PRESET_CAP 张，
-// 剩下的点「其余 N 张 ▾」摊开——和候选词共用一条右栏滚动条，不再各自套小滚动条。
+// 曲风卡片：本大类的所有配方一次全摊开（以前只露前 8 张、其余收进「+N 张 ▾」，
+// 藏起来的那几张用户根本不知道存在 —— 2026-10-15 按要求撤掉折叠）。
+// 和候选词共用一条右栏滚动条，不再各自套小滚动条。
 // 搜索态改走"跨大类找"：用户心里想的是"我要做国风"，不是"我要在流行这一类里找国风"，
 // 所以搜的时候把所有大类的命中都列出来，并在卡片上标出它属于哪个大类。
-const PRESET_CAP = 8;
-let presetOpen = false;
 let presetQuery = "";
 function presetHit(p, fam, q) {
   if (!q) return true;
@@ -4179,8 +4189,10 @@ function renderPresetGrid() {
   FAMS.forEach(f => {
     if (q || f.id === asm.fam) f.items.forEach(p => { if (presetHit(p, f, q)) pool.push({ p, f }); });
   });
-  const list = (q || presetOpen) ? pool
-                                 : pool.filter((it, i) => i < PRESET_CAP || it.p.id === asm.preset);
+  // ★ 本大类的所有配方恒定全展开（用户 2026-10-15："下面的选项不用折叠"）。
+  //   以前只露前 8 张、其余收进「+N 张 ▾」——曲风卡片是要"看全了比较"的东西，
+  //   藏起来的那几张用户根本不知道存在，等于凭空少了几个选项。
+  const list = pool;
   if (!pool.length) {
     const s = document.createElement("span");
     s.className = "nomatch";
@@ -4201,16 +4213,8 @@ function renderPresetGrid() {
     b.onclick = () => applyPreset(p);
     el.appendChild(b);
   });
-  const btn = $("presetExpand");
-  if (btn) {
-    if (q || pool.length <= PRESET_CAP) { btn.style.display = "none"; return; }
-    btn.style.display = "";
-    btn.textContent = presetOpen ? "只留前 " + PRESET_CAP + " 张 ▴"
-                                 : "+" + (pool.length - Math.min(PRESET_CAP, pool.length)) + " 张 ▾";
-    btn.title = presetOpen ? "收回到只显示前 " + PRESET_CAP + " 张（当前选中的那张仍会留在原地）"
-                           : "本大类共 " + pool.length + " 张配方，全部摊开挑选";
-  }
 }
+
 function applyPreset(p) {
   asm.preset = p.id;
   asm.mood = [...(p.mood || [])];
@@ -4249,7 +4253,7 @@ function updateAsmHint() {
   if (!el) return;
   if (typeof updateStyleRecipe === "function") updateStyleRecipe();
   const preview = compileStyle();
-  const cur = (($("style") || {}).value || "").trim();
+  const cur = (($("styleAsm") || {}).value || "").trim();
   // 预算说的是"真正会提交的那一句"：没手改时就是装配产物，手改后就是文本框本身。
   const b = budgetOf(styleDirty ? (cur || preview) : preview);
   // 这段文字只在"状态确实不一样"时才有信息量，而且必须**短**——
@@ -4313,7 +4317,7 @@ function analyzeStyle(text) {
   };
 }
 function updateStyleChecks() {
-  const box = $("style");
+  const box = $("styleAsm");
   if (!box) return;
   const text = box.value;
   const { phrases, has } = analyzeStyle(text);
@@ -4450,7 +4454,7 @@ async function saveMyPreset() {
   const payload = {
     name,
     taskName: (($("taskName") || {}).value || "").trim(),
-    style: ($("style") || {}).value.trim(),
+    style: ($("styleAsm") || {}).value.trim(),
     lyrics: ($("lyrics") || {}).value,
     cot: ($("cot") || {}).value,
     abc: ($("abc") || {}).value,
@@ -4746,11 +4750,13 @@ function initAssembler() {
     if ($("aGenre") && saved.genre != null) $("aGenre").value = saved.genre;
     if ($("aMore") && saved.more != null) $("aMore").value = saved.more;
     if ($("bpm") && saved.bpm !== undefined) $("bpm").value = saved.bpm;
+    // 手改过的产出文本要盖回框里（写在下面渲染之后才有效，这里先存进 pending）。
+    if (saved.asmText) window.__asmTextPending = saved.asmText;
   } else {
     // 第一次用（或换了浏览器）：没有装配台快照。从现有 Style 文本里接住语种 / 人声 / BPM
     // 三格硬信息，其余留空。此时不算"手改"，但文本也不是装配台产物 —— 点任何一格即接管。
     if (preGender) setSel($("gender"), preGender);
-    const parts = (($("style") || {}).value || "").split(",").map(s => s.trim()).filter(Boolean);
+    const parts = (($("styleAsm") || {}).value || "").split(",").map(s => s.trim()).filter(Boolean);
     if (parts.length) {
       setSel($("aLang"), parts[0]);
       const g = parts.find(p => /\b(female|male)\b/i.test(p) && /vocal|voice/i.test(p));
@@ -4815,10 +4821,8 @@ function initAssembler() {
   };
   const ps = $("presetSearch");
   if (ps) ps.oninput = () => { presetQuery = ps.value; renderPresetGrid(); };
-  const pe = $("presetExpand");
-  if (pe) pe.onclick = () => { presetOpen = !presetOpen; renderPresetGrid(); };
 
-  const sb = $("style");
+  const sb = $("styleAsm");
   if (sb) sb.addEventListener("input", () => {
     if (suppressStyleWatch) { updateStyleChecks(); return; }
     styleDirty = true;
@@ -4835,7 +4839,7 @@ function initAssembler() {
   const reset = $("asmReset");
   if (reset) reset.onclick = () => {
     // 清空不只是清六格：recompile(true) 会连 Style 文本框一起重写，而文本框才是提交给模型的内容
-    const box = $("style");
+    const box = $("styleAsm");
     if (box && box.value.trim() && !confirm(
       `清空装配台会把左栏的 Style 文本框一起重写（现在是「${box.value.trim().slice(0, 36)}…」）。
 `
@@ -4877,13 +4881,13 @@ function initAssembler() {
 
   // 首屏判定：有快照却和文本框不一致 = 上次是手改收尾的，进 dirty 模式（装配台不覆盖）；
   // 没有快照 = 第一次接管，不算手改，只提示"点任一格即接管"。
-  styleDirty = hadSnapshot && ($("style") || {}).value.trim() !== compileStyle().trim();
+  styleDirty = hadSnapshot && ($("styleAsm") || {}).value.trim() !== compileStyle().trim();
   updateStyleChecks();
   updateAsmHint();
 }
 // 外部（如刷新后恢复运行中任务）改写 Style 后调用：重新判定一致性
 function syncStyleFromOutside() {
-  styleDirty = ($("style") || {}).value.trim() !== compileStyle().trim();
+  styleDirty = ($("styleAsm") || {}).value.trim() !== compileStyle().trim();
   updateStyleChecks();
   updateAsmHint();
 }
@@ -7776,7 +7780,7 @@ function startPoller(kind, id, opts) {
 }
 
 // ---------- ① Style 设计：产出条 / 配方摘要 / 发送 ----------
-function styleText() { return (($("style") || {}).value || "").trim(); }
+function styleText() { return (($("styleAsm") || {}).value || "").trim(); }
 function findPreset(id) {
   if (!id) return null;
   for (const f of FAMS) { const p = (f.items || []).find(x => x.id === id); if (p) return { fam: f, p }; }
@@ -7802,7 +7806,7 @@ function updateStyleRecipe() {
   el.textContent = bits.length ? "🧾 当前配方：" + bits.join(" · ") : "";
 }
 function syncStylePreview() {
-  // 曲风来源条已取消：②⑤ 现在直接用 ① 那一个输入框本体（#styleBox 会搬过来），
+  // 曲风来源条已取消：②⑤ 有自己的一份曲风框（以前是搬 ① 的 #styleBox，现在各页各一份），
   // 不需要再把同一段文本复述一遍。这里只剩"模型读数 + 批次摘要"要跟着刷。
   const mn = $("modelNow");
   if (mn) {
@@ -7816,7 +7820,7 @@ $("styleCopy").onclick = async () => {
   const t = styleText();
   if (!t) { toast("产出框是空的", "err"); return; }
   try { await navigator.clipboard.writeText(t); toast("Style 已复制（" + t.length + " 字符）", "ok"); }
-  catch { const ta = $("style"); ta.select(); document.execCommand("copy"); toast("已复制（剪贴板 API 不可用，走了选中复制）"); }
+  catch { const ta = $("styleAsm"); ta.select(); document.execCommand("copy"); toast("已复制（剪贴板 API 不可用，走了选中复制）"); }
 };
 // ① 右栏「配方库 / 装配台」二选一。
 // 两个视图共用同一批 DOM id（famTabs / presetGrid / aLang / moodChips …），只是 hide 掉一个，
@@ -9233,7 +9237,13 @@ function modEnsureSlots() {
     if (p.querySelector(".mod-slot")) return;
     const s = document.createElement("div");
     s.className = "mod-slot";
-    p.appendChild(s);            // 每个面板底部一个插槽，组件按当前页搬进去
+    /* ★ 插在页头下面，不是 appendChild 挂到面板末尾。
+       挂末尾时这条"本页任务"在 ②⑤⑨⑩ 全部要往下滚一屏才看得见 ——
+       而它是"我刚才点的那一下排到哪了"的唯一就地反馈，看不见等于没有：
+       用户不会想到屏幕底下还有内容。测试提交时实测过：任务在跑，页面上毫无迹象。 */
+    const head = p.querySelector(".page-head");
+    if (head && head.nextSibling) p.insertBefore(s, head.nextSibling);
+    else p.appendChild(s);
   });
 }
 
