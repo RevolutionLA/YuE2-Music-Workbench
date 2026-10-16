@@ -3876,5 +3876,68 @@ class TestCheckedTaskVisible(Sandbox):
                          "正在练的任务不能删——目录里的 dataset 是 worker 的输入")
 
 
+class TestReviewRoundD08c513Depth(Sandbox):
+    """三方评审里被降级为 P2/P3 的三条纵深缺陷（够不到不代表可以不留门）。"""
+
+    def setUp(self):
+        super().setUp()
+        self._saved_keep = app.HIST_KEEP
+        app.HIST_KEEP = 1          # 让第二条记录一进来就触发轮转删除
+        self.client = TestClient(app.app, base_url=LOCAL_BASE)
+
+    def tearDown(self):
+        app.HIST_KEEP = self._saved_keep
+        super().tearDown()
+
+    def test_history_rotation_never_deletes_outside_the_records_dir(self):
+        """轮转删除的文件名取自 history.json，必须先验落点（评审 B-8）。"""
+        outside = Path(app.HIST_DIR).parent / "evil.wav"
+        outside.write_bytes(b"RIFF")           # HIST_DIR 之外、同级的一个无辜文件
+        app._hist_write([{"id": "old", "file": "../evil.wav"},
+                         {"id": "older", "file": "older.wav"}])
+        r = self.client.post("/api/history",
+                             files={"audio": ("a.wav", b"RIFF" + b"\0" * 512, "audio/wav")},
+                             data={"meta": json.dumps({"lyrics": "词"})})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(outside.exists(),
+                        "轮转把 HIST_DIR 之外的文件删了——记录里的文件名不能当可信输入")
+        outside.unlink(missing_ok=True)
+
+    def test_output_meta_write_survives_a_failed_rewrite(self):
+        """产物 meta 必须是原子写：崩在落盘中途时，已有记录不能变成半截 JSON（评审 B-7）。
+
+        故意让 write_text 先真写进去一截再抛——非原子写法会把原文件截断在半句上，
+        ⑪ 读不出 status，那条其实已经跑完的歌在界面上等于没存在过。
+        """
+        app._output_write_meta({"id": "m1", "status": "done", "seed_actual": 7})
+        good = app._output_meta_path("m1").read_text(encoding="utf-8")
+        real_write = Path.write_text
+
+        def half_write(self, data, *a, **k):
+            real_write(self, data[: len(data) // 2], *a, **k)   # 落一半
+            raise OSError("崩在落盘中途")
+
+        Path.write_text = half_write
+        try:
+            with self.assertRaises(OSError):
+                app._output_write_meta({"id": "m1", "status": "error"})
+        finally:
+            Path.write_text = real_write
+        self.assertEqual(app._output_meta_path("m1").read_text(encoding="utf-8"), good,
+                         "半截 meta：原子写没做到位，原文件被这次失败的写盖坏了")
+        self.assertEqual(list(Path(app.OUTPUT_DIR).glob("*.tmp")), [],
+                         "失败的写要在产物目录里清理干净，不能留孤儿临时文件")
+
+    def test_style_is_never_stripped_down_to_empty(self):
+        """节奏让位给乐谱之后若什么都不剩，保留原句并说清楚（评审 B-9）。"""
+        abc = "X:1\nM:4/4\nQ:1/4=88\nK:C\nCDEF|\n"
+        eff, note = app._style_yield_to_abc("4/4", abc)
+        self.assertEqual(eff, "4/4", "剥成空 style 会让引擎拿不到任何风格信息")
+        self.assertIn("原样保留", note)
+        # 顺手锁住旁边那个小毛病：剥掉句首的 BPM 不能留下一个前导逗号
+        eff2, _ = app._style_yield_to_abc("88 BPM, warm piano pop", abc)
+        self.assertFalse(eff2.startswith(","), "前导逗号会被当成一个空短语")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

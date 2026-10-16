@@ -5844,6 +5844,9 @@ async function fetchExtraTasks() {
         ts: it.started_ts || it.ts || "", task_name: it.name || "未命名",
         style: p.style || "", lyrics: p.lyrics || "", cot: p.cot || "full", abc: p.abc || "",
         params: p, error: it.error || "", sec: it.sec, bytes: it.bytes,
+        // 排队中的批量条目也要能看见"服务端改了什么"。这个字段以前只从产物 meta 里取，
+        // 于是 pending/running 的队列行是最需要看说明的时候反而没有（评审 B-6）。
+        cot_note: it.cot_note || "",
         isQueue: true,
       });
     });
@@ -5964,7 +5967,7 @@ async function renderHistory(fetchLimit) {
           <div class="h-title">${escapeHtml(title)}${kindTag}</div>
           ${h.ts || h.id ? '<div class="h-sub">' + [h.ts ? timeAgo(h.ts) : "", idTag(h.id)].filter(Boolean).join(" ") + '</div>' : ''}
           ${h.status === "error" && h.error ? `<div class="h-sub h-errline" style="color:var(--err); cursor:pointer;" data-err title="点击展开/收起完整错误">⚠ ${escapeHtml(String(h.error).slice(0, 120))}${String(h.error).length > 120 ? " …（点击查看全部）" : ""}</div>` : ""}
-          ${h.cot_note ? `<div class="h-sub" style="color:var(--muted);" title="服务端在送引擎前对你提交的内容做的调整（当时只在屏幕上弹了 3.6 秒，这里才是能查的地方）">🛈 ${escapeHtml(String(h.cot_note).slice(0, 120))}</div>` : ""}
+          ${h.cot_note ? `<div class="h-sub" style="color:var(--muted);" title="服务端在送引擎前对你提交的内容做的调整（当时只在屏幕上弹了 3.6 秒，这里才是能查的地方）｜完整原文：${escapeHtml(String(h.cot_note))}">🛈 ${escapeHtml(String(h.cot_note).slice(0, 120))}${String(h.cot_note).length > 120 ? " …（悬停看全文）" : ""}</div>` : ""}
         </div>
         <div class="h-col h-col-st" style="color:${stColor};">${stTxt}</div>
         <div class="h-col">

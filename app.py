@@ -1696,7 +1696,18 @@ async def history_add(audio: UploadFile = File(...), meta: str = Form("{}")):
     items = [item] + _hist_read()
     # 只保留最近 HIST_KEEP 条，同时删除落盘的旧音频
     for gone in items[HIST_KEEP:]:
-        (HIST_DIR / gone.get("file", "")).unlink(missing_ok=True)
+        # 文件名取自 history.json，不能当可信输入直接 unlink：这个库是被本机各写入方
+        # 轮流维护的，一旦某条记录里混进 "../x.wav"（手工编辑、旧版本、或将来某个没
+        # 消毒的写入口），轮转就会删到 HIST_DIR 外面去。先取 basename 再验落点。
+        name = Path(str(gone.get("file") or "")).name
+        if not name:
+            continue
+        victim = (HIST_DIR / name).resolve()
+        try:
+            victim.relative_to(HIST_DIR.resolve())
+        except ValueError:
+            continue
+        victim.unlink(missing_ok=True)
     items = items[:HIST_KEEP]
     _hist_write(items)
     return {"ok": True, "item": item}
@@ -2009,9 +2020,18 @@ def _output_read_meta(rid: str) -> dict | None:
 
 def _output_write_meta(meta: dict) -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    (_output_meta_path(meta["id"])).write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    p = _output_meta_path(meta["id"])
+    # 原子写：半截 meta 会让 ⑪ 与队列卡读不到 status/seed，那条任务在界面上等于
+    # "什么都没发生"，而歌其实已经在显卡上跑完了；同一棵树里的 job.json/batch_state
+    # 早就用 temp + os.replace，这里是漏的那一处（三方评审 B-7）。
+    tmp = p.parent / (p.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, p)
+    except Exception:
+        # 写坏在半路时不能留一个孤儿 .tmp 在产物目录里：⑪ 与素材选择器都按目录内容列东西
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 # --------------------------------------------------------------------------- #
@@ -2530,6 +2550,14 @@ def _style_yield_to_abc(style: str, abc: str) -> tuple[str, str]:
         eff = re.sub(r"\s{2,}", " ", eff)
         eff = re.sub(r"(,\s*){2,}", ", ", eff)
         eff = re.sub(r"[,\s]+$", "", eff).strip()
+        # 剥掉的若是句首那一段（"88 BPM, warm piano pop"），剩下的是个前导逗号——
+        # 引擎会把它当成一个空短语，⑫ 的自检也会因为多算一条短语而虚报"超预算"。
+        eff = re.sub(r"^[\s,]+", "", eff).strip()
+        if not eff:
+            # 纯音乐 + style 只写了节奏 + 谱带 Q: 时，剥完就什么都不剩了。
+            # 空 style 会让引擎拿不到任何风格信息（而入口的"必填闸门"早在剥离之前放行），
+            # 这种情况宁可保留原句也不能交一个空串出去（三方评审 B-9）。
+            return style, "；".join(notes) + "（剥完就成了空描述，这条不适用，style 原样保留）"
         return eff, "；".join(notes) + "（节奏以乐谱为准）"
     return style, ""
 
