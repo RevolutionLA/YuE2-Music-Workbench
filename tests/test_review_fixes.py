@@ -783,7 +783,12 @@ class TestModelSwitchPath(Sandbox):
         self.saved = {}
         for name, value in (("MODEL_DIR", self.model_dir),
                             ("_read_server_json", lambda: {"models": [{}]}),
-                            ("_restart_audiocpp", lambda *a, **k: None)):
+                            ("_restart_audiocpp", lambda *a, **k: None),
+                            # models_switch 成功后会把"当前加载的是哪套权重"写进 engine_state.json，
+                            # 而那个文件在 runtime/data/ 下是本机的真实状态。不重定向的话，
+                            # 每跑一次全量测试就把用户的状态改成这里的假模型名
+                            # （2026-10-16 实测：⑬ 被测试写成 yue2-q4.gguf，本机平白多出一条 ⚠）。
+                            ("_ENGINE_STATE", self.tmp / "engine_state.json")):
             self.saved[name] = getattr(app, name)
             setattr(app, name, value)
         self.written = {}
@@ -794,6 +799,20 @@ class TestModelSwitchPath(Sandbox):
         for name, value in self.saved.items():
             setattr(app, name, value)
         super().tearDown()
+
+    def test_engine_state_write_stays_inside_the_sandbox(self):
+        """切换成功后写下的"当前加载"必须落在临时目录，不许碰到本机 runtime/data。"""
+        real = Path(app.__file__).parent / "runtime" / "data" / "engine_state.json"
+        before = real.read_bytes() if real.is_file() else None
+        app.models_switch({"path": "model/yue2-q4.gguf", "vae": "yue2-vae-f16.gguf"})
+        self.assertTrue(Path(app._ENGINE_STATE).is_file(),
+                        "engine_state 没被重定向：这次切换写的是用户机器上的真实状态文件")
+        self.assertEqual(Path(app._ENGINE_STATE).name, "engine_state.json")
+        after = real.read_bytes() if real.is_file() else None
+        self.assertEqual(before, after, "本机 runtime/data/engine_state.json 被测试改写了")
+        import json as _j
+        st = _j.loads(Path(app._ENGINE_STATE).read_text(encoding="utf-8"))
+        self.assertEqual(st.get("loaded_main"), "yue2-q4.gguf")
 
     def test_traversal_is_rejected_before_any_write(self):
         for bad in ("../../Windows/win.ini", "model/../../../etc/passwd",

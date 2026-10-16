@@ -9,6 +9,58 @@
 版本的唯一真源是 git 的**附注标签**（`git tag -l -n`），本文件是给人看的说明；
 宣传文案里要写的版本号从本文件顶部条目取，不在别处另记一份数字（`app.py:_version_from_changelog()` 读本文件首条）。
 
+## [v10.16.4] - 2026-10-16
+
+来源：继续执行 1→4 的第 2、4 项。**第 2 项做完了；第 4 项的前提被证伪，如实记下来。**
+
+### 内核从 9-12 那份升到官方 v0.9.2（本机 `cpp/`，不入库，旧件全量备份在 `cpp/_backup_912/`）
+替换前不是"直接换"，而是先做**同种子同参数的字节级对照**：同一条极小请求
+（`cot=off`、4 步、语义 token 64-160）分别打现役 8080 与新内核 8091——
+两边都回 `application/json` 的 `{audio, channels, sample_rate, timing}`，解出的 WAV
+**1228588 字节、48kHz 立体声、6.4 秒、SHA256 前缀 `4db85f844fafacab` 完全相同**，
+耗时 7.3s → 5.4s。这一步同时否掉了我之前的一条担心：`/api/music/generate` 根本不在
+引擎里（两个 exe 里都搜不到这个串），它是 `main.pyd` 挂在网关上的路由，
+引擎侧两边都走 `/v1/tasks/run` —— **API 形状没变，我们那层不用改**。
+换完再跑一次**完整链路真生成**（② → 网关 → 新内核）：80.2 秒出 5.0MB / 80 秒成品，
+`seed_actual` 正常落档，无 CPU 降级，⑬ 不再报 ⚠。
+
+拿到手的新能力（二进制内实测键名命中）：`yue2.ar_lora` x6、`yue2.nar_lora` x6、
+`yue2.stop_after` x1（旧内核全为 0）。官方 `model_specs/yue2.json` 给的契约是
+session 侧 `ar_lora/nar_lora` + 各自 `*_lora_scale`（默认 1.0，置 0 关闭），
+request 侧 `stop_after ∈ {abc, semantic, audio}`——**`stop_after=abc` 就是"只要谱不做音频"**，
+③/⑤ 下一步可以直接吃引擎自己规划的 ABC；官方 `audio-cpp/Yue2-3B-GGUF/lora/` 已有
+现成 AR+NAR 适配器（rank32/alpha32，附训练指标与试听 wav）。
+**LoRA 那条旧裁定的前提因此翻转**：不是"引擎不支持"，是"我们的内核没升级"——现在升了。
+
+### 顺手修掉一条真实污染：跑测试会把本机引擎状态写脏
+升完内核后 ⑬ 又冒出 ⚠，追下去发现**写脏它的就是我们自己的测试**：
+`TestModelSwitchPath` 重定向了 `MODEL_DIR`、`_read_server_json`、`_write_server_json`、
+`_restart_audiocpp`，唯独没重定向 `_ENGINE_STATE`——于是它调 `models_switch` 成功后，
+把测试里那个假模型名 `yue2-q4.gguf` 真写进了本机 `runtime/data/engine_state.json`。
+这也解释了上一轮"⑬ 报的权重磁盘上不存在"的**来历**：那个不存在的名字就是测试造的。
+补上重定向并加一条断言（`test_engine_state_write_stays_inside_the_sandbox`：
+切换后必须写进沙箱，且本机那份字节不变）。
+**验证**：连跑两次全量（各 562 项 OK），`engine_state.json` 的 SHA1 跑前/后三次相同 `7830bed26126` → 污染止住。
+本机的状态文件也已按真实配置改回 `yue2-3b-q4_k_m.gguf`。
+
+### 第 4 项不成立：那批 imatrix 量化不是给我们的引擎用的
+原计划是拿 `scragnog/YuE2-GGUF` 的 imatrix 档（`Q4_K_M-imat` 2.43GB、`IQ4_XS-imat` 2.24GB）
+和现在的 q4_k_m（2.88GB）做 A/B。**读完上游说明后判定不做**：该仓明写这些文件
+"let it run through **HOT-Step's** GGML inference stack"，命名是 `yue2-lm-*` 并另带
+`yue2-tok-f16.gguf` / `minted/`，与本引擎要求的 `yue2-3b-*.gguf` + `sidecars/*.{json,tiktoken}`
+不是同一套加载约定；而音频质量谁好谁坏最终仍要靠耳朵（本项目一贯如此）。
+**没有为了"看起来做了优化"去下 2.4GB 赌一把。**
+6GB 卡上真正管用的杠杆这次有了实测数：刚才 `cot=off + 8 步` 用 **80 秒**出了 80 秒成品，
+而 `full + 32 步 + 长词` 要 60-90 分钟——**瓶颈是上下文与步数，不是再省 0.4GB 权重**
+（上游 Q4_0 长曲峰值 7755 MiB 也印证：权重 2.9GB，其余 ~4.8GB 是运行期上下文）。
+要提质量就在 audio.cpp 兼容档里选（`ngquocvinh` 有 q3_k_m 2.45GB…q6_k_m 3.69GB 全梯），
+要提速就压步数/token 预算，两条都由用户挑。
+
+### 测试
+本标签上 **525 项**（v10.16.3 的 524 → +1 条沙箱断言；工作树同一命令 562 项，差额 37 条仍是别轮
+未提交的 `tests/test_abc_edit.py`）。数字按上版立的规矩在暂存树上实测（`git checkout-index` 导出后跑）。
+
+
 ## [v10.16.3] - 2026-10-16
 
 来源：用户「按 1、2、3、4 继续优化」。这一版落的是**第 3 项（转谱库随上游修 bug）**与
