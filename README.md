@@ -444,7 +444,7 @@ py312\python.exe -m unittest discover -s tests -v
 ## 🙏 致谢
 
 - [m-a-p/YuE2](https://huggingface.co/m-a-p/YuE2-3B) —— 音乐生成模型
-- [audio.cpp](https://github.com/leejet/audio.cpp) · [GGUF 量化](https://huggingface.co/ngquocvinh/YuE2-3B-GGUF) —— 本地推理引擎
+- [audio.cpp](https://github.com/0xShug0/audio.cpp) · [官方 GGUF 与 LoRA](https://huggingface.co/audio-cpp/Yue2-3B-GGUF) · [社区全量档 GGUF](https://huggingface.co/ngquocvinh/YuE2-3B-GGUF) —— 本地推理引擎
 - [FunASR](https://github.com/modelscope/FunASR) · [torchaudio forced alignment](https://pytorch.org/audio/stable/forced_alignment_tutorial.html) —— 歌词字/词级强制对齐
 - RVC / SheetSage2 / SenseVoice —— 换声、乐谱、语音识别
 

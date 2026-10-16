@@ -227,7 +227,7 @@ If you set `settings.app_host` to something like `0.0.0.0` (anything non-loopbac
 ## 🙏 Credits
 
 - [YuE / YuE2 by HKUST & M-A-P](https://github.com/multimodal-art-projection/YuE) — the foundation model powering everything
-- [audio.cpp / GGUF quantization](https://github.com/ggml-org/ggml), [RVC](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI), [faster-whisper](https://github.com/SYSTRAN/faster-whisper), [FunASR SenseVoice](https://github.com/modelscope/FunASR)
+- [audio.cpp](https://github.com/0xShug0/audio.cpp) — the local GGUF inference engine ([official YuE2 GGUFs & LoRA adapters](https://huggingface.co/audio-cpp/Yue2-3B-GGUF)), [RVC](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI), [faster-whisper](https://github.com/SYSTRAN/faster-whisper), [FunASR SenseVoice](https://github.com/modelscope/FunASR)
 
 ## 📄 License
 
