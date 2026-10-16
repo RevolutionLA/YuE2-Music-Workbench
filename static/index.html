@@ -5378,12 +5378,34 @@ async function resumeRunningJob() {
     const j = await (await fetch("/api/generate/current")).json();
     const job = j.job;
     if (job && job.status === "running") {
-      // 刷新后把运行中任务的创作参数回填到表单，与页面所见一致
-      pushLyricUndo("刷新时回填正在生成的那一首");   // 这条路最凶：它不问任何人，每次刷新都会盖掉框里的词
-      $("style").value = job.style || "";
-      $("lyrics").value = stripMachineOutro(job.lyrics);
-      $("cot").value = job.cot || "full";
-      $("abc").value = job.abc || "";
+      // 刷新后让表单与"正在跑的那一首"对得上 —— 但**只填空白的格子**。
+      // 以前这里是无条件覆写：用户刷新前正在写的歌词、刚挑好的档位，
+      // 会被运行中那一首的参数整段盖掉（旧注释自己都写着"这条路最凶：
+      // 它不问任何人，每次刷新都会盖掉框里的词"）。运行中任务长什么样，
+      // 该由进度条与 ⑪ 去说，不该拿它去覆写用户的输入。
+      const fillIfEmpty = (el, v) => {
+        if (!el || (el.value || "").trim()) return false;
+        el.value = v || "";
+        return true;
+      };
+      const filled = [];
+      if (fillIfEmpty($("style"), job.style)) filled.push("曲风");
+      const haveLyrics = String((($("lyrics") || {}).value) || "").trim();
+      if (haveLyrics) {
+        // 用户已经有词：一个字都不动，只把"在跑的那首用的不是这个"说清楚
+        if (String(job.lyrics || "").replace(/\s+/g, "") &&
+            stripMachineOutro(job.lyrics).trim() !== $("lyrics").value.trim())
+          filled.push("歌词保持你写的（在跑那首用的是另一份）");
+      } else if (fillIfEmpty($("lyrics"), stripMachineOutro(job.lyrics))) {
+        pushLyricUndo("刷新时回填正在生成的那一首");
+        filled.push("歌词");
+      }
+      if (fillIfEmpty($("abc"), job.abc)) filled.push("乐谱");
+      // 档位是 <select>，永远有值，"只填空白"对它没有意义 —— 干脆一律不动：
+      // 刷新后保留用户自己的选择，在跑那一首实际用了哪一档由进度条与 ⑪ 的说明去讲。
+      if (job.cot && ($("cot") || {}).value && job.cot !== $("cot").value)
+        filled.push("档位仍是你选的 " + $("cot").value + "（在跑那首用的是 " + job.cot + "）");
+      if (filled.length) $("status").textContent = "接着显示在跑的那一首：" + filled.join("、");
       // 从 style 中反解歌手性别（提交时 styleWithGender 会把性别拼进 style 尾部）
       const gm = (job.style || "").match(/clear\s+(female|male)\s+vocal/i);
       if (gm) $("gender").value = "clear " + gm[1].toLowerCase() + " vocal";
@@ -5941,6 +5963,7 @@ async function renderHistory(fetchLimit) {
           <div class="h-title">${escapeHtml(title)}${kindTag}</div>
           ${h.ts || h.id ? '<div class="h-sub">' + [h.ts ? timeAgo(h.ts) : "", idTag(h.id)].filter(Boolean).join(" ") + '</div>' : ''}
           ${h.status === "error" && h.error ? `<div class="h-sub h-errline" style="color:var(--err); cursor:pointer;" data-err title="点击展开/收起完整错误">⚠ ${escapeHtml(String(h.error).slice(0, 120))}${String(h.error).length > 120 ? " …（点击查看全部）" : ""}</div>` : ""}
+          ${h.cot_note ? `<div class="h-sub" style="color:var(--muted);" title="服务端在送引擎前对你提交的内容做的调整（当时只在屏幕上弹了 3.6 秒，这里才是能查的地方）">🛈 ${escapeHtml(String(h.cot_note).slice(0, 120))}</div>` : ""}
         </div>
         <div class="h-col h-col-st" style="color:${stColor};">${stTxt}</div>
         <div class="h-col">
@@ -8276,6 +8299,7 @@ const SYS_LABEL = {
   "gpu.mode": "引擎模式", "gpu.total_mb": "显存总量", "gpu.free_mb": "显存空闲",
   "gpu.used_mb": "显存已用", "gpu.headroom_mb": "显存留白", "gpu.query_failed": "显存查询",
   "engines.audiocpp_alive": "音频引擎在线", "engines.vocal_separation_ready": "人声分离可用",
+  "engines.loaded_main": "当前主模型", "engines.loaded_vae": "当前 vae",
   "engines.sheetsage2_ready": "SheetSage2 权重",
   "engines.ai_workbench.ready": "AI 工作台就绪", "engines.ai_workbench.key_configured": "对话模型密钥",
   "engines.ai_workbench.runner_exists": "dsh 启动脚本", "engines.ai_workbench.model": "对话模型",

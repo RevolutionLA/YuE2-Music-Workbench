@@ -721,6 +721,13 @@ def system_info():
                 "query_failed": vram_total is None and vram_free is None},
         "engines": {
             "audiocpp_alive": _audiocpp_alive(),
+            # 现在到底加载着哪一套权重。vae 那一栏会写清是"同目录"还是"公共退回"——
+            # 退回公共 vae 等于换了配对，出图的音质与显存峰值都可能不同，
+            # 以前这件事在 ⑬ 完全查不到（切换消息里也只报主模型名）。
+            "loaded_main": _engine_state_read().get("loaded_main", ""),
+            "loaded_vae": (_engine_state_read().get("loaded_vae", "")
+                           + ("" if not _engine_state_read().get("loaded_vae")
+                              else "（" + _engine_state_read().get("loaded_vae_from", "") + "）")),
             "vocal_separation_ready": _sep_available()[0],
             "sheetsage2_ready": _sheetsage_ready(),
             "ai_workbench": _ai_ready(),
@@ -883,19 +890,33 @@ def _resolve_cot(cot: str, abc: str) -> tuple[str, str]:
     另外 cot=off 带谱会被引擎判 400（"external ABC requires cot=melody or cot=full"）。
     """
     mode = str(cot or "").strip().lower()
-    mode = mode if mode in ("full", "melody", "off") else "full"
+    # 以前这里"不认识就当 full"，一声不吭。空值确实该按默认走（前端两条路都会显式带
+    # cot，所以空值只可能来自直接调 API 或旧数据），但**替用户改了选择就得说**：
+    # 静默兜底会让人以为引擎按自己给的那个档位跑了。
+    note = ""
+    if mode not in ("full", "melody", "off"):
+        note = ("规划 CoT 收到无法识别的值 %r，已按默认 full 处理"
+                % (str(cot or "")[:16],)) if mode else ""
+        mode = "full"
     if not (abc or "").strip():
-        return mode, ""
+        return mode, note
     want = "full" if _abc_has_chords(abc) else "melody"
     if mode == want:
-        return mode, ""
+        return mode, note
+    # 三条纠正分支都要把上面那条"值不认识"的说明带上：两件事同时发生时，
+    # 只报一条等于把另一半藏起来（note 为空时拼接结果不变，不影响常见路径）。
+    def _with(extra):
+        return mode_out, ((note + "；" + extra) if note else extra)
     if mode == "off":
-        return want, f"已填写乐谱，off 不消费乐谱，已改为 {want}（按你的乐谱生成）"
+        mode_out = want
+        return _with(f"已填写乐谱，off 不消费乐谱，已改为 {want}（按你的乐谱生成）")
     if want == "melody":
-        return "melody", ("乐谱里没有和弦记号，已改用 melody 路线按谱生成"
-                          "（full 要吃旋律+和弦谱，口径不符谱面条件会走偏）")
-    return "full", ("乐谱带和弦记号，已改用 full 路线按谱生成"
-                    "（melody 不会自动删掉和弦记号，口径不符谱面条件会走偏）")
+        mode_out = "melody"
+        return _with("乐谱里没有和弦记号，已改用 melody 路线按谱生成"
+                     "（full 要吃旋律+和弦谱，口径不符谱面条件会走偏）")
+    mode_out = "full"
+    return _with("乐谱带和弦记号，已改用 full 路线按谱生成"
+                 "（melody 不会自动删掉和弦记号，口径不符谱面条件会走偏）")
 
 
 def _abc_analyze(abc: str) -> dict:
@@ -1381,8 +1402,11 @@ def _unified_task(m: dict, kind: str) -> dict:
     if err:
         out["error"] = err[:500]
     # 页面要按这些字段画下载/播放按钮与位次提示：缺一个就要多打一次详情接口
+    # cot_note：服务端替用户改写档位/节奏/收尾段的原因。以前它只活在前端一条
+    # 3.6 秒的 toast 里，⑪ 与队列卡都查不到，事后无从追查"当时为什么换了档"。
     for k in ("sec", "queue_pos", "assets", "file", "model", "name_cn",
-              "epoch", "epochs_total", "src_name", "bytes", "strip_harmony"):
+              "epoch", "epochs_total", "src_name", "bytes", "strip_harmony",
+              "cot_note"):
         if m.get(k) not in (None, "", {}, []):
             out[k] = m[k]
     return out
@@ -1670,10 +1694,15 @@ def models_switch(payload: dict):
     model_gguf = target.name
     vae = (payload.get("vae") or "").strip().replace("\\", "/")
     vae = Path(vae).name if vae else None
+    # ★ vae_from 记录这套 vae 到底是"跟主模型同目录的那一份"还是"退回的公共 vae"。
+    #   退回公共 vae 是配对的改变：主模型是 Q4 而公共 vae 是 f16，出图的音质/显存峰值
+    #   都受影响，以前这件事只在切换成功的一句话里完全不出现，任务记录里也查不到。
+    vae_from = "同目录"
     if not vae:
         vae = next((p.name for p in target.parent.glob("*vae*.gguf")), None)
     if not vae or not (target.parent / vae).is_file():
         # 模型目录内没有 vae 时，退回 cpp/model 根的公共 vae（同目录文件用纯文件名）
+        vae_from = "公共退回"
         if (target.parent / "yue2-vae-f16.gguf").is_file():
             vae = "yue2-vae-f16.gguf"
         elif (MODEL_DIR / "yue2-vae-f16.gguf").is_file():
@@ -1696,10 +1725,21 @@ def models_switch(payload: dict):
     _write_server_json(cfg)
     # 重启后端加载新模型
     _restart_audiocpp(str(SERVER_JSON))
+    _engine_state_write({
+        "loaded_main": model_gguf,
+        "loaded_vae": vae,
+        "loaded_vae_from": vae_from,
+        "loaded_path": rel,
+    })
+    msg = f"已切换到 {model_gguf}，后端已重启加载。vae：{vae}（{vae_from}）"
+    if vae_from != "同目录":
+        msg += " —— 该模型目录里没有配套 vae，用的是公共那一份，音质与显存峰值可能与配对版本不同"
     return {
         "ok": True,
-        "message": f"已切换到 {model_gguf}，后端已重启加载。",
+        "message": msg,
         "path": rel,
+        "vae": vae,
+        "vae_from": vae_from,
     }
 
 
@@ -2501,6 +2541,11 @@ async def generate_start(payload: dict):
             "style": style[:_MAX_STYLE],
             "lyrics": str(payload.get("lyrics") or "")[:_MAX_LYRICS],
             "cot": payload.get("cot", "full"),
+            # ★ 把"为什么这一首的档位/节奏和你提交的不一样"一起存进记录。
+            #   以前这个说明只活在前端一条 3.6 秒的 toast 里，任务记录、队列卡、
+            #   ⑪ 任务管理都查不到 —— 过十分钟回来只听出一首节奏不对，
+            #   根本无从知道当时服务端替自己改过什么。
+            "cot_note": str(cot_note or "")[:400],
             "abc": str(payload.get("abc") or "")[:_MAX_ABC],
             "task_name": str(payload.get("task_name") or "").strip()[:100],
             "model": payload.get("model", "yue2"),
@@ -2839,6 +2884,9 @@ def _batch_run_worker() -> None:
                     },
                     "batch": True,
                     "batch_name": nxt.get("name", ""),
+                    # ★ 入队时算出来的那条说明以前只留在队列状态文件里，跑完写产物 meta
+                    #   就断了 —— 队列卡上看不见、⑪ 里也查不到，等于"改过档但没留痕"。
+                    "cot_note": str(nxt.get("cot_note") or "")[:400],
                 }
                 _output_write_meta(job)
                 _gen_set_job(job)
@@ -2920,13 +2968,22 @@ def batch_start(payload: dict):
         _limit_text(f"第 {i} 个任务的乐谱", t.get("abc"), _MAX_ABC)
         rid = _new_id()
         abc_t = str(t.get("abc") or "")[:_MAX_ABC]
-        # 同单首生成：缺省仍是 off（批量以快为先），但只要带了谱就不能让谱子落空
-        cot_t, cot_note = _resolve_cot(str(t.get("cot") or "off"), abc_t)
+        # ★ 缺省档位必须与单首生成一致（full）。以前这里写 "off"、注释还写着
+        #   "批量以快为先" —— 那等于同一份不带 cot 字段的请求，点「生成歌曲」走 full、
+        #   点「加入队列」走 off，出的是两种完全不同的编曲。快慢不该由入口偷偷决定，
+        #   要快请在页面上把档位选成 off（前端两条路都会显式带 cot，改这里不影响 UI 行为）。
+        cot_t, cot_note = _resolve_cot(str(t.get("cot") or "full"), abc_t)
         # 与单首生成同一道防线：歌词缺收尾结构时补 [Outro]，防尾声幻觉说话声。
         # 同样只取提示语、不改存盘的 lyrics（追加在 _gen_run 送引擎之前）。
         _, ending_note = _ensure_song_ending(lyrics)
         if ending_note:
             cot_note = (cot_note + "；" + ending_note) if cot_note else ending_note
+        # ★ 与单首生成**同一条**"节奏以乐谱为准"：style 里写了 BPM/拍号、谱里也有 Q:/M: 时
+        #   要剥掉 style 那份，否则同一个请求走"生成歌曲"和走"加入队列"会得到不同的 style，
+        #   引擎里两路谁赢不确定 —— 用户看到的就是"同样参数，连发出的歌节奏不一样"。
+        style, tempo_note = _style_yield_to_abc(style, abc_t)
+        if tempo_note:
+            cot_note = (cot_note + "；" + tempo_note) if cot_note else tempo_note
         items.append({
             "id": rid,
             "qid": qid,
@@ -5405,9 +5462,14 @@ async def rvc_convert(
     task_name: str = Form(""),
     pitch: int = Form(0),
     f0_method: str = Form("rmvpe"),
-    index_rate: float = Form(0.75),
-    protect: float = Form(0.33),
-    rms_mix_rate: float = Form(1.0),
+    # ★ 这三个缺省必须是 None，不能写死数值：_rvc_convert_params 里那套缺省
+    #   （index_rate 0.5、rms_mix_rate 0.25）是评审后改过的（上游 0.75 检索优先会让
+    #   音质不如分离干声、1.0 是早期版本的音量对齐）。Form 一旦自带 0.75/1.0，
+    #   用户没填的字段就被 multipart 先填成旧值，闸门里"没填才用缺省"的判断永远轮不到
+    #   —— 于是 JSON 入口拿到 0.5/0.25、上传入口拿到 0.75/1.0，同一份输入两套结果。
+    index_rate: float | None = Form(None),
+    protect: float | None = Form(None),
+    rms_mix_rate: float | None = Form(None),
     separate_vocal: str = Form("auto"),
     gate: str = Form("on"),
     strip_harmony: str = Form("off"),
