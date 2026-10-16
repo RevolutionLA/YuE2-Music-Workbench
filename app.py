@@ -395,7 +395,8 @@ def _engine_config_report() -> dict:
     说假话的代价是"配对配错了"这种事实永远看不见（Q8 权重压在 6GB 卡上就是这一类）。
     """
     out = {"main": "", "main_path": "", "main_exists": False,
-           "vae": "", "vae_from": "", "vae_exists": False}
+           "vae": "", "vae_from": "", "vae_exists": False,
+           "ar_lora": "", "nar_lora": ""}
     try:
         cfg = _read_server_json()
         entry = (cfg.get("models") or [{}])[0]
@@ -420,6 +421,9 @@ def _engine_config_report() -> dict:
                 out["vae_from"], out["vae_exists"] = "公共退回", True
             else:
                 out["vae_from"] = "磁盘上没有"
+        # LoRA 也一样：挂着的是哪两个，看配置，不看"上次切换写下的值"
+        out["ar_lora"] = Path(str(so.get("yue2.ar_lora") or "")).name
+        out["nar_lora"] = Path(str(so.get("yue2.nar_lora") or "")).name
     except Exception:
         pass
     return out
@@ -447,6 +451,13 @@ def _loaded_vae_label() -> str:
     if conf["vae"] and not conf["vae_exists"]:
         return f"{name}（⚠ 磁盘上没有这份 vae）"
     return f"{name}（{conf['vae_from'] or '来源未知'}）"
+
+
+def _loaded_lora_label() -> str:
+    """⑬：现在挂着哪两个 LoRA。没挂就明说"未挂载"，别留一行空白让人猜。"""
+    conf = _engine_config_report()
+    parts = [f"{k} {v}" for k, v in (("AR", conf["ar_lora"]), ("NAR", conf["nar_lora"])) if v]
+    return " ＋ ".join(parts) if parts else "未挂载"
 
 
 def backend_mode() -> str:
@@ -795,6 +806,7 @@ def system_info():
             #   本轮评审实测到状态文件里写着 yue2-q4.gguf，而 cpp/model 下没有这个文件。
             "loaded_main": _loaded_main_label(),
             "loaded_vae": _loaded_vae_label(),
+            "loaded_lora": _loaded_lora_label(),
             "vocal_separation_ready": _sep_available()[0],
             "sheetsage2_ready": _sheetsage_ready(),
             "ai_workbench": _ai_ready(),
@@ -1831,6 +1843,123 @@ def models_switch(payload: dict):
         "vae": vae,
         "vae_from": vae_from,
     }
+
+
+# --------------------------------------------------------------------------- #
+# LoRA 适配器：audio.cpp 从 v0.8.1 起支持 YuE2 的 AR/NAR 双适配器（本机内核已升到 v0.9.2）
+#
+# 契约不是猜的，读的是包里自带的 model_specs/yue2.json：session 侧 `yue2.ar_lora` /
+# `yue2.nar_lora` 各指一个 **unfused** safetensors，另有 `*_lora_scale`（默认 1.0，置 0 才关）。
+# 两条实测教训写在这里：① 适配器挂上后**恒生效**，style 里的触发词只是把文本条件往该语料靠，
+# 不是开关；② 格式必须对——拿 ComfyUI/peft 那份挂上去，引擎在生成时才报
+# "Unsupported yue2.ar_lora tensor (use the matching unfused adapter, not ComfyUI weights)"，
+# 所以这里既不做格式假装校验，也绝不假装"挂上就等于能用"，一切以引擎回包为准。
+# 这是能改引擎配置文件的写入口，所以只收文件名：绝对路径与 ".." 一律先废掉。
+# --------------------------------------------------------------------------- #
+LORA_DIR = ROOT / "cpp" / "lora"
+
+
+def _lora_role(name: str) -> str:
+    """文件名里能看出它是 AR 段还是 NAR 段就标出来，纯给界面少让人猜。"""
+    n = name.lower()
+    if "nar" in n:
+        return "nar"
+    if re.search(r"(^|[^n])ar([^a-z]|$)", n) or "_ar_" in n:
+        return "ar"
+    return ""
+
+
+def available_loras() -> list[dict]:
+    """cpp/lora 下可挂的适配器（只认 .safetensors，体积给界面提示用）。"""
+    if not LORA_DIR.is_dir():
+        return []
+    return [{"file": f.name,
+             "size_mb": round(f.stat().st_size / 1048576, 1),
+             "role": _lora_role(f.name)}
+            for f in sorted(LORA_DIR.glob("*.safetensors"))]
+
+
+def _lora_target(value, label: str) -> tuple[str, Path | None]:
+    """把界面传来的适配器名解析成 LORA_DIR 内的绝对路径。空值=卸下；越界/缺文件报错。"""
+    name = Path(str(value or "").strip().replace("\\", "/")).name
+    if not name or name.lower() in ("none", "无"):
+        return "", None
+    if not name.endswith(".safetensors"):
+        raise HTTPException(status_code=400, detail=f"{label} 必须是 .safetensors 适配器文件")
+    target = (LORA_DIR / name).resolve()
+    try:
+        target.relative_to(LORA_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{label} 路径必须位于 cpp/lora/ 内")
+    if not target.is_file():
+        raise HTTPException(status_code=404,
+                            detail=f"{label} 不存在：{name}（先把适配器放进 cpp/lora/ 再刷新）")
+    return name, target
+
+
+def _lora_scale(value) -> float:
+    try:
+        s = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    return min(2.0, max(0.0, s))
+
+
+def _lora_session_options(cfg: dict, ar: Path | None, nar: Path | None,
+                          ar_scale: float, nar_scale: float) -> dict:
+    """写 session_options：卸下就是把键删掉——留一个空串会让引擎去找 ""。"""
+    entry = (cfg.get("models") or [{}])[0]
+    so = entry.setdefault("session_options", {})
+    plan = {"yue2.ar_lora": str(ar) if ar else None,
+            "yue2.nar_lora": str(nar) if nar else None,
+            "yue2.ar_lora_scale": ar_scale if ar else None,
+            "yue2.nar_lora_scale": nar_scale if nar else None}
+    for key, val in plan.items():
+        if val is None:
+            so.pop(key, None)
+        else:
+            so[key] = val
+    return so
+
+
+@router.get("/models/loras")
+def models_loras():
+    """⑫ 的适配器下拉框数据源：可挂清单 + 当前挂着的那两个（读 server.json，不读自述）。"""
+    entry = (_read_server_json().get("models") or [{}])[0]
+    so = entry.get("session_options") or {}
+    try:
+        shown_dir = LORA_DIR.relative_to(ROOT).as_posix()
+    except ValueError:
+        shown_dir = str(LORA_DIR)      # 目录被搬到别处也不该让这个只读接口 500
+    return {"items": available_loras(),
+            "ar": Path(str(so.get("yue2.ar_lora") or "")).name,
+            "nar": Path(str(so.get("yue2.nar_lora") or "")).name,
+            "ar_scale": so.get("yue2.ar_lora_scale", 1.0),
+            "nar_scale": so.get("yue2.nar_lora_scale", 1.0),
+            "dir": shown_dir}
+
+
+@router.post("/models/lora")
+def models_lora_set(payload: dict):
+    """挂上/卸下 LoRA 适配器并重启引擎——session_options 改了不重启是不生效的。"""
+    ar_name, ar = _lora_target(payload.get("ar"), "AR 适配器")
+    nar_name, nar = _lora_target(payload.get("nar"), "NAR 适配器")
+    ar_scale = _lora_scale(payload.get("ar_scale"))
+    nar_scale = _lora_scale(payload.get("nar_scale"))
+    cfg = _read_server_json()
+    _lora_session_options(cfg, ar, nar, ar_scale, nar_scale)
+    _write_server_json(cfg)
+    _restart_audiocpp(str(SERVER_JSON))
+    _engine_state_write({"loaded_ar_lora": ar_name, "loaded_nar_lora": nar_name})
+    if ar_name or nar_name:
+        msg = (f"已挂载 AR={ar_name or '无'} NAR={nar_name or '无'}"
+               f"（强度 {ar_scale:g}/{nar_scale:g}），引擎已重启。"
+               "注意：挂上后对**每一次生成**都生效，style 里的触发词只是引导，不是开关；"
+               "格式不对时引擎会在生成时报错，那就卸下再试。")
+    else:
+        msg = "已卸下全部 LoRA 适配器，引擎已重启，回到裸模型。"
+    return {"ok": True, "message": msg, "ar": ar_name, "nar": nar_name,
+            "ar_scale": ar_scale, "nar_scale": nar_scale}
 
 
 # --------------------------------------------------------------------------- #

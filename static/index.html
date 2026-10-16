@@ -2711,6 +2711,26 @@ We will sing beyond the night</textarea>
         <select id="modelSel" class="model-select"></select>
         <div class="hint-xs" id="modelHint"></div>
 
+        <!-- LoRA 适配器（audio.cpp v0.8.1+；本机内核 v0.9.2）。
+             放在 ⑫ 而不是 ②⑤：它是**引擎级**配置，改一次对之后每一次生成都生效，
+             不是某一首歌的参数——按本页规矩，绝不把它塞进别的页。 -->
+        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2v12M3 5l5 3 5-3M3 11l5 3 5-3"/></svg>LoRA 适配器</div>
+        <div class="hint-xs" id="loraIntro">未放文件时这里只会显示"0 个可用"——把 <b>unfused</b> 的 <code>.safetensors</code> 放进 <code>cpp/lora/</code>（<b>不要</b> <code>_comfyui</code> 那种融合版），再点「重新扫描」。</div>
+        <label for="loraAr">AR 段（管谱与语义规划）</label>
+        <select id="loraAr" class="model-select"></select>
+        <label for="loraArScale" class="hint-xs" style="margin-top:6px;">AR 强度 <span id="loraArScaleVal">1.0</span>（0 = 关闭该适配器）</label>
+        <input id="loraArScale" type="range" min="0" max="2" step="0.05" value="1" />
+        <label for="loraNar" style="margin-top:10px;">NAR 段（管声学渲染，含 tokenizer 替换）</label>
+        <select id="loraNar" class="model-select"></select>
+        <label for="loraNarScale" class="hint-xs" style="margin-top:6px;">NAR 强度 <span id="loraNarScaleVal">1.0</span>（0 连替换一起关）</label>
+        <input id="loraNarScale" type="range" min="0" max="2" step="0.05" value="1" />
+        <div class="btn-row" style="margin-top:10px;">
+          <button id="loraApply" class="primary">挂载并重启引擎</button>
+          <button id="loraClear" class="ghost">卸下全部</button>
+          <button id="loraScan" class="ghost">重新扫描</button>
+        </div>
+        <div class="lint" id="loraStatus"></div>
+
         <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5.5 6.5h5M5.5 9.5h3"/></svg>引擎模式</div>
         <div class="foot-row" id="modeRow" style="display:none;">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5.5 6.5h5M5.5 9.5h3"/></svg>
@@ -3464,6 +3484,8 @@ function switchTab(name) {
     if (typeof refreshHealth === "function") refreshHealth();
     if (typeof refreshModelVerify === "function") refreshModelVerify();
     if (typeof loadModels === "function") loadModels();
+    // LoRA 清单只在进 ⑫ 时读：cpp/lora 是目录扫描，放启动路径上只会让首屏多等一次 IO
+    if (typeof loadLoras === "function") loadLoras(true);
   }
   // ⑬ 关于：进页面刷新系统信息（独立页，只放只读信息）
   if (name === "about" && typeof loadSysInfo === "function") loadSysInfo();
@@ -5097,6 +5119,72 @@ $("modelSel").onchange = async () => {
     $("modelSel").dataset.last = "";
   } finally { $("modelSel").disabled = false; }
 };
+
+// ---------- ⑫ LoRA 适配器 ----------
+// 这是**引擎级**配置（写在 server.json 的 session_options 里），改一次对之后每一次生成都生效，
+// 所以它待在 ⑫，不进 ②⑤ 的表单、也不参与任何跨页回填。
+// 契约来自 audio.cpp 自带的 docs/models/yue2.md：unfused 的 A/B 文件，_comfyui 那种融合版引擎会拒；
+// 换适配器要开新 session（我们直接重启引擎，最省事也最不容易留半新半旧的状态）。
+async function loadLoras(silent) {
+  const arSel = $("loraAr"), narSel = $("loraNar");
+  if (!arSel || !narSel) return;
+  const keepAr = arSel.value, keepNar = narSel.value;
+  try {
+    const j = await (await jfetch("/api/models/loras")).json();
+    const items = j.items || [];
+    const fill = (sel, want, role) => {
+      sel.innerHTML = "";
+      const o0 = document.createElement("option");
+      o0.value = "";
+      o0.textContent = items.length ? "— 不挂（裸模型）—" : "— cpp/lora 里没有 .safetensors —";
+      sel.appendChild(o0);
+      items.forEach(it => {
+        const o = document.createElement("option");
+        o.value = it.file;
+        o.textContent = it.file.replace(/\.safetensors$/i, "") + " · " + it.size_mb + "MB"
+          + (it.role && it.role !== role ? "（文件名看着像 " + it.role.toUpperCase() + " 段）" : "");
+        sel.appendChild(o);
+      });
+      if (want && [...sel.options].some(o => o.value === want)) sel.value = want;
+    };
+    fill(arSel, keepAr || j.ar, "ar");
+    fill(narSel, keepNar || j.nar, "nar");
+    if (j.ar_scale !== undefined) { $("loraArScale").value = String(j.ar_scale); $("loraArScaleVal").textContent = String(j.ar_scale); }
+    if (j.nar_scale !== undefined) { $("loraNarScale").value = String(j.nar_scale); $("loraNarScaleVal").textContent = String(j.nar_scale); }
+    if (!silent) {
+      statusSay((j.ar || j.nar)
+        ? "当前挂着：" + [j.ar ? "AR " + j.ar : "", j.nar ? "NAR " + j.nar : ""].filter(Boolean).join(" ＋ ")
+        : "LoRA：未挂载（裸模型）。可用适配器 " + items.length + " 个。", "");
+    }
+  } catch (err) {
+    statusSay("读取 LoRA 清单失败：" + friendlyErr(err), "err");
+  }
+}
+async function pushLora(body) {
+  const btns = [$("loraApply"), $("loraClear")];
+  btns.forEach(b => { if (b) b.disabled = true; });
+  statusSay("正在改适配器并重启音频引擎…（模型较大时需 1-2 分钟）", "");
+  try {
+    const r = await jfetch("/api/models/lora", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.detail || ("HTTP " + r.status));
+    statusSay(j.message || "适配器已更新", "ok");
+    toast(j.message || "适配器已更新", "ok");
+    setTimeout(() => loadLoras(true), 1000);
+    setTimeout(refreshHealth, 5000);
+  } catch (err) {
+    statusSay("LoRA 操作失败：" + friendlyErr(err) + "（引擎状态未确认，必要时点「重新扫描」核对）", "err");
+  } finally { btns.forEach(b => { if (b) b.disabled = false; }); }
+}
+if ($("loraApply")) {
+  $("loraApply").onclick = () => pushLora({
+    ar: $("loraAr").value, nar: $("loraNar").value,
+    ar_scale: Number($("loraArScale").value), nar_scale: Number($("loraNarScale").value) });
+  $("loraClear").onclick = () => pushLora({ ar: "", nar: "" });
+  $("loraScan").onclick = () => loadLoras();
+  $("loraArScale").oninput = e => { $("loraArScaleVal").textContent = e.target.value; };
+  $("loraNarScale").oninput = e => { $("loraNarScaleVal").textContent = e.target.value; };
+}
 
 // ---------- audio player ----------
 function loadAudio(blob, name, taskName) {
@@ -8315,6 +8403,7 @@ const SYS_LABEL = {
   "gpu.used_mb": "显存已用", "gpu.headroom_mb": "显存留白", "gpu.query_failed": "显存查询",
   "engines.audiocpp_alive": "音频引擎在线", "engines.vocal_separation_ready": "人声分离可用",
   "engines.loaded_main": "当前主模型", "engines.loaded_vae": "当前 vae",
+  "engines.loaded_lora": "当前 LoRA",
   "engines.sheetsage2_ready": "SheetSage2 权重",
   "engines.ai_workbench.ready": "AI 工作台就绪", "engines.ai_workbench.key_configured": "对话模型密钥",
   "engines.ai_workbench.runner_exists": "dsh 启动脚本", "engines.ai_workbench.model": "对话模型",

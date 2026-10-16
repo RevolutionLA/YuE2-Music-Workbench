@@ -9,6 +9,50 @@
 版本的唯一真源是 git 的**附注标签**（`git tag -l -n`），本文件是给人看的说明；
 宣传文案里要写的版本号从本文件顶部条目取，不在别处另记一份数字（`app.py:_version_from_changelog()` 读本文件首条）。
 
+## [v10.17.0] - 2026-10-17
+
+来源：用户「继续完成开发和测试」——把 v0.9.2 内核换来的 LoRA 能力接进工作台。
+
+### ⑫ 新增「LoRA 适配器」一节：挂、卸、调强度、重扫描
+后端两个端点（`app.py:1925` 的 `GET /api/models/loras` 与 `app.py:1942` 的 `POST /api/models/lora`）：
+前者列 `cpp/lora/*.safetensors` 并按文件名标出它像 AR 还是 NAR 段，后者写 `session_options`
+（`yue2.ar_lora` / `yue2.nar_lora` + 两个 `*_lora_scale`）并**重启引擎**——契约是
+"改适配器要开新 session"，不重启就是假生效。卸下是**删键**而不是写空串：留 `""` 会让引擎去找
+一个空文件名的适配器。
+界面放在 ⑫ 而不是 ②⑤：它是引擎级配置，挂上后对之后**每一次**生成都生效，不属于某一首歌的参数。
+这条按页面的硬规矩还专门写了断言守着（生成出口里不许出现 lora 字样）。
+
+### 真机验证：不是"接口通了"，是"听出来变了"
+同一条极小请求（同种子 777、`cot=full`、固定 token 预算）打引擎三次：
+- 裸模型 → SHA256 `b7e8ea5690c02ed0…`，21 秒；
+- 挂上 `ar_lora_inst_v3abc.bf16` + `nar_lora_joint_v4.bf16` → SHA256 变成 `d49695a83c8b0dd2…`，
+  **首次 295 秒、同 session 第二次 106 秒且两次逐字节一致**（合并权重按 session 缓存，
+  `BF16(W + BF16(scale·(B@A)))` 的合并在装载时做）；
+- 再卸下 → 回到 `b7e8ea5690c02ed0…`，与最初那份裸模型**逐字节相同**。
+所以三件事同时被证实：适配器真的进了生成、同 session 结果可复现、卸下是真卸下。
+**代价要说清**：挂 LoRA 后这条探针从 21 秒涨到 106 秒（首次 295 秒）——不是免费的。
+
+### 踩到并修掉的两个真问题
+1. **文件下错两次**：`audio-cpp/Yue2-3B-GGUF/lora/` 只有 README/SHA256SUMS/试听，适配器本体不在里面
+   ——HF 对不存在的 `resolve` 路径回 `200`（HEAD）而 GET 才吐 `Entry not found`，
+   我据此下了两个 15 字节的假文件。改读引擎自带 `docs/models/yue2.md` 后拿到正确出处
+   （`Mothersuperior/*` 两个仓的 **unfused** A/B 文件，`_comfyui` 融合版引擎明写不收）。
+2. **格式被引擎当面拒绝过**：先拿社区 peft/ComfyUI 形状那对挂上去，生成时报
+   `Unsupported yue2.ar_lora tensor: model.layers.0.mlp.down_proj.lora_A
+   （use the matching unfused adapter, not ComfyUI weights）`——
+   这是好事：说明开关生效、且引擎会在真正用的时候验货。也据此定下一条：
+   **工作台不做"格式像不像"的假装校验，一切以引擎回包为准**，UI 文案里写明"格式不对会报错就卸下再试"。
+3. `models_loras()` 里 `LORA_DIR.relative_to(ROOT)` 在目录被搬走时会 500（测试沙箱逼出来的），
+   已改成退回绝对路径显示。
+
+### 测试
+本标签上 **539 项**（v10.16.4 的 525 → 新增 `tests/test_lora_plumbing.py` 14 条；工作树 576 项）。
+14 条覆盖：只列 `.safetensors`、AR/NAR 角色判定（NAR 里含 "ar" 子串必须先判 nar，否则界面标反）、
+挂载写键并重启（**去掉重启这条就变红**，已做变异验证）、卸下删键、强度钳制在 0–2 且 0 必须保留、
+`..`/绝对路径/非 safetensors/缺文件各自怎么拒、缺文件的报错要说出目录、⑬ 的标签不许信 `engine_state`
+的自述、控件必须在 ⑫ 且生成出口不许出现 lora。全程在临时目录里跑，不碰本机 `server.json` 与引擎状态。
+
+
 ## [v10.16.4] - 2026-10-16
 
 来源：继续执行 1→4 的第 2、4 项。**第 2 项做完了；第 4 项的前提被证伪，如实记下来。**
