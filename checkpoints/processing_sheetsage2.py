@@ -12,6 +12,7 @@ from .tokenization_sheetsage2 import SheetSage2Tokenizer
 
 def _hf_relative_dependencies():
     # Keep standalone AutoProcessor loading compatible with Transformers 4.45.
+    from .chord_spelling_sheetsage2 import normalize_key_name
     from .durations_sheetsage2 import DURATION_TEMPLATES
     from .labels_sheetsage2 import STRUCTURE_LABELS
     from .schema_sheetsage2 import get_prompt_multitask_schema

@@ -32,6 +32,7 @@ BASE_CODE_HASHES = {
 def _hf_relative_dependencies():
     # Transformers 4.45 copies direct imports into a fresh local module cache.
     from .audio_sheetsage2 import load_audio
+    from .chord_spelling_sheetsage2 import normalize_key_name
     from .durations_sheetsage2 import DURATION_TEMPLATES
     from .exports_sheetsage2 import export_result
     from .io_sheetsage2 import atomic_write_text

@@ -5,6 +5,8 @@ import json
 import mir_eval.chord
 import numpy as np
 
+from .chord_spelling_sheetsage2 import normalize_key_name
+
 from .durations_sheetsage2 import DURATION_TEMPLATES, duration_boundaries
 from .labels_sheetsage2 import STRUCTURE_LABELS
 from .schema_sheetsage2 import get_prompt_multitask_schema
@@ -495,7 +497,7 @@ class SheetSage2Tokenizer:
         if field == "key":
             key_id = field_tokens[0] - self.key_token_start
             mode = "minor" if key_id >= 12 else "major"
-            return f"{CHROMATIC_SHARPS[key_id % 12]}:{mode}"
+            return normalize_key_name(f"{CHROMATIC_SHARPS[key_id % 12]}:{mode}")
         if field == "chord":
             if token_types[0] == "chord_majmin":
                 return self.majmin_chord_labels[
@@ -714,7 +716,8 @@ class SheetSage2Tokenizer:
         if token_type == "key":
             key_id = token - self.key_token_start
             mode = "minor" if key_id >= 12 else "major"
-            return f"<key_{CHROMATIC_SHARPS[key_id % 12]}:{mode}>"
+            label = normalize_key_name(f"{CHROMATIC_SHARPS[key_id % 12]}:{mode}")
+            return f"<key_{label}>"
         if token_type == "chord_majmin":
             return f"<chord_majmin_{self.majmin_chord_labels[token - self.majmin_chord_token_start]}>"
         if token_type == "chord_full":

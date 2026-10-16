@@ -1,4 +1,4 @@
-"""Lossless decoded events/LAB/MIDI, then independently validated ABC."""
+"""Raw decoded events, key-aware chord LAB, MIDI and validated ABC."""
 from pathlib import Path
 import json
 from fractions import Fraction
@@ -9,6 +9,7 @@ import pretty_midi
 from .notation_sheetsage2 import generate_abc_from_data
 from .io_sheetsage2 import atomic_write_text
 from .generation_sheetsage2 import field_text
+from .chord_spelling_sheetsage2 import correct_chord_rows, normalize_key_name
 from .midi_sheetsage2 import build_playback, midi_bytes
 
 
@@ -76,7 +77,7 @@ def export_result(decoded, tokenizer, output_dir=None, duration=None, paper=Fals
     Statistics retain their file-interface names. ``payload`` contains the
     in-memory ABC text, MIDI bytes, decoded event list, LAB texts and playback.
     melody_only removes chords from notation and playback without changing
-    decoded events or raw LAB annotations.
+    decoded events or the key-corrected LAB annotations.
     """
     if not isinstance(melody_only, bool):
         raise ValueError("melody_only must be True or False")
@@ -118,6 +119,10 @@ def export_result(decoded, tokenizer, output_dir=None, duration=None, paper=Fals
             for i, row in enumerate(rows):
                 row[1] = max(row[0], rows[i + 1][0]) if i + 1 < len(rows) else float(duration)
         intervals[field] = rows
+    intervals["key"] = [[start, end, normalize_key_name(key)]
+                        for start, end, key in intervals["key"]]
+    intervals["chord"] = correct_chord_rows(intervals["chord"], intervals["key"])
+    for field, rows in intervals.items():
         keep_rows(f"{field}.lab", rows)
     if paper:
         rows = []
@@ -154,6 +159,10 @@ def export_result(decoded, tokenizer, output_dir=None, duration=None, paper=Fals
         notation_intervals = {}
         for field, suffix in (("chord", "chords"), ("key", "keys"), ("structure", "structures")):
             rows = interval_rows(events, field, duration)
+            if field == "chord":
+                rows = correct_chord_rows(rows, interval_rows(events, "key", duration))
+            elif field == "key":
+                rows = [[start, end, normalize_key_name(key)] for start, end, key in rows]
             # Clip to the actual beat domain: events beyond it have no ABC bin.
             rows = [[max(abc_beats[0][0], a), min(abc_beats[-1][0], b), v]
                     for a, b, v in rows if b > abc_beats[0][0] and a < abc_beats[-1][0]]
