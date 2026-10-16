@@ -2966,30 +2966,6 @@ function numOrNull(id) {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
-// Style 文本框 = 提交真相；#gender / #bpm 是它的两个"外部真源"：
-// 提交前先把文本里的人声写法统一抹掉再拼上 #gender（装配台也会把人声写进文本，
-// 两处都写就必须有一个说了算 —— 下拉框说了算），BPM 同理覆盖文本里的 "N BPM"。
-function styleWithGender(raw) {
-  const gSel = $("gender");
-  const gender = ((gSel && gSel.value) || "").trim();
-  let style = (raw || "").replace(/,?\s*(expressive\s+)?(clear\s+)?(female|male)\s+(vocal|voice)/gi, "");
-  style = style.replace(/,?\s*(女声|男声)/g, "");
-  // 人声下拉的候选词全在 VOICES 里：换过一次性别后，文本里残留的另一条人声必须一起抹掉，
-  // 否则模型会同时收到"男女对唱"和"男声"两条互相打架的人声指令。
-  VOICES.forEach(([v]) => {
-    if (v) style = style.replace(new RegExp(",?\\s*" + escRe(v), "gi"), "");
-  });
-  style = style.replace(/,\s*,/g, ",").replace(/^,\s*|,+\s*$/g, "").trim();
-  // 手动 BPM 优先：覆盖 Style 里已有的 "N BPM" 描述（留空则用 Style 默认）。
-  // 全局替换：Style 若含多处 BPM（如 "88 BPM, 120 BPM"），全部清成同一值，避免后端收到歧义节奏。
-  const bpm = parseInt($("bpm") && $("bpm").value, 10);
-  if (bpm >= 40 && bpm <= 220) {
-    if (/\b\d+\s*BPM\b/i.test(style)) style = style.replace(/\b\d+\s*BPM\b/gi, bpm + " BPM");
-    else style += (style ? ", " : "") + bpm + " BPM";
-  }
-  if (gender) style = style ? (style + ", " + gender) : gender;
-  return style.replace(/,\s*$/, "").trim();
-}
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 }
@@ -4372,7 +4348,7 @@ function renderMyPresets() {
     const b = document.createElement("button");
     b.type = "button"; b.className = "chip mini";
     b.textContent = "★ " + (t.name || "未命名");
-    b.title = (t.style || "") + "\n存于 " + (t.created_at || "").slice(0, 16).replace("T", " ") + "\n点击回填（含歌词/参数）";
+    b.title = (t.style || "") + "\n存于 " + (t.created_at || "").slice(0, 16).replace("T", " ") + "\n点击回填这套配方（只动本页，不碰歌词/档位/乐谱）";
     b.onclick = () => restoreMyPreset(t);
     const x = document.createElement("button");
     x.type = "button"; x.className = "chip mini"; x.textContent = "✕";
@@ -4411,9 +4387,10 @@ function restoreMyPreset(t) {
   if ($("aGenre") && a.genre != null) $("aGenre").value = a.genre;
   if ($("aMore") && a.more != null) $("aMore").value = a.more;
   if ($("bpm") && a.bpm != null) $("bpm").value = a.bpm;
-  if ($("cot") && t.cot) setSel($("cot"), t.cot);
-  if ($("lyrics") && t.lyrics) { pushLyricUndo("载入预设「" + (t.name || t.id || "未命名") + "」"); $("lyrics").value = t.lyrics; }
-  if ($("abc") && t.abc != null) { $("abc").value = t.abc; analyzeAbcDebounced(); }
+  // 预设**不再**往别的页灌东西：以前这三行会改 ②⑤ 的档位、② 的歌词、③⑤ 的谱框，
+  // 用户在 ① 点一下"回填我的预设"，另一页的内容就被换掉了而且毫无线索（评审 F-3）。
+  // 一条曲风配方就是曲风配方——它只该由本页的六要素与那句 Style 组成。
+  // 老预设里存着的 lyrics/cot/abc 就此作废，不再被读取。
   renderFamTabs();
   renderPresetGrid();
   renderAllMulti();
@@ -4433,9 +4410,8 @@ async function saveMyPreset() {
     name,
     taskName: (($("taskName") || {}).value || "").trim(),
     style: ($("styleAsm") || {}).value.trim(),
-    lyrics: ($("lyrics") || {}).value,
-    cot: ($("cot") || {}).value,
-    abc: ($("abc") || {}).value,
+    // 不存 lyrics / cot / abc：那是 ②⑤ 与 ③⑤ 的输入，存进 ① 的预设里
+    // 就等于承认"一条曲风配方附带别人的歌词和档位"（评审 F-3）。
     gender: ($("gender") || {}).value,
     asm: { ...asmSnapshot() },
   };
@@ -4665,7 +4641,11 @@ function updateParamSummary() {
   const el = $("paramSum");
   if (!el) return;
   const cot = ($("cot") || {}).value || "full";
-  const hasAbc = !!((($("abc") || {}).value || "").trim());
+  // ★ 摘要要说"本页真实交出去的东西"。②⑤ 的提交永远不带谱（见 abcForSubmit），
+  //   而 #abc 是与 ③⑤ 共用的一块 DOM，切页时里面可能还留着上一首的谱——
+  //   照旧读它，这一行就会写"按谱走 melody"，实际交的却是空谱
+  //   （评审 F-5：和七里香事故同一个方向，界面向用户描述了一份并不存在的输入）。
+  const hasAbc = curTab === "scoreSing" && !!((($("abc") || {}).value || "").trim());
   const route = (hasAbc && lastAbcAnalysis && lastAbcAnalysis.cot_suggested) || "";
   const seedRaw = (($("seed") || {}).value || "-1").trim();
   const fixed = seedRaw !== "" && seedRaw !== "-1";
@@ -5406,9 +5386,9 @@ async function resumeRunningJob() {
       if (job.cot && ($("cot") || {}).value && job.cot !== $("cot").value)
         filled.push("档位仍是你选的 " + $("cot").value + "（在跑那首用的是 " + job.cot + "）");
       if (filled.length) $("status").textContent = "接着显示在跑的那一首：" + filled.join("、");
-      // 从 style 中反解歌手性别（提交时 styleWithGender 会把性别拼进 style 尾部）
-      const gm = (job.style || "").match(/clear\s+(female|male)\s+vocal/i);
-      if (gm) $("gender").value = "clear " + gm[1].toLowerCase() + " vocal";
+      // 这里**不再**从在跑那首的 style 里反解性别去写 ① 的 #gender：
+      // 那是把"另一页的控件"当成这一首的附属品来回写（评审 F-7），
+      // 而现在 ②⑤ 提交根本不读 #gender，反写只会让 ① 的下拉框莫名变一个值。
       // 外部改写 Style 后要重新判定"装配台 vs 手改"：运行中任务的文本不是装配台的产物，
       // 判成一致就会在下次点格子时被悄悄覆盖掉。
       if (typeof syncStyleFromOutside === "function") syncStyleFromOutside();
@@ -5420,8 +5400,17 @@ async function resumeRunningJob() {
       //   等于界面向用户撒了两次谎。现在只记下来给摘要行如实展示。
       if (p.seed !== undefined && p.seed !== null) runningSeedActual = p.seed;
       if (typeof updateParamSummary === "function") updateParamSummary();
-      if (p.cfg_scale !== undefined && p.cfg_scale !== null) $("cfg").value = p.cfg_scale;
-      if (p.num_inference_steps) $("steps").value = p.num_inference_steps;
+      // cfg / 步数与 seed 同罪：以前这里无条件把在跑那一首的参数写回输入框，
+      // 表单自动保存再存进 localStorage——用户下一首"自己的选择"其实是被上一首顶掉的，
+      // 界面上还显示成是他选的（评审 F-6）。改成只说不写，控件一律不动。
+      const pDiff = [];
+      if (p.cfg_scale !== undefined && p.cfg_scale !== null && String(p.cfg_scale) !== String($("cfg").value))
+        pDiff.push("cfg " + p.cfg_scale);
+      if (p.num_inference_steps && String(p.num_inference_steps) !== String($("steps").value))
+        pDiff.push(p.num_inference_steps + " 步");
+      if (pDiff.length)
+        $("status").textContent = (($("status").textContent || "").trim() ? $("status").textContent + "；" : "")
+          + "在跑那首用的是 " + pDiff.join(" / ") + "（你表单里的选择我没有动）";
       setGenerating(true);
       $("progress").classList.add("show");
       renderJobProgress(job);
@@ -5488,7 +5477,11 @@ function abcForSubmit() {
 $("go").onclick = async () => {
   // 送出的是用户自己写的那份词，收尾段由后端在送引擎前统一补（app.py: _gen_run）
   const lyrics = stripMachineOutro($("lyrics").value.trim());
-  const style = styleWithGender($("style").value.trim());
+  // ★ 这一页交的就是 #style 框里那一段，一个字不多一个字少。
+  //   以前这里过 styleWithGender()，会去读 ① 装配台上的 #gender/#bpm 并改写这句曲风——
+  //   那两个控件在本页根本不存在（它们在 #tab-style 里），用户看不见也改不了，
+  //   却在为"界面上没有的东西"买单（评审 F-2）。
+  const style = $("style").value.trim();
   if (!engineGate($("status"))) return;
   if (!lyrics || !$("style").value.trim()) {
     fieldProblem(!$("style").value.trim() ? $("style") : $("lyrics"), $("status"),
@@ -5536,9 +5529,9 @@ $("randSeed").onclick = () => { $("seed").value = String(Math.floor(Math.random(
 
 // 加入队列：复用批量队列 API，把创作页当前参数作为单任务排入队尾（不抢占正在生成的任务）
 $("queue").onclick = async () => {
-  // 与「生成歌曲」同一份口径：入队的也是用户自己写的那份词
+  // 与「生成歌曲」同一份口径：入队的也是用户自己写的那份词与那句曲风（见上面 F-2 的说明）
   const lyrics = stripMachineOutro($("lyrics").value.trim());
-  const style = styleWithGender($("style").value.trim());
+  const style = $("style").value.trim();
   if (!engineGate($("status"))) return;
   if (!lyrics || !$("style").value.trim()) {
     fieldProblem(!$("style").value.trim() ? $("style") : $("lyrics"), $("status"),
@@ -5609,7 +5602,15 @@ function analyzeAbcDebounced() {
   clearTimeout(abcAnalyzeTimer);
   abcAnalyzeTimer = setTimeout(async () => {
     const abc = $("abc").value.trim();
-    if (!abc) { $("abcAnalysis").textContent = ""; return; }
+    if (!abc) {
+      // 谱被清空时上一份分析结论要一起作废。以前只擦显示区，lastAbcAnalysis 还留着，
+      // 于是 ⑤ 进页会"重放"上一首歌的分析、② 的摘要跟着说"谱要 melody"——
+      // 而那首歌的谱早就不在了（评审 F-4）。
+      lastAbcAnalysis = null;
+      $("abcAnalysis").textContent = "";
+      updateParamSummary();
+      return;
+    }
     try {
       // POST body 规避 GET query 请求行上限（h11 16KB），中长乐谱也能安全分析
       const r = await fetch("/api/abc/analyze", {
@@ -5978,7 +5979,8 @@ async function renderHistory(fetchLimit) {
           ${h.status === "done" && !isTrain ? '<button class="ghost" data-dl title="下载 WAV">⬇ 下载</button>' : ''}
           ${h.status !== "pending" ? '<button class="ghost" data-more>⋯ 更多</button>' : ''}
           <div class="h-more" data-more-menu>
-            ${h.status === "running" && !isRvc && !isTrain ? '<button class="danger" data-stop>⏹ 终止</button><button class="ghost" data-restart>↻ 重启任务</button>' : ''}
+            ${h.status === "running" && !isRvc && !isTrain ? '<button class="danger" data-stop>⏹ 终止</button>' : ''}
+            ${h.isQueue && (h.status === "error" || h.status === "cancelled") ? '<button class="ghost" data-restart>↻ 重新排队这一条</button>' : ''}
             ${h.status === "done" && !isTrain && !isRvc ? '<button class="ghost" data-rvc>🎙 送去换声</button>' : ''}
             ${!isTrain && !isRvc && (h.lyrics || "").trim() ? '<button class="ghost" data-lyrics>⬇ LRC歌词</button>' : ''}
             ${!isTrain && !isRvc && (h.lyrics || "").trim() ? '<button class="ghost" data-elrc>⬇ 逐字 eLRC</button>' : ''}
@@ -6056,12 +6058,19 @@ async function renderHistory(fetchLimit) {
         e.stopPropagation();
         rsBtn.disabled = true;
         try {
-          // 先终止当前执行（只停正在算的这一条，不动队列），再把该条目复位为 pending 重新入队
-          await fetch("/api/generate/stop?scope=current", { method: "POST" }).catch(() => {});
+          // 不再"先终止再重排"：后端 batch_retry 在队列 running 时一律 409，
+          // 那次盲发的 /api/generate/stop?scope=current 掐的是**此刻正在算的那一条**，
+          // 未必是用户点的这一条，重排还照样失败（评审 B-4：破坏范围必须等于点击意图）。
+          // 按钮因此只出现在 error/cancelled 的条目上；要重跑在跑的那条，先按「⏹ 终止」，
+          // 它变成"已取消"后这个按钮自然出现。
           const r = await fetch("/api/batch/retry", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: h.id }) });
-          const j = await r.json();
-          if (!r.ok || !j.ok) throw new Error(j.detail || j.message || "重启失败");
-          toast("已重新入队：" + (h.task_name || h.id), "ok");
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok || !j.ok) {
+            throw new Error(r.status === 409
+              ? (j.detail || "队列还在跑别的，等这一队空出来再重排")
+              : (j.detail || j.message || "重启失败"));
+          }
+          toast("已重新排队：" + (h.task_name || h.id), "ok");
           renderHistory();
         } catch (err) { rsBtn.disabled = false; toast(friendlyErr(err), "err"); }
       };
@@ -6915,7 +6924,10 @@ $("rvcGo").onclick = async () => {
     if (!r.ok) throw new Error(d.detail || "提交失败");
     // 状态一律以服务端回包为准（排队 or 开跑），不在前端写死 running——
     // 写死会让第二条明明在排队也画出进度条，这正是"看起来在并行"的来源。
-    rvcJobs.unshift({ id: d.id, model, src_name: f.name,
+    // ★ src_name 也只能来自回包：走「服务器素材」时前端没有 File 对象，
+    //   原先这里读 f.name 会抛 TypeError，被 catch 报成"提交失败"——
+    //   而请求早在上一行已经成功入队、GPU 已经开始烧，用户于是再点一次。
+    rvcJobs.unshift({ id: d.id, model,
                       task_name: $("rvcTaskName").value.trim(), ...(d.job || {}) });
     renderRvcList();
     const ahead = Math.max(0, Number(d.position || 1) - 1);

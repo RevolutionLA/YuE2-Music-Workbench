@@ -397,6 +397,62 @@ class PageIndependence(unittest.TestCase):
             self.assertNotIn(bad, self.code,
                              "提交 payload 又直接读 #abc 了：② 会把 ③⑤ 的残留谱带进请求")
 
+    def test_per_page_task_strip_does_not_come_back(self):
+        """「本页任务」条已按用户要求整体收回，只留 ⑪ 一处总任务管理。
+
+        v10.13.0 给每页配了一条任务条，用户 2026-10-16 的判定是「都太丑了，去掉，
+        只留一个总的任务管理的页面」——实测它在 1680×1000 下也要滚出屏幕才看得见。
+        这条断言补在 v10.16.1：v10.16.0 的日志里写了这个防护，其实当时删组件把测试一起删了。
+        """
+        for gone in ("modEnter(", "modStopTimer(", 'id="modTasks"', "mod-timer"):
+            self.assertNotIn(gone, self.code, "每页任务条的零件又回来了：" + gone)
+        # 收回的是每页那一条，⑪ 这个总入口必须还在（面板在 HTML 里，不在脚本里）
+        self.assertIn('id="tab-history"', self.html, "⑪ 总任务管理页被跟着一起删了")
+
+    def test_server_material_submit_never_touches_a_file_object(self):
+        """⑨ 走「服务器素材」时没有 File 对象，提交成功后也不许读 f.name（评审 F-1，P0）。
+
+        旧写法 `src_name: f.name` 在 fetch 已经成功之后抛 TypeError，被 catch 报成
+        「提交失败」——请求其实已经入队、GPU 已经开始烧，用户于是再点一次。
+        """
+        self.assertNotIn("src_name: f.name", self.code,
+                         "⑨ 又在提交成功后读前端那个不存在的 File 了")
+        i = self.code.index('$("rvcGo").onclick')
+        body = self.code[i:i + 3600]
+        self.assertIn("...(d.job || {})", body, "状态与 src_name 应一律以服务端回包为准")
+
+    def test_server_gives_back_a_src_name_for_both_inputs(self):
+        with io.open(os.path.join(ROOT, "app.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn('"服务器素材 {spec}"', src,
+                      "走服务器素材时后端要自己把 src_name 填好，前端才不必猜")
+
+    def test_per_page_task_strip_does_not_come_back(self):
+        """「本页任务」条整体收回，只留 ⑪ 一处总任务管理。
+
+        v10.16.0 删组件时把对应的三条测试一起删了，日志却写着"任务条组件不得复活"
+        ——三方评审复核时在 tests/ 里 0 命中。这条断言是那句承诺的正身。
+        """
+        for gone in ("modEnter", "modStopTimer", "modTasks", "modTimer", "MOD_TYPES"):
+            self.assertNotIn(gone, self.code, "每页任务条又回来了：%s" % gone)
+        self.assertNotIn("mod-strip", self.src, "样式层又加回了任务条")
+
+    def test_server_material_submit_never_touches_a_file_object(self):
+        """⑨ 走「服务器素材」时没有 File 对象，提交成功后也不许再读 f.name（评审 F-1，P0）。
+
+        旧写法 `src_name: f.name` 在 fetch **已经成功之后**抛 TypeError，被 catch 报成
+        「提交失败」——请求其实早已入队、GPU 已经开始烧，用户于是再点一次。
+        """
+        self.assertNotIn("src_name: f.name", self.code,
+                         "⑨ 又在提交成功后读前端那个并不存在的 File 了")
+        i = self.code.index('$("rvcGo").onclick')
+        self.assertIn("...(d.job || {})", self.code[i:i + 3600],
+                      "换声任务的状态与文件名应一律以服务端回包为准")
+        with io.open(os.path.join(ROOT, "app.py"), encoding="utf-8") as fh:
+            backend = fh.read()
+        self.assertIn("服务器素材 {spec}", backend,
+                      "走服务器素材时后端要自己把 src_name 填好，前端才不必猜")
+
     def test_server_source_uses_ids_not_dragged_files(self):
         """⑨/⑦ 提交服务器素材时只传标识：文件由服务端取，浏览器不绕一圈。"""
         self.assertIn('fd.append("source_id", srcId)', self.code, "⑨ 没有把 source_id 传给服务端")

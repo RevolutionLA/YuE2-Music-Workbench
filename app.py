@@ -362,6 +362,7 @@ def available_models() -> list[dict]:
 # （把 mmap 权重+最大 KV cache 全算满，12GB+），在 16GB 内存的机器上会拦掉所有加载。
 # 显存预检由 _gpu_free_mb()（nvidia-smi）完成，只看显存。
 _ENGINE_STATE = ROOT / "runtime" / "data" / "engine_state.json"
+_ENGINE_STATE_LOCK = threading.Lock()
 _VRAM_HEADROOM_MB = 700   # 生成时显存需预留的余量（Q4 实测峰值约 4.6GB + 系统占用）
 
 
@@ -373,13 +374,79 @@ def _engine_state_read() -> dict:
 
 
 def _engine_state_write(updates: dict) -> dict:
-    state = _engine_state_read()
-    state.update(updates)
-    _ENGINE_STATE.parent.mkdir(parents=True, exist_ok=True)
-    _ENGINE_STATE.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    return state
+    # 读-改-写必须整体加锁：多处「只改 backend」的调用会把整份状态重写一遍，
+    # 与并发的 models_switch 交错时，刚写进去的 loaded_* 会被带回旧值（本轮评审 B-1）。
+    with _ENGINE_STATE_LOCK:
+        state = _engine_state_read()
+        state.update(updates)
+        _ENGINE_STATE.parent.mkdir(parents=True, exist_ok=True)
+        _ENGINE_STATE.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return state
+
+
+def _engine_config_report() -> dict:
+    """后端**真正会加载**的那套权重——从 server.json 推，不从 engine_state 猜。
+
+    engine_state 里那份 loaded_* 只是"上次切换成功时写下的值"：模型被改名、移动或删掉
+    之后它不会自己纠正，而只改 backend 的那些写入方还会把它原样重写一遍。本轮评审实测到
+    ⑬ 报的 `yue2-q4.gguf` 在磁盘上根本不存在，而 server.json 指向的是另一份——显示层
+    说假话的代价是"配对配错了"这种事实永远看不见（Q8 权重压在 6GB 卡上就是这一类）。
+    """
+    out = {"main": "", "main_path": "", "main_exists": False,
+           "vae": "", "vae_from": "", "vae_exists": False}
+    try:
+        cfg = _read_server_json()
+        entry = (cfg.get("models") or [{}])[0]
+        rel = str(entry.get("path") or "").strip().replace("\\", "/")
+        so = entry.get("session_options") or {}
+        base = (ROOT / "cpp" / rel).parent if rel else MODEL_DIR
+        main = str(so.get("yue2.model_gguf") or "").strip()
+        if main:
+            out["main"] = main
+            cand = base / main
+            if not cand.is_file() and (MODEL_DIR / main).is_file():
+                cand = MODEL_DIR / main
+            out["main_exists"] = cand.is_file()
+            if out["main_exists"]:
+                out["main_path"] = cand.relative_to(ROOT).as_posix()
+        vae = str(so.get("yue2.vae_gguf") or "").strip()
+        if vae:
+            out["vae"] = vae
+            if (base / vae).is_file():
+                out["vae_from"], out["vae_exists"] = "同目录", True
+            elif (MODEL_DIR / vae).is_file():
+                out["vae_from"], out["vae_exists"] = "公共退回", True
+            else:
+                out["vae_from"] = "磁盘上没有"
+    except Exception:
+        pass
+    return out
+
+
+def _loaded_main_label() -> str:
+    """⑬ 那一行「当前主模型」：说配置真值，并在对不上时把矛盾摆出来，不静默取其一。"""
+    conf, st = _engine_config_report(), _engine_state_read()
+    name = conf["main"] or str(st.get("loaded_main") or "")
+    if not name:
+        return ""
+    if conf["main"] and not conf["main_exists"]:
+        return f"{name}（⚠ server.json 指向的这份在 cpp/model 下不存在）"
+    rec = str(st.get("loaded_main") or "")
+    if rec and conf["main"] and rec != conf["main"]:
+        return f"{name}（⚠ 切换记录里写的是 {rec}；以 server.json 为准）"
+    return name
+
+
+def _loaded_vae_label() -> str:
+    conf, st = _engine_config_report(), _engine_state_read()
+    name = conf["vae"] or str(st.get("loaded_vae") or "")
+    if not name:
+        return ""
+    if conf["vae"] and not conf["vae_exists"]:
+        return f"{name}（⚠ 磁盘上没有这份 vae）"
+    return f"{name}（{conf['vae_from'] or '来源未知'}）"
 
 
 def backend_mode() -> str:
@@ -724,10 +791,10 @@ def system_info():
             # 现在到底加载着哪一套权重。vae 那一栏会写清是"同目录"还是"公共退回"——
             # 退回公共 vae 等于换了配对，出图的音质与显存峰值都可能不同，
             # 以前这件事在 ⑬ 完全查不到（切换消息里也只报主模型名）。
-            "loaded_main": _engine_state_read().get("loaded_main", ""),
-            "loaded_vae": (_engine_state_read().get("loaded_vae", "")
-                           + ("" if not _engine_state_read().get("loaded_vae")
-                              else "（" + _engine_state_read().get("loaded_vae_from", "") + "）")),
+            # ★ 值必须来自 server.json（后端真正读的那份），不能来自 engine_state 的自述：
+            #   本轮评审实测到状态文件里写着 yue2-q4.gguf，而 cpp/model 下没有这个文件。
+            "loaded_main": _loaded_main_label(),
+            "loaded_vae": _loaded_vae_label(),
             "vocal_separation_ready": _sep_available()[0],
             "sheetsage2_ready": _sheetsage_ready(),
             "ai_workbench": _ai_ready(),
@@ -878,6 +945,18 @@ def _limit_text(label: str, val, cap: int) -> str:
             detail=f"{label}过长：{len(s)} 字符，上限 {cap}。请精简后再提交"
                    "（不再静默截断——截断会让歌词对齐与乐谱只覆盖半首歌）")
     return s
+
+
+def _materialize_seed(value):
+    """把"随机"定成一个真实种子——单首连发与批量队列共用这一个口径。
+
+    引擎不回 `X-Seed` 响应头，done 分支的 seed_actual 只能退成提交值；把 -1 原样送进去，
+    这一首就永远说不清自己是哪个种子出来的（本轮评审 B-2：队列产物 69 份全部不可复现）。
+    "随机"的正确语义是"服务端替你抽一个、并把抽到几告诉你"，不是留个占位符查无此事。
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return secrets.randbelow(2 ** 31)
+    return value
 
 
 def _resolve_cot(cot: str, abc: str) -> tuple[str, str]:
@@ -2557,9 +2636,7 @@ async def generate_start(payload: dict):
     # 连发 N 次：参数完全一致，仅种子不同（用户填了种子则依次 +1，否则完全随机）。
     # 无效 seed（-1/None，即"随机"）在这里就定成真实随机数——历史记录存下
     # 引擎实际用的种子，回填时才能复现同一结果，而不是把 -1 填回表单
-    base_seed = payload.get("seed")
-    if not (isinstance(base_seed, int) and base_seed >= 0):
-        base_seed = secrets.randbelow(2**31)
+    base_seed = _materialize_seed(payload.get("seed"))
     payload = {**payload, "seed": base_seed}
 
     def _chain_runner():
@@ -2864,6 +2941,10 @@ def _batch_run_worker() -> None:
                 state["current"] = nxt_id
                 _batch_write(state)
                 payload = dict(nxt["payload"])
+                # ★ 「随机」必须在派发这一刻定成真实种子，不能留给引擎去随机（评审 B-2）。
+                #   单首那条路一直是这么做的（generate_start 里 _materialize_seed），
+                #   批量这条是漏的——于是队列产物永远说不清自己用哪个种子出来的。
+                payload["seed"] = _materialize_seed(payload.get("seed"))
                 rid = nxt["id"]
                 job = {
                     "id": rid,
@@ -3880,7 +3961,9 @@ async def rvc_pitch_advice(file: UploadFile, model: str = Form(...),
     音频——**整曲带伴奏时基频会被贝斯/底鼓拉偏**，所以直量结果一旦跨过 _RVC_SEMIS_SUSPECT
     （一个八度）就判定为测错，**直接不给数**而不是给一个看着专业其实错误的建议。
 
-    不占 GPU（不勾选分离时）、不进换声队列，几秒出结果。三档诚实：
+    不勾分离时不占 GPU、不进换声队列，几秒出结果；勾了分离就要和生成/批量/训练抢同一把
+    _GPU_SEM，可能排队几分钟——等锁这件事在线程池里做，期间网关其余接口照常应答，
+    等待时长会写在返回的 text 前面。三档诚实：
     ① 双方都有数据 → 建议；② 目标音色是外部下载（无训练 f0）→ 只报源音域，说明没法建议；
     ③ 源音域可疑（大概率整曲带伴奏）→ 明确说测错了，请勾分离重测，绝不给数。"""
     models = _rvc_models()
@@ -3893,16 +3976,27 @@ async def rvc_pitch_advice(file: UploadFile, model: str = Form(...),
     work = RVC_JOB_DIR / f"pitch_{rid}"
     work.mkdir(parents=True, exist_ok=True)
     probe = work / f"src{ext}"
+    gpu_waited = 0
     try:
         await _stream_upload_to(file, probe, 200 * 1024 * 1024, "音频")
         if separate:
-            # 分离要占 GPU（BS-Roformer），与换声/生成同一把锁，排队等是应该的：
+            # 分离要占 GPU（BS-Roformer），与换声/生成/批量/训练同一把锁，排队等是应该的：
             # 不分离就量，整曲的基频会被伴奏拽到低音区，换来一个错得离谱的变调建议。
             job = {"id": rid, "status": "running", "step": "分析用：人声分离",
                    "src_name": file.filename or "in.wav"}
-            with _GPU_SEM:
-                vocals, _art = await run_in_threadpool(
-                    _run_vocal_separation, probe, work, job, False)
+            # ★ 等锁这件事也必须离开事件循环去做。_GPU_SEM 是 threading.Semaphore（:2065），
+            #   在 `async def` 里直接 `with` 它会把整个事件循环按住——一把锁可以被一首歌占
+            #   十几到几十分钟，期间 /api/system/info、健康探测、任务轮询全无人应答；
+            #   看门狗连续 5 次短探 + 90s 深探无回话就判"假死"并击杀网关，
+            #   今天 10:09:22 已经实测杀掉过一次当时带着在跑批量任务的进程（watchdog.log:762-763）。
+            #   本项目的红线写着"async def 里禁止做重活"，等锁同样是重活的一种。
+            def _sep_wait_for_gpu():
+                t_wait = time.time()
+                with _GPU_SEM:
+                    waited = round(time.time() - t_wait)
+                    res = _run_vocal_separation(probe, work, job, False)
+                return res[0], res[1], waited
+            vocals, _art, gpu_waited = await run_in_threadpool(_sep_wait_for_gpu)
             if vocals and Path(vocals).is_file():
                 probe = Path(vocals)
         # f0 提取要解码整段音频 + 跑基频检测，几十秒起步，不能占事件循环
@@ -3954,6 +4048,12 @@ async def rvc_pitch_advice(file: UploadFile, model: str = Form(...),
                            "（外部下载的音色没有训练素材），无法给变调建议——"
                            "在音色卡片上给它传一段该歌手本人的歌（10~30 秒即可）建档后即可。")
         out["separated"] = bool(separate)
+        if gpu_waited >= 20:
+            # 等了多久要说得出口：这把锁是和歌曲生成/批量/训练共用的，
+            # 用户点的只是"量一下音域"，等了三分钟却不知道为什么。
+            out["gpu_wait_sec"] = gpu_waited
+            out["text"] = (f"（前面有任务在占 GPU，排队等了 {gpu_waited // 60} 分 "
+                           f"{gpu_waited % 60} 秒才轮到分离）" + out["text"])
         out["caveat"] = ("" if separate else
                          "你量的是原始文件：整曲带伴奏时 f0 会被伴奏污染（这是变调建议跑偏的"
                          "头号原因）。建议勾上「先做人声分离」重测，或开「先做人声分离」跑一次"
