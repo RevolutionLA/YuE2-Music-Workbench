@@ -336,6 +336,31 @@ class PageIndependence(unittest.TestCase):
                      "function convertServerSong("):
             self.assertIn(need, self.src, "缺少独立性所需的部件：%s" % need)
 
+    def test_generate_page_never_carries_a_score(self):
+        """②「歌词 + Style 生成歌曲」提交时必须交空乐谱，档位不许被服务端改写。
+
+        用户实测投诉：在 ② 只给曲风和歌词、选了 full，点生成后档位自己变成 melody，
+        而且成品听起来是《七里香》的旋律。
+
+        根因是两处叠在一起：
+          · #abcBlock 是 ③⑤ 共用的同一份 DOM，_FORM_IDS 又把 abc 存进 localStorage，
+            于是 ② 上看不见谱框，$("abc").value 却读得到上一次 ③ 转出来的纯旋律谱；
+          · 服务端 _resolve_cot（app.py:880）看到 abc 非空且谱里没有和弦记号，
+            就把 full 纠正成 melody，并且**按那份谱的旋律**去生成 —— 别的歌的调子就是这么来的。
+        修法是按"这一页是谁"决定带不带谱，而不是看 DOM 里有没有残留。
+        """
+        self.assertIn("function abcForSubmit()", self.code,
+                      "abcForSubmit() 不见了：② 会又开始无条件读 ③⑤ 那份残留的谱")
+        i = self.code.index("function abcForSubmit()")
+        body = self.code[i:self.code.index("\n}", i)]
+        self.assertIn('"scoreSing"', body, "abcForSubmit 不再按页判定")
+        # 两条提交路径都必须走它，不许再直接读 $("abc").value
+        self.assertEqual(self.code.count("abc: abcForSubmit()"), 2,
+                         "②/⑤ 的单发与批量提交应当各用一次 abcForSubmit()")
+        for bad in ('abc: $("abc").value', 'abc: $("abc").value,'):
+            self.assertNotIn(bad, self.code,
+                             "提交 payload 又直接读 #abc 了：② 会把 ③⑤ 的残留谱带进请求")
+
     def test_server_source_uses_ids_not_dragged_files(self):
         """⑨/⑦ 提交服务器素材时只传标识：文件由服务端取，浏览器不绕一圈。"""
         self.assertIn('fd.append("source_id", srcId)', self.code, "⑨ 没有把 source_id 传给服务端")

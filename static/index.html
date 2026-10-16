@@ -3478,6 +3478,9 @@ function switchTab(name) {
   const fbs = $("flowBarSing"); if (fbs) fbs.hidden = !(name === "sing");
   if (scoreMode && typeof updateLyricBarHint === "function") updateLyricBarHint();
   if (typeof paintScoreModeTag === "function") paintScoreModeTag();
+  // 进入 ⑤ 时按当前共用谱重放一次锁档（② 不设锁，故仅 ⑤ 需要）；保持"有谱即按谱定档"的设计。
+  // ② 上残留的 #abc 内容不会污染 ② 的档位，但切到 ⑤ 必须让它重新接管。
+  if (scoreMode && lastAbcAnalysis && lastAbcAnalysis.cot_suggested && typeof renderAbcAnalysis === "function") renderAbcAnalysis(lastAbcAnalysis);
   if (name === "sing" || name === "scoreSing") syncStylePreview();
   try { if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name); } catch {}
   // 内嵌模式（dsh iframe）：通知父窗口同步侧栏页签高亮
@@ -5460,6 +5463,17 @@ function engineGate(statusEl) {
   return false;
 }
 
+// ★ 提交时到底带不带乐谱，由"这一页是谁"决定，不由 DOM 里有没有残留决定。
+//   #abcBlock 是 ③⑤ 共用的同一份 DOM（切页时 moveInto 搬来搬去），而且 _FORM_IDS
+//   把 abc 存进了 localStorage —— 于是 ② 上看不见谱框，$("abc").value 却读得到上一次
+//   ③ 转出来的那份谱。一旦带上，服务端 _resolve_cot 会因为"谱里没有和弦记号"
+//   把用户选的 full 强改成 melody，并且**按那份谱的旋律去生成**：
+//   用户只想给曲风+歌词，听到的却是别的歌的调子（实测投诉就是这个）。
+//   ② 的初衷是"只给 Style 和词，旋律交给模型规划"，所以它必须恒定交空谱。
+function abcForSubmit() {
+  return (curTab === "scoreSing") ? ($("abc") || { value: "" }).value : "";
+}
+
 $("go").onclick = async () => {
   // 送出的是用户自己写的那份词，收尾段由后端在送引擎前统一补（app.py: _gen_run）
   const lyrics = stripMachineOutro($("lyrics").value.trim());
@@ -5478,7 +5492,7 @@ $("go").onclick = async () => {
     task_name: $("taskName").value.trim(),
     lyrics, style,
     cot: $("cot").value,
-    abc: $("abc").value,
+    abc: abcForSubmit(),
     model: "yue2",
     count: genCount,
     seed: numOrNull("seed"), cfg_scale: numOrNull("cfg"), num_inference_steps: numOrNull("steps"),
@@ -5527,7 +5541,7 @@ $("queue").onclick = async () => {
     const task = {
       name: $("taskName").value.trim() || undefined,
       lyrics, style,
-      cot: $("cot").value, abc: $("abc").value, model: "yue2",
+      cot: $("cot").value, abc: abcForSubmit(), model: "yue2",
       seed: numOrNull("seed"), cfg_scale: numOrNull("cfg"), num_inference_steps: numOrNull("steps"),
       abc_temperature: numOrNull("abc_temperature"), abc_top_p: numOrNull("abc_top_p"), abc_top_k: numOrNull("abc_top_k"),
       semantic_temperature: numOrNull("semantic_temperature"), semantic_top_p: numOrNull("semantic_top_p"), semantic_top_k: numOrNull("semantic_top_k"),
@@ -5570,8 +5584,10 @@ function renderAbcAnalysis(a) {
     // 有谱时档位由谱面决定，不再让人手选：谱里有和弦记号 → full（模型照"旋律+和弦"走），
     // 没有 → melody（只走旋律，伴奏由模型配）。选错档位是最常见的"生成出来不对"的原因，
     // 而这件事谱面本身就答得出来，不该交给用户猜。
+    // 自动锁档只在 ⑤（歌词+style+乐谱）生效：那份谱是可见的、且与档位强相关。
+    // ②（歌词+style，无乐谱 UI）不应被共用的 #abc 残留内容影响，档位完全交回用户手选。
     const cotSel = $("cot");
-    if (cotSel && cotSel.value !== route) cotSel.value = route;
+    if (cotSel && curTab === "scoreSing" && cotSel.value !== route) cotSel.value = route;
     parts.push(route === "full"
       ? ("带和弦谱" + (n ? "（" + n + " 处和弦记号）" : "") + " → 已自动定为 full")
       : "纯旋律谱（无和弦记号） → 已自动定为 melody");
@@ -5601,8 +5617,11 @@ $("abc").addEventListener("input", () => {
   // 档位提示以前挂在跨页 store 的订阅上；store 删了，改成本页控件自己变化就重画
   if (typeof paintScoreModeTag === "function") paintScoreModeTag();
 });
-// 切换 CoT 时即时重算提示（不重新请求分析）：让用户当场看到"会不会按我的谱走"
-$("cot").addEventListener("change", () => { if ($("abc").value.trim() && lastAbcAnalysis) renderAbcAnalysis(lastAbcAnalysis); });
+// 切换 CoT 时即时重算提示（不重新请求分析）：让用户当场看到"会不会按我的谱走"。
+// 只在 ⑤ 才重放自动锁档；② 上用户手选的档位必须保留，不被共用 #abc 的残留内容弹回。
+$("cot").addEventListener("change", () => {
+  if (curTab === "scoreSing" && $("abc").value.trim() && lastAbcAnalysis) renderAbcAnalysis(lastAbcAnalysis);
+});
 
 // ---------- 从参考歌曲提取乐谱（SheetSage2：音频 → ABC，填入创作页直接改词翻唱） ----------
 // 异步任务模式：提交后立即拿 job_id，轮询取结果（真实歌曲转谱常超 1 分钟，
