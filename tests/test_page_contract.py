@@ -336,6 +336,42 @@ class PageIndependence(unittest.TestCase):
                      "function convertServerSong("):
             self.assertIn(need, self.src, "缺少独立性所需的部件：%s" % need)
 
+    def test_score_page_never_writes_generation_cot(self):
+        """③ 转谱/回填不许写 ②⑤ 的「规划 CoT」下拉框。
+
+        与 abcForSubmit 同一个 bug 家族：#cot 在 #genForm 里（②⑤ 共用），
+        人在 ③ 时写它，用户看不见；等他切到 ②，才发现"我选的 full 自己变成 melody"。
+        ⑤ 的进入钩子（switchTab 里 replay renderAbcAnalysis）本来就会按当前共用谱
+        重放一次锁档，所以 ③ 这两处写入既多余又有害。
+        """
+        for site in ('if (curTab === "scoreSing") $("cot").value = want;',
+                     'if (sug && curTab === "scoreSing") $("cot").value = sug;'):
+            self.assertIn(site, self.code, "③ 又无条件写 ②⑤ 的档位了：%s" % site)
+        # renderAbcAnalysis 自己也有同一道守卫，别被人删掉
+        i = self.code.index("function renderAbcAnalysis")
+        self.assertIn('curTab === "scoreSing"', self.code[i:i + 2600],
+                      "renderAbcAnalysis 的按页守卫不见了")
+
+    def test_random_seed_does_not_become_a_standing_choice(self):
+        """服务端把 -1/随机 具体化出来的那个种子，不许写回 #seed 输入框。
+
+        app.py:2520 故意在提交时把随机落成一个真实数，好让历史记录能复现 —— 那是
+        **这一首**的种子。以前 resumeRunningJob 把它 `$("seed").value = p.seed` 回写，
+        表单自动保存再存进 localStorage：用户下一首以为是随机，其实沿用上一首那个数，
+        而且参数摘要会显示"固定 xxx"，界面向用户撒了两次谎。
+        现在只记进 runningSeedActual，由摘要行如实说"本次实际种子 N"，输入框不动。
+        """
+        i = self.code.index("async function resumeRunningJob")
+        body = self.code[i:self.code.index("\n}", i)]
+        self.assertNotIn('$("seed").value', body,
+                         "resumeRunningJob 又把服务端具体化的种子写回输入框了")
+        self.assertIn("runningSeedActual = p.seed", body, "实际种子没被记下来")
+        j = self.code.index("function updateParamSummary")
+        self.assertIn("本次实际种子", self.code[j:j + 2400],
+                      "摘要行不再展示本次实际种子：用户无从知道自己那首用了什么种子")
+        self.assertIn("runningSeedActual = null", self.code[self.code.index("function setGenerating"):][:220],
+                      "任务结束后没清掉 runningSeedActual，摘要会继续挂着上一首的种子")
+
     def test_generate_page_never_carries_a_score(self):
         """②「歌词 + Style 生成歌曲」提交时必须交空乐谱，档位不许被服务端改写。
 

@@ -4706,6 +4706,10 @@ function updateParamSummary() {
                   : (hasAbc ? cot + "·谱待分析" : cot));
   bits.push(fixed ? "seed " + seedRaw : "seed 随机");
   if (n > 1) bits.push(n + " 首");
+  // 用户自己没定种子（-1/空）而这一首已经落了一个真实值 —— 把它说出来，
+  // 但不塞进输入框：看得见实际用了什么，同时输入框仍然表达"我的选择是随机"。
+  if (!fixed && runningSeedActual !== null && runningSeedActual !== undefined)
+    bits.push("本次实际种子 " + runningSeedActual);
   el.textContent = bits.join(" · ");
 }
 // 歌词框手改过，先前点过的「仍然提交」立刻作废：放行只针对当时那一版词。
@@ -5223,7 +5227,11 @@ $("download").onclick = () => {
 };
 
 // ---------- generation（服务端托管 + 轮询，刷新页面不丢任务）----------
+// 运行中那首任务**实际**用的种子（服务端把 -1/随机 具体化出来的那个数）。
+// 只用于展示，绝不写回 #seed —— 见 resumeRunningJob 里那条注释。
+let runningSeedActual = null;
 function setGenerating(on) {
+  if (!on) runningSeedActual = null;
   $("go").disabled = on;
   $("go").innerHTML = on ? '<span class="spinner"></span> 生成中…' : "生成歌曲";
   $("stopGen").style.display = on ? "" : "none";
@@ -5408,7 +5416,13 @@ async function resumeRunningJob() {
       // 判成一致就会在下次点格子时被悄悄覆盖掉。
       if (typeof syncStyleFromOutside === "function") syncStyleFromOutside();
       const p = job.params || {};
-      if (p.seed !== undefined && p.seed !== null) $("seed").value = p.seed;
+      // ★ seed 不回写输入框。服务端在提交时把"-1/随机"落成一个真实随机数
+      //   （app.py:2520，为了让历史记录能复现），那是**这一首**的种子，不是用户的选择。
+      //   以前这里把它写进 #seed，表单自动保存再存进 localStorage ——
+      //   用户下一首以为是随机，其实沿用了上一首那个数，而且摘要行会显示"固定 xxx"，
+      //   等于界面向用户撒了两次谎。现在只记下来给摘要行如实展示。
+      if (p.seed !== undefined && p.seed !== null) runningSeedActual = p.seed;
+      if (typeof updateParamSummary === "function") updateParamSummary();
       if (p.cfg_scale !== undefined && p.cfg_scale !== null) $("cfg").value = p.cfg_scale;
       if (p.num_inference_steps) $("steps").value = p.num_inference_steps;
       setGenerating(true);
@@ -5670,10 +5684,14 @@ $("abcAudio").onchange = async () => {
       if (rj.error) throw new Error(rj.error);
       if (!rj.abc) throw new Error("没有得到乐谱");
       $("abc").value = rj.abc;
-      // 提取完把档位拨到和这份谱配对的路线：无和弦→melody，带和弦→full
+      // 提取完记下这份谱该走哪条路线 —— 但**不在 ③ 写 ②⑤ 的档位下拉框**。
+      // #cot 在 #genForm 里（②⑤ 共用），此刻人在 ③，写了看不见，
+      // 等他切到 ② 才发现"我选的 full 自己变成 melody"——这正是 ② 带残留谱那个
+      // 投诉的同一个形状。⑤ 的进入钩子（switchTab 里 replay renderAbcAnalysis）
+      // 已经会按当前共用谱重放一次锁档，所以这里只交给它。
       const want = (rj.analysis && rj.analysis.cot_suggested)
         || ($("abcChords").checked ? "full" : "melody");
-      $("cot").value = want;
+      if (curTab === "scoreSing") $("cot").value = want;
       renderAbcAnalysis(rj.analysis);
       if (!rj.analysis) analyzeAbcDebounced();
       const wantedChords = $("abcChords").checked && !(rj.analysis && rj.analysis.has_chords);
@@ -5722,7 +5740,8 @@ async function loadScoreList() {
           const rec = await (await fetch("/api/scores/" + encodeURIComponent(s.id))).json();
           $("abc").value = rec.abc || "";
           const sug = rec.analysis && rec.analysis.cot_suggested;
-          if (sug) $("cot").value = sug;  // 回填时一并把档位拨到和这份谱配对的路线
+          // 同上：③ 回填历史谱只填谱框，档位交给 ⑤ 进入时自己重放（见 switchTab）。
+          if (sug && curTab === "scoreSing") $("cot").value = sug;
           renderAbcAnalysis(rec.analysis);
           if (!rec.analysis) analyzeAbcDebounced();
           $("abcStatus").textContent = "✓ 已回填历史乐谱 " + s.id;
