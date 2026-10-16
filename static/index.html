@@ -5125,9 +5125,20 @@ $("modelSel").onchange = async () => {
 // 所以它待在 ⑫，不进 ②⑤ 的表单、也不参与任何跨页回填。
 // 契约来自 audio.cpp 自带的 docs/models/yue2.md：unfused 的 A/B 文件，_comfyui 那种融合版引擎会拒；
 // 换适配器要开新 session（我们直接重启引擎，最省事也最不容易留半新半旧的状态）。
-async function loadLoras(silent) {
+// 状态写在本节按钮下面那条 .lint 上：⑫ 的页面级 #settingsStatus 在右栏（外观那一列），
+// 点「挂载并重启引擎」的人眼睛不在那儿——别留一个谁也不写的空 div。
+function loraSay(msg, cls) {
+  const el = $("loraStatus");
+  if (!el) return;
+  el.className = "lint" + (cls ? " " + cls : "");
+  el.textContent = msg;
+}
+async function loadLoras(silent, fromServer) {
   const arSel = $("loraAr"), narSel = $("loraNar");
   if (!arSel || !narSel) return;
+  // keep* 是给「重新扫描」留的：用户正在挑的东西不该被一次刷新抹掉。
+  // 但 fromServer（刚挂载/刚卸下）必须反过来以服务端为准——卸下之后下拉框还留着
+  // 那两个适配器名，就等于界面在说"还挂着"，而它已经不挂了。
   const keepAr = arSel.value, keepNar = narSel.value;
   try {
     const j = await (await jfetch("/api/models/loras")).json();
@@ -5147,33 +5158,33 @@ async function loadLoras(silent) {
       });
       if (want && [...sel.options].some(o => o.value === want)) sel.value = want;
     };
-    fill(arSel, keepAr || j.ar, "ar");
-    fill(narSel, keepNar || j.nar, "nar");
+    fill(arSel, fromServer ? j.ar : (keepAr || j.ar), "ar");
+    fill(narSel, fromServer ? j.nar : (keepNar || j.nar), "nar");
     if (j.ar_scale !== undefined) { $("loraArScale").value = String(j.ar_scale); $("loraArScaleVal").textContent = String(j.ar_scale); }
     if (j.nar_scale !== undefined) { $("loraNarScale").value = String(j.nar_scale); $("loraNarScaleVal").textContent = String(j.nar_scale); }
     if (!silent) {
-      statusSay((j.ar || j.nar)
+      loraSay((j.ar || j.nar)
         ? "当前挂着：" + [j.ar ? "AR " + j.ar : "", j.nar ? "NAR " + j.nar : ""].filter(Boolean).join(" ＋ ")
         : "LoRA：未挂载（裸模型）。可用适配器 " + items.length + " 个。", "");
     }
   } catch (err) {
-    statusSay("读取 LoRA 清单失败：" + friendlyErr(err), "err");
+    loraSay("读取 LoRA 清单失败：" + friendlyErr(err), "err");
   }
 }
 async function pushLora(body) {
   const btns = [$("loraApply"), $("loraClear")];
   btns.forEach(b => { if (b) b.disabled = true; });
-  statusSay("正在改适配器并重启音频引擎…（模型较大时需 1-2 分钟）", "");
+  loraSay("正在改适配器并重启音频引擎…（模型较大时需 1-2 分钟）", "");
   try {
     const r = await jfetch("/api/models/lora", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.detail || ("HTTP " + r.status));
-    statusSay(j.message || "适配器已更新", "ok");
+    loraSay(j.message || "适配器已更新", "ok");
     toast(j.message || "适配器已更新", "ok");
-    setTimeout(() => loadLoras(true), 1000);
+    setTimeout(() => loadLoras(true, true), 1000);
     setTimeout(refreshHealth, 5000);
   } catch (err) {
-    statusSay("LoRA 操作失败：" + friendlyErr(err) + "（引擎状态未确认，必要时点「重新扫描」核对）", "err");
+    loraSay("LoRA 操作失败：" + friendlyErr(err) + "（引擎状态未确认，必要时点「重新扫描」核对）", "err");
   } finally { btns.forEach(b => { if (b) b.disabled = false; }); }
 }
 if ($("loraApply")) {

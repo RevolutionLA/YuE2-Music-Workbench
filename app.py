@@ -1954,7 +1954,7 @@ def models_lora_set(payload: dict):
     if ar_name or nar_name:
         msg = (f"已挂载 AR={ar_name or '无'} NAR={nar_name or '无'}"
                f"（强度 {ar_scale:g}/{nar_scale:g}），引擎已重启。"
-               "注意：挂上后对**每一次生成**都生效，style 里的触发词只是引导，不是开关；"
+               "注意：挂上后对之后每一次生成都生效，style 里的触发词只是引导，不是开关；"
                "格式不对时引擎会在生成时报错，那就卸下再试。")
     else:
         msg = "已卸下全部 LoRA 适配器，引擎已重启，回到裸模型。"

@@ -93,6 +93,11 @@ class TestLoraAttach(LoraSandbox):
         self.assertIn("每一次生成", r["message"], "适配器恒生效这件事必须在回包里说清")
         self.assertEqual(self.state.get("loaded_ar_lora"), "ar_lora_demo.bf16.safetensors")
 
+    def test_mount_message_is_plain_text(self):
+        # 这行文字直接进 .lint 与 toast，不经过 markdown：写 **强调** 用户看到的就是两颗星
+        r = app.models_lora_set({"ar": "ar_lora_demo.bf16.safetensors"})
+        self.assertNotIn("**", r["message"], r["message"][:60])
+
     def test_clear_removes_the_keys_rather_than_writing_empty(self):
         app.models_lora_set({"ar": "ar_lora_demo.bf16.safetensors"})
         app.models_lora_set({"ar": "", "nar": ""})
@@ -178,6 +183,32 @@ class TestLoraUiContract(unittest.TestCase):
         html = _read_index()
         self.assertIn('"engines.loaded_lora": "当前 LoRA"', html,
                       "⑬ 会多出一行 engines.loaded_lora，没中文标签就成了裸键名")
+
+    def test_dropdowns_follow_server_truth_after_apply(self):
+        """真页面实测的第二条：点完「卸下全部」，下拉框还留着那两个适配器名——
+        界面在说"还挂着"，后端已经不挂了。这一类"显示 ≠ 真值"是本项目反复踩过的位置。"""
+        html = _read_index()
+        script = html[html.index("<script>"):]
+        block = script[script.index("async function loadLoras"):script.index('if ($("loraApply"))')]
+        self.assertIn("fromServer ? j.ar :", block,
+                      "回填仍以用户选择优先：卸下后下拉框会谎称还挂着")
+        self.assertIn("loadLoras(true, true)", block,
+                      "挂载/卸下成功后没让下拉框回到服务端真值")
+
+    def test_lora_messages_land_on_the_line_under_the_buttons(self):
+        """页面实测抓到的缺陷：#loraStatus 建了却没人写，消息全跑到右栏的 #settingsStatus。
+        点「挂载并重启引擎」的人眼睛在左栏底部，所以这一节的话必须说在自己那块。"""
+        html = _read_index()
+        script = html[html.index("<script>"):]
+        start = script.index("function loraSay")
+        end = script.index('if ($("loraApply"))')
+        block = script[start:end]
+        self.assertIn('$("loraStatus")', script[start:start + 260],
+                      "loraSay 没写 #loraStatus：那一节又退回空 div")
+        self.assertNotIn("statusSay(", block,
+                         "LoRA 这一节还在往页面级状态条说话——那块在右栏，按钮旁看不见")
+        self.assertGreaterEqual(block.count("loraSay("), 5,
+                                "挂载/卸下/扫描/回填/报错五条路都要在按钮下方留话")
 
 
 if __name__ == "__main__":
