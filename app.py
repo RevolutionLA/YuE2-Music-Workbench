@@ -1058,6 +1058,7 @@ def _abc_analyze(abc: str) -> dict:
                 for ch in octs:
                     semi += 12 if ch == "'" else -12
                 pitches.append(semi)
+    out["note_count"] = len(pitches)
     if pitches:
         names_sharp = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
         lo, hi = min(pitches), max(pitches)
@@ -2588,6 +2589,84 @@ def _wait_backend_ready(timeout: float = 300.0) -> bool:
             pass
         time.sleep(2.0)
     return False
+
+
+@router.post("/generate/plan_abc")
+def generate_plan_abc(payload: dict):
+    """让引擎停在 ABC 规划那一步：只出谱、不出音频（audio.cpp v0.9.2 的 stop_after=abc）。
+
+    为什么必须直连引擎：`/api/music/generate` 属编译内核 main.pyd，它的 `GenerateJSON`
+    实测只有 23 个字段、没有 `stop_after`，而 pydantic 默认 `extra=ignore`——
+    从网关那层把它塞进去会被静默丢掉，界面显示"只出谱"、后端照样渲染整首歌。
+    所以这里绕过 pyd，自己发 `{model, request:{…, options:{…}}}`（形状是内省 pyd
+    真实转发体拿到的，不是照文档猜的）。同步 def：Starlette 丢线程池执行，
+    等 `_GPU_SEM` 的那几分钟也不碰事件循环。"""
+    style = str(payload.get("style") or "").strip()
+    if not style:
+        raise HTTPException(status_code=400,
+                            detail="规划一份谱至少要给 style——引擎自己也是这么要求的")
+    lyrics = str(payload.get("lyrics") or "").strip()
+    cot = str(payload.get("cot") or "full").strip().lower()
+    note = ""
+    if cot not in ("full", "melody"):
+        # off 是"跳过 ABC 直接生成"，跟 stop_after=abc 互相抵消；替他改成 full 并说明
+        note = "档位已改写：off 没有谱可停，按 full 送的"
+        cot = "full"
+    seed = _materialize_seed(payload.get("seed"))
+    opts: dict = {"style": style, "cot": cot, "seed": seed, "stop_after": "abc"}
+    if lyrics:
+        opts["lyrics"] = lyrics
+    for k in ("abc_temperature", "abc_top_p", "abc_top_k", "abc_max_tokens"):
+        v = payload.get(k)
+        if v not in (None, "", 0):
+            opts[k] = v
+    req = dict(opts)
+    req["task"] = "gen"
+    req["options"] = opts
+    body = {"model": "yue2", "request": req}
+
+    def _call() -> dict:
+        _ensure_backend()
+        with _GPU_SEM:      # 与生成/批量/换声/训练互斥，防止并发打满显存
+            with httpx.Client(base_url=settings.audiocpp_base_url,
+                              timeout=1800.0, trust_env=False) as c:
+                r = c.post("/v1/tasks/run", json=body)
+        if r.status_code >= 400:
+            try:
+                detail = r.json()
+            except Exception:
+                detail = r.text[:400]
+            raise HTTPException(status_code=502, detail=detail)
+        try:
+            return r.json()
+        except Exception as exc:
+            raise HTTPException(status_code=502,
+                                detail=f"引擎回了但不是 JSON：{exc}") from exc
+
+    data = _call()
+    arts = [a for a in (data.get("artifacts") or []) if isinstance(a, dict)]
+    pick = next((a for a in arts
+                 if (a.get("meta") or {}).get("format") == "abc" or a.get("id") == "score"), None)
+    if not pick or not str(pick.get("payload") or ""):
+        raise HTTPException(status_code=502,
+                            detail={"message": "引擎回了，但里面没有 ABC 谱",
+                                    "keys": sorted(data.keys())})
+    try:
+        abc = base64.b64decode(str(pick["payload"])).decode("utf-8", errors="replace")
+    except Exception as exc:
+        raise HTTPException(status_code=502,
+                            detail=f"谱的 base64 解不开：{exc}") from exc
+    meta = pick.get("meta") or {}
+    truncated = str(meta.get("truncated") or "").lower() == "true"
+    wall = round(float((data.get("timing") or {}).get("wall_ms") or 0.0) / 1000.0, 1)
+    msg = (f"引擎规划了一份谱：{len(abc.splitlines())} 行、{wall} 秒——"
+           "只跑了 ABC 规划，没渲染音频")
+    if truncated:
+        msg += "；⚠ 这份谱被 token 上限截断了，尾部不完整"
+    if note:
+        msg += "；" + note
+    return {"ok": True, "abc": abc, "truncated": truncated, "wall_sec": wall,
+            "seed": seed, "cot": cot, "message": msg}
 
 
 @router.post("/generate/stop")

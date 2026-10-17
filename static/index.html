@@ -1962,7 +1962,9 @@ We will sing beyond the night</textarea>
             <button class="ghost" id="scoreLoadBtn" hidden>↩ 载入所选乐谱</button>
             <button class="ghost" id="scoreFromAudio" title="上传一首歌，用 SheetSage2 转出乐谱（在 ③ 页）">🎸 从参考歌曲提取</button>
             <button class="ghost" id="scoreClear" title="清空乐谱：本页就退回 ② 的自由发挥模式">✕ 不用谱，让模型自己编</button>
+            <button class="ghost" id="planAbcBtn" title="只让引擎跑到 ABC 规划这一步（本机 6GB 卡实测约 8 秒），谱写进上面那个框。不渲染音频，所以这一步没有歌可听。">🧭 让引擎先规划一份谱</button>
           </div>
+          <div class="lint" id="planAbcStatus"></div>
           <div class="hint-xs" style="margin-top:6px;">填了谱就按谱唱：谱里有没有和弦记号，右侧「规划 CoT」会自动定为 <b>full</b> 或 <b>melody</b>（不需要手选，改谱后也会跟着改）。清空乐谱＝回到「模型自己规划旋律」，那时档位由你自己定。</div>
         </div>
 
@@ -5680,6 +5682,7 @@ function renderAbcAnalysis(a) {
   if (a.meter) parts.push("拍号 " + a.meter);
   if (a.bpm) parts.push(a.bpm + " BPM");
   if (a.range) parts.push("音域 " + a.range);
+  if (a.note_count === 0) parts.push("⚠ 谱里没有音（全是休止）");
   if ((a.sections || []).length) parts.push("曲式 " + a.sections.join(" → "));
   const route = a.cot_suggested || "";
   if (route) {
@@ -5695,7 +5698,8 @@ function renderAbcAnalysis(a) {
       ? ("带和弦谱" + (n ? "（" + n + " 处和弦记号）" : "") + " → 已自动定为 full")
       : "纯旋律谱（无和弦记号） → 已自动定为 melody");
   }
-  el.textContent = "✓ " + parts.join(" · ");
+  // 一份没音的谱不该顶着一个绿勾——同一行里"✓"和"⚠ 谱里没有音"互相打脸
+  el.textContent = (a.note_count === 0 ? "⚠ " : "✓ ") + parts.join(" · ");
 }
 function analyzeAbcDebounced() {
   clearTimeout(abcAnalyzeTimer);
@@ -5792,16 +5796,27 @@ $("abcAudio").onchange = async () => {
       renderAbcAnalysis(rj.analysis);
       if (!rj.analysis) analyzeAbcDebounced();
       const wantedChords = $("abcChords").checked && !(rj.analysis && rj.analysis.has_chords);
-      $("abcStatus").textContent = wantedChords
-        ? "⚠ 谱里没出现和弦记号（这首歌可能识别不出可用和弦），已按 melody 路线准备生成"
-        : "✓ 乐谱已保存（走 " + want + "），可改词后生成（下方列表可随时复用）";
-      $("abcStatus").style.color = wantedChords ? "#ff9f0a" : "var(--ok, #34c759)";
+      // 实测：很轻/很安静的片段，SheetSage2 只会吐一串休止（新旧代码一样，不是回归）。
+      // 这种"成功"必须说不清——绿灯一句"已保存"，用户会拿着一份没音的谱去生成 40 分钟。
+      const noNotes = !!rj.analysis && rj.analysis.note_count === 0;
+      if (noNotes) {
+        $("abcStatus").textContent = "⚠ 转出来这份谱里一个音都没有（只有休止）——多半是这段太轻或太安静，"
+          + "模型没抓到旋律。换一段人声明显的（副歌那种）再转，或先把音量归一化。";
+        $("abcStatus").style.color = "#ff9f0a";
+      } else {
+        $("abcStatus").textContent = wantedChords
+          ? "⚠ 谱里没出现和弦记号（这首歌可能识别不出可用和弦），已按 melody 路线准备生成"
+          : "✓ 乐谱已保存（走 " + want + "），可改词后生成（下方列表可随时复用）";
+        $("abcStatus").style.color = wantedChords ? "#ff9f0a" : "var(--ok, #34c759)";
+      }
       setScoreLock(false);
       $("abcAudio").value = "";
       // 转谱成功的谱已落盘 data/scores/，记下 score_id 才谈得上导出 MIDI
       scoreCurrentId = rj.score_id || null;
       $("abcRetryWrap").hidden = true;
-      stickyNotify("乐谱提取完成", "已从参考歌曲提取 ABC 乐谱，可直接改词生成。", true);
+      stickyNotify(noNotes ? "转谱没抓到旋律" : "乐谱提取完成",
+                   noNotes ? "谱里一个音都没有（只有休止），换一段人声明显的再转。"
+                           : "已从参考歌曲提取 ABC 乐谱，可直接改词生成。", true);
       loadScoreList();
       return;
     }
@@ -8136,6 +8151,42 @@ $("scoreClear").onclick = () => {
   updateLyricBarHint();
 };
 $("scoreFromAudio").onclick = () => switchTab("score");
+// 让引擎只跑到 ABC 规划：几秒看到"模型打算这么写"，改完再花几十分钟出音频。
+// 后端是直连引擎的（内核的 GenerateJSON 没有 stop_after 字段，从网关塞会被静默丢掉）。
+function planAbcSay(msg, cls) {
+  const el = $("planAbcStatus");
+  if (!el) return;
+  el.className = "lint" + (cls ? " " + cls : "");
+  el.textContent = msg;
+}
+$("planAbcBtn").onclick = async () => {
+  const style = $("style").value.trim();
+  if (!style) { planAbcSay("至少要填 Style：引擎规划谱也要知道写成什么样", "err"); return; }
+  if (($("abc").value || "").trim() &&
+      !confirm("谱框里已经有一份谱了，让引擎规划的结果把它覆盖掉？")) { planAbcSay("没动：你取消了", ""); return; }
+  const body = { style, lyrics: $("lyrics").value.trim(), cot: $("cot").value,
+                 seed: Number($("seed").value) };
+  for (const k of ["abc_temperature", "abc_top_p", "abc_top_k"]) {
+    const el = $(k);
+    const v = el ? String(el.value || "").trim() : "";
+    if (v) body[k] = Number(v);
+  }
+  const btn = $("planAbcBtn");
+  btn.disabled = true;
+  planAbcSay("正在让引擎规划谱（只跑 ABC，不渲染音频；本机 6GB 卡约 8 秒，排队时更久）…", "");
+  try {
+    const r = await jfetch("/api/generate/plan_abc", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.detail && j.detail.message ? j.detail.message : JSON.stringify(j.detail || ("HTTP " + r.status)));
+    $("abc").value = j.abc || "";
+    if (typeof analyzeAbcDebounced === "function") analyzeAbcDebounced();
+    if (typeof updateLyricBarHint === "function") updateLyricBarHint();
+    planAbcSay(j.message + "（seed " + j.seed + "）——改完这份谱再点生成，就是按它唱", "ok");
+  } catch (err) {
+    planAbcSay("规划失败：" + friendlyErr(err), "err");
+  } finally { btn.disabled = false; }
+};
 // 填词助手：每段行数对不上谱的段落数/小节数时提前警告，别等生成 5 分钟才发现唱不下
 function updateLyricBarHint() {
   const el = $("lyricBarWarn");
