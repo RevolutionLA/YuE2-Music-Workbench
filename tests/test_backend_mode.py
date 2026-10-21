@@ -211,6 +211,32 @@ class CpuFallbackGate(unittest.TestCase):
         self.assertIn("已禁用 CPU 回退", src, "失败时必须把原因说给用户看")
 
 
+class EngineRestartOnAlloc(unittest.TestCase):
+    """分配失败要重启引擎再试一次，但只一次（防死循环）。"""
+
+    def setUp(self):
+        self._saved = app.backend_mode
+        app.backend_mode = lambda: "vulkan"
+
+    def tearDown(self):
+        app.backend_mode = self._saved
+
+    def test_alloc_failure_triggers_one_restart(self):
+        self.assertTrue(app._should_restart_engine_after_alloc(
+            500, "failed to allocate Vulkan0 buffer of size 541200064", False))
+        self.assertFalse(app._should_restart_engine_after_alloc(
+            500, "failed to allocate Vulkan0 buffer", True), "只许重启一次")
+
+    def test_non_alloc_errors_do_not_restart(self):
+        self.assertFalse(app._should_restart_engine_after_alloc(400, "style is required", False))
+        self.assertFalse(app._should_restart_engine_after_alloc(200, "", False))
+
+    def test_cpu_backend_does_not_get_restarted(self):
+        app.backend_mode = lambda: "cpu"
+        self.assertFalse(app._should_restart_engine_after_alloc(
+            500, "out of memory", False))
+
+
 class SeedHeader(unittest.TestCase):
     """X-Seed 的大小写契约（评审 B13）：httpx 头转 dict 后键是小写。"""
 

@@ -2569,6 +2569,19 @@ def _win_toast(title: str, body: str) -> None:
         pass
 
 
+def _should_restart_engine_after_alloc(code: int, detail, tried: bool) -> bool:
+    """GPU 分配失败后要不要"重启引擎清显存再试一次"。
+
+    实测（2026-10-22 02:03）：一次长歌在 VAE 分配失败后，引擎进程里残留了约 10GB
+    Vulkan 缓冲（杀进程后提交内存 23.3GB → 12.7GB）。此后每条新任务连 516MB 的
+    AR decode 图都分不出来，31 条队列在 1 分钟里全部 2 秒失败——引擎进程还活着，
+    所以按需自检不会重启它。正确做法就是失败后重启一次（释放进程内泄漏），
+    从 AR 检查点重试；只重试一次，避免"失败→重启→再失败"死循环。
+    """
+    return bool(not tried and code != 200 and backend_mode() in ("cuda", "vulkan")
+                and _is_vram_error(detail))
+
+
 def _seed_from_headers(headers: dict, payload: dict):
     """引擎实际用的种子：优先响应头，其次提交值。
 
@@ -2600,6 +2613,7 @@ def _gen_run(job: dict, payload: dict) -> None:
     rid = job["id"]
     started = time.time()
     used_cpu_fallback = False
+    tried_engine_restart = False
     orig_backend = backend_mode()      # 回退结束要切回它，而不是写死 cuda（评审 T6 的反向问题）
     # 收尾段在送引擎之前的最后一刻补：存盘那份必须是用户自己写的词（回填、LRC
     # 强制对齐、重跑都以它为准），只有引擎需要"一定有收尾段"的这份。挂在这个唯一
@@ -2660,6 +2674,25 @@ def _gen_run(job: dict, payload: dict) -> None:
         # 用户主动终止：引擎进程已被强杀，这次调用以连接失败收场
         if _stop_requested():
             return
+
+        # 分配失败 → 重启引擎（清掉进程内残留的显存分配）→ 重试一次。
+        # 放在 CPU 回退之前：优先留在 GPU；有 AR 检查点时这次重试会直接跳过 AR。
+        if _should_restart_engine_after_alloc(code, detail, tried_engine_restart):
+            tried_engine_restart = True
+            job.update(note="GPU 分配失败，已重启引擎清理显存并重试一次（有 AR 检查点时不会重跑 AR）",
+                       gpu_error=str(detail)[:800])
+            _output_write_meta(job)
+            try:
+                _restart_audiocpp(str(SERVER_JSON), backend=orig_backend)
+                _wait_backend_ready()
+            except Exception as exc:  # noqa: BLE001
+                job.update(note=f"重启引擎失败：{exc}"[:300])
+                _output_write_meta(job)
+            if _stop_requested():
+                return
+            code, detail, content, headers = attempt()
+            if _stop_requested():
+                return
 
         # 引擎仍然报显存类错误（预检漏网/竞争）：切 CPU 重试一次
         # Vulkan 也走这条兜底：核显吃统一内存，OOM 的后果同样是"几小时的歌白跑"（评审 B18）。

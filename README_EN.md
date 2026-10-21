@@ -246,6 +246,10 @@ artifact and automatically falls back to one-shot generation.
 On iGPU machines, set `set YUE2_DISABLE_CPU_FALLBACK=1` in `secrets/local_env.bat`: a GPU
 allocation failure then fails fast with a resume hint instead of recomputing the whole song on a
 CPU that is 14× slower.
+
+**One automatic rescue** (v10.21.2): the gateway restarts the engine to release the leaked
+device buffers and retries once (skipping AR when a checkpoint exists). Only if that
+also fails does the job error out with the resume button.
 </details>
 
 **No NVIDIA GPU?** Use Vulkan on the integrated GPU if there is one: measured **~14× faster than CPU** on this machine (5,610 s → 318 s for the same request; 15–27× on short clips; identical output length and level). `一键补齐运行件.bat` downloads the Vulkan build, probes `--list-devices --backend vulkan`, and only writes `backend: vulkan` when a device is found — otherwise it falls back to `cpu` (same binary contains both backends). The iGPU uses unified memory, so keep other heavy apps closed. Without any usable GPU it runs CPU-only automatically — expect hours per song (see the measured anchor above).

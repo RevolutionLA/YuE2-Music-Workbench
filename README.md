@@ -411,6 +411,9 @@ py312\python.exe scripts\download_models.py --q8     :: q8_0（约4GB，质量�
 
 核显机器上建议在 `secrets/local_env.bat` 里写 `set YUE2_DISABLE_CPU_FALLBACK=1`：
 GPU 分配失败时任务直接失败并提示可续跑，而不是整首重算到慢 14 倍的 CPU 上。
+
+**分配失败会自动救一次**（v10.21.2）：网关先重启引擎清掉进程内残留的显存分配，
+再生一次（有 AR 检查点就跳过 AR）。只有这次还失败才会报错并留给「从检查点继续」。
 </details>
 
 <details>
