@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import sys
 import unittest
@@ -221,6 +222,68 @@ class EngineBackendChoice(unittest.TestCase):
         # 数小时的推理不能被引擎自己的 5 分钟 busy 守卫掐断
         self.assertEqual(cfg.get("busy_timeout_ms"), 0,
                          "挂机长跑必须关掉引擎的 busy 守卫，否则第一条请求 5 分钟就 503")
+
+
+class Checkpoints(unittest.TestCase):
+    """AR 检查点：同输入同键、种子变了不复用、过期作废、用完即弃。"""
+
+    BASE = {"style": "English, pop", "lyrics": "[Verse] a", "cot": "full", "seed": 7,
+            "num_inference_steps": 8}
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self._saved = main._CHECKPOINT_DIR
+        main._CHECKPOINT_DIR = Path(self._tmp.name)
+
+    def tearDown(self):
+        main._CHECKPOINT_DIR = self._saved
+        self._tmp.cleanup()
+
+    def test_key_is_stable_and_seed_sensitive(self):
+        k1 = main._checkpoint_key(dict(self.BASE))
+        k2 = main._checkpoint_key(dict(self.BASE))
+        self.assertEqual(k1, k2)
+        self.assertNotEqual(k1, main._checkpoint_key({**self.BASE, "seed": 8}),
+                            "换种子必须换键，否则会复用别人的 token")
+        self.assertNotEqual(k1, main._checkpoint_key({**self.BASE, "style": "other"}))
+
+    def test_save_load_drop_roundtrip(self):
+        main._save_checkpoint(self.BASE, [1, 2, 3], "X:1")
+        ck = main._load_checkpoint(self.BASE)
+        self.assertEqual(ck["tokens"], [1, 2, 3])
+        self.assertEqual(ck["abc"], "X:1")
+        main._drop_checkpoint(self.BASE)
+        self.assertIsNone(main._load_checkpoint(self.BASE), "成功后必须删，否则同 seed 重提会换波形")
+
+    def test_expired_checkpoint_is_discarded(self):
+        main._save_checkpoint(self.BASE, [1], "")
+        path = main._checkpoint_path(self.BASE)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["ts"] = 0
+        path.write_text(json.dumps(data), encoding="utf-8")
+        self.assertIsNone(main._load_checkpoint(self.BASE))
+        self.assertFalse(path.exists(), "过期检查点应当被删掉，不占磁盘")
+
+    def test_two_phase_is_skipped_for_external_abc_and_explicit_stop(self):
+        self.assertTrue(main._two_phase_enabled(dict(self.BASE)))
+        self.assertFalse(main._two_phase_enabled({**self.BASE, "abc": "X:1"}),
+                         "自带谱时 AR 的产物不再可复用，不能拆")
+        self.assertFalse(main._two_phase_enabled({**self.BASE, "stop_after": "semantic"}))
+
+    def test_phase2_forces_no_sampling_and_keeps_score(self):
+        body = main._phase2_body("yue2", dict(self.BASE), [5, 6, 7, 8], "X:1 K:C")
+        req = body["request"]
+        self.assertEqual(req["semantic_min_tokens"], 4)
+        self.assertEqual(req["semantic_max_tokens"], 4, "上下界必须相等，否则 AR 会继续采样")
+        self.assertEqual(req["options"]["semantic_prefix"], [5, 6, 7, 8])
+        self.assertNotIn("stop_after", req["options"])
+        self.assertEqual(req["cot"], "full")
+        self.assertEqual(req["abc"], "X:1 K:C")
+
+    def test_phase2_without_score_falls_back_to_off(self):
+        body = main._phase2_body("yue2", dict(self.BASE), [1], "")
+        self.assertEqual(body["request"]["cot"], "off")
 
 
 class HealthShape(unittest.TestCase):

@@ -42,6 +42,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import socket
@@ -345,6 +346,96 @@ def _audio_from_response(data: dict) -> tuple[bytes, dict]:
     )
 
 
+_CHECKPOINT_DIR = ROOT / "runtime" / "data" / "gen_checkpoints"
+_CHECKPOINT_TTL = 7 * 86400          # 七天没用过的检查点自动作废
+_CHECKPOINT_KEYS = ("style", "lyrics", "cot", "seed", "num_inference_steps",
+                    "semantic_min_tokens", "semantic_max_tokens")
+
+
+def _checkpoint_key(opts: dict) -> str:
+    """同一份"可复现输入"→同一个键。种子变了就不该复用检查点。"""
+    blob = json.dumps({k: opts.get(k) for k in _CHECKPOINT_KEYS},
+                      ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:40]
+
+
+def _checkpoint_path(opts: dict) -> Path:
+    return _CHECKPOINT_DIR / f"{_checkpoint_key(opts)}.json"
+
+
+def _load_checkpoint(opts: dict) -> dict | None:
+    p = _checkpoint_path(opts)
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    if time.time() - float(data.get("ts") or 0) > _CHECKPOINT_TTL:
+        p.unlink(missing_ok=True)
+        return None
+    return data if data.get("tokens") else None
+
+
+def _save_checkpoint(opts: dict, tokens: list, abc: str) -> None:
+    _CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+    dest = _checkpoint_path(opts)
+    tmp = dest.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"tokens": tokens, "abc": abc or "",
+                               "cot": opts.get("cot"), "ts": time.time()},
+                              ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, dest)
+
+
+def _drop_checkpoint(opts: dict) -> None:
+    _checkpoint_path(opts).unlink(missing_ok=True)
+
+
+def _two_phase_enabled(opts: dict) -> bool:
+    """能不能拆成"先 AR、后渲染"。
+
+    外部自带谱（abc）或调用方显式指定 stop_after 时不拆：前者 AR 的产物不再是
+    引擎自己计划的谱，后者本来就是"只跑一段"的调用，再拆只会把语义弄乱。
+    想关掉整条机制：环境变量 YUE2_NO_TWO_PHASE=1。
+    """
+    if os.environ.get("YUE2_NO_TWO_PHASE", "").strip().lower() in ("1", "true", "yes", "on"):
+        return False
+    if str(opts.get("abc") or "").strip():
+        return False
+    return "stop_after" not in opts
+
+
+def _phase1_body(model_id: str, opts: dict) -> dict:
+    o = dict(opts)
+    o["stop_after"] = "semantic"      # 只跑 AR：拿语义 token + 引擎自己计划的谱
+    return {"model": model_id, "request": {"task": "gen", **o, "options": dict(o)}}
+
+
+def _phase2_body(model_id: str, opts: dict, tokens: list, abc: str) -> dict:
+    o = dict(opts)
+    n = len(tokens)
+    o["semantic_prefix"] = tokens
+    o["semantic_min_tokens"] = n
+    o["semantic_max_tokens"] = n     # 上下界相等 = AR 一个 token 都不再采样
+    o.pop("stop_after", None)
+    cot = str(o.get("cot") or "full").lower()
+    if cot in ("full", "melody") and abc:
+        o["abc"] = abc
+        o["cot"] = cot
+    else:
+        o["cot"] = "off"             # 没有谱就只能走 off；前缀照样生效
+    return {"model": model_id, "request": {"task": "gen", **o, "options": dict(o)}}
+
+
+def _artifact_payload(data: dict, want_id: str, want_format: str) -> str:
+    """从 tasks/run 的 artifacts 里取指定产物（base64 原文）。"""
+    for a in data.get("artifacts") or []:
+        if not isinstance(a, dict):
+            continue
+        meta = a.get("meta") or {}
+        if a.get("id") == want_id or (meta.get("format") or "") == want_format:
+            return str(a.get("payload") or "")
+    return ""
+
+
 def _engine_body(model_id: str, opts: dict) -> dict:
     """送进 /v1/tasks/run 的转发体。
 
@@ -405,13 +496,76 @@ async def music_generate(request: Request) -> Response:
 
     url = settings.audiocpp_base_url.rstrip("/") + "/v1/tasks/run"
     timeout = httpx.Timeout(settings.audiocpp_timeout_sec, connect=10.0)
-    try:
+    model_id = str(payload.get("model") or settings.audiocpp_model_id)
+
+    async def _post(req_body: dict):
         async with httpx.AsyncClient(base_url=settings.audiocpp_base_url.rstrip("/"),
                                      timeout=timeout, trust_env=False) as c:
-            r = await c.post("/v1/tasks/run", json=body)
+            return await c.post("/v1/tasks/run", json=req_body)
+
+    one_shot = _engine_body(model_id, opts)   # 后端不支持语义产物时退回到它
+    ckpt = _load_checkpoint(opts) if _two_phase_enabled(opts) else None
+    if ckpt:
+        # 上次已经跑完 AR：直接从检查点渲染 NAR+VAE，AR 一秒都不用重跑。
+        _log(f"从检查点恢复：跳过 AR（tokens={len(ckpt['tokens'])}，"
+             f"检查点 {round((time.time() - float(ckpt.get('ts') or 0)) / 3600, 1)} 小时前）")
+        body = _phase2_body(model_id, opts, ckpt["tokens"], str(ckpt.get("abc") or ""))
+    elif _two_phase_enabled(opts):
+        # 首跑：先只跑 AR（拿语义 token 当检查点），别再发一次性请求——
+        # 漏这一步会先完整生成一遍、失败后补跑一次，白烧一倍时间（00:50 实测 210s vs 101s）。
+        body = _phase1_body(model_id, opts)
+    try:
+        r = await _post(body)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502,
                             detail=f"audio.cpp {url} 请求失败：{exc}") from exc
+
+    # ---- 两阶段：AR（检查点）→ 渲染 ----
+    if r.status_code < 400 and _two_phase_enabled(opts) and not ckpt:
+        tokens, abc = None, ""
+        try:
+            ar = r.json()
+            sem_b64 = _artifact_payload(ar, "semantic", "yue2-semantic")
+            abc_b64 = _artifact_payload(ar, "score", "abc")
+            if sem_b64:
+                sem = json.loads(base64.b64decode(sem_b64).decode("utf-8"))
+                tokens = (sem.get("tokens") or sem.get("semantic") or []
+                          if isinstance(sem, dict) else sem)
+                abc = base64.b64decode(abc_b64).decode("utf-8") if abc_b64 else ""
+        except Exception as exc:  # noqa: BLE001
+            _log(f"⚠ AR 产物解析失败（{type(exc).__name__}: {exc}）→ 退回一次性生成")
+            tokens = None
+        if not isinstance(tokens, list) or not tokens:
+            # 这个后端不产语义产物（CPU 后端实测会这样）→ 退回一次性生成。
+            # 绝不因为"建不了检查点"把一首本来能出的歌弄失败。
+            _log("⚠ 引擎没回语义 token（该后端不支持 stop_after=semantic）→ 退回一次性生成，无检查点")
+            try:
+                r = await _post(one_shot)
+            except httpx.HTTPError as exc:
+                raise HTTPException(status_code=502,
+                                    detail=f"audio.cpp {url} 请求失败：{exc}") from exc
+        else:
+            _save_checkpoint(opts, tokens, abc)
+            _log(f"AR 检查点已保存（tokens={len(tokens)}，谱={len(abc)} 字符）→ 渲染 NAR+VAE")
+            body = _phase2_body(model_id, opts, tokens, abc)
+            try:
+                r = await _post(body)
+            except httpx.HTTPError as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"渲染阶段请求失败：{exc}；AR 检查点已保存，重新提交同一首会从检查点继续"
+                ) from exc
+
+    if r.status_code >= 400 and _two_phase_enabled(opts):
+        # 渲染/AR 失败时把"可续跑"说清楚：AR 检查点是否已存在决定还能不能省那一段。
+        has_ck = _load_checkpoint(opts) is not None
+        hint = ("；AR 检查点已保存，重新提交同一首会跳过 AR 继续（不会从头重算）"
+                if has_ck else "；AR 阶段尚未完成，没有检查点可用")
+        try:
+            _err = r.json()
+        except ValueError:
+            _err = r.text[:400]
+        raise HTTPException(status_code=502, detail=f"{_err}{hint}")
 
     if r.status_code >= 400:
         detail: Any
@@ -441,6 +595,8 @@ async def music_generate(request: Request) -> Response:
     wav, meta = _audio_from_response(data)
     if not wav:
         raise HTTPException(status_code=502, detail="引擎回的 WAV 是空字节")
+    if _two_phase_enabled(opts):
+        _drop_checkpoint(opts)       # 成品已出，检查点用完即弃（否则同 seed 重提会换波形）
 
     wall = (data.get("timing") or {}).get("wall_ms")
     headers = {"X-Seed": str(seed), "Content-Disposition": 'inline; filename="song.wav"'}

@@ -258,7 +258,15 @@ class TestSeparateArtifacts(SeparateBase):
         self._fake_sep()
         rid = self._rid_of(self._submit())
         self._wait(rid)
-        self.assertFalse((Path(app.RVC_JOB_DIR) / f"sep_{rid}").exists(),
+        # 清目录是 worker 收尾时做的，与"状态变 done"不是同一瞬间（重负载下实测会抢跑）。
+        # 等最多 2 秒再断言——测的是"最终会被清掉"，不是"done 的同一条指令里清掉"。
+        import time as _t
+        target = Path(app.RVC_JOB_DIR) / f"sep_{rid}"
+        for _ in range(20):
+            if not target.exists():
+                break
+            _t.sleep(0.1)
+        self.assertFalse(target.exists(),
                          "上传原曲与中间产物（几十 MB）必须随任务结束清掉")
 
 

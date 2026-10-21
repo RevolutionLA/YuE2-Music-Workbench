@@ -4,7 +4,7 @@
 #   * fastapi/starlette 必须成对钉。实测最新 FastAPI（0.154）会把「file part 的
 #     filename 为空」当成合法上传收下并真的入队跑 GPU，而回归用例
 #     tests/test_server_sources.py 锁的是"这种形状必须当场 422"。0.115.12 + 0.46.2
-#     是 614 条用例跑绿的那一对，别只升其中一个。
+#     是 642 条用例跑绿的那一对，别只升其中一个。
 #   * httpx 0.28.1 与评审文档里记录的原始分发包一致（app.py 的响应头大小写、
 #     trust_env 行为都按这一版验过）。
 fastapi==0.115.12

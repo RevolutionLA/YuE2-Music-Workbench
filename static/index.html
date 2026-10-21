@@ -5416,6 +5416,28 @@ function applyFinishedJob(job) {
     let msg = "生成失败：" + (job.error || "未知错误");
     if (/memory|alloc|oom/i.test(msg)) msg = "显存不足（6GB 卡建议 Q4_K_M + 缩短歌词/减小 Steps）\n" + msg;
     $("status").textContent = msg;
+    // 显存/分配类失败：AR 可能已完成，给一个"从检查点继续"（不会重跑 AR）
+    if (job.id && /memory|alloc|oom/i.test(String(job.error || ""))) {
+      const btn = document.createElement("button");
+      btn.className = "ghost btn-xs";
+      btn.style.marginLeft = "8px";
+      btn.textContent = "↻ 从检查点继续";
+      btn.title = "用原参数重新提交；AR 已跑完时直接跳过 AR 渲染（波形会重渲染，语义与时长不变）";
+      btn.onclick = async () => {
+        btn.disabled = true;
+        try {
+          await jfetch("/api/generate/resume/" + encodeURIComponent(job.id), { method: "POST" });
+          toast("已从检查点继续（不重跑 AR）", "ok");
+          setGenerating(true);
+          pollJob();
+        } catch (e) {
+          toast("继续失败：" + friendlyErr(e), "err");
+        } finally {
+          btn.disabled = false;
+        }
+      };
+      $("status").appendChild(btn);
+    }
     toast("生成失败", "err");
     Favicon.set("error");
     setTimeout(() => Favicon.set("idle"), 8000);  // 红叉停留 8 秒后回到空闲图标

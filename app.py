@@ -2578,6 +2578,18 @@ def _seed_from_headers(headers: dict, payload: dict):
     return headers.get("x-seed") or headers.get("X-Seed") or payload.get("seed")
 
 
+def _cpu_fallback_allowed() -> bool:
+    """GPU 分配失败时，允不允许自动退回 CPU 整首重跑。
+
+    默认允许（N 卡机器上 CPU 只是慢 5-10 倍）。但核显机器上两者差 14 倍以上，而且
+    回退**不是续跑而是从头重算**——一首 4 分钟的歌会从 1~2 小时变成十小时以上，
+    用户明确不想这样。设 `YUE2_DISABLE_CPU_FALLBACK=1` 后，分配失败就直接报错，
+    由用户决定缩短歌词还是换机器。
+    """
+    return os.environ.get("YUE2_DISABLE_CPU_FALLBACK", "").strip().lower() not in (
+        "1", "true", "yes", "on")
+
+
 def _gen_run(job: dict, payload: dict) -> None:
     """后台线程：调用本网关的 /api/music/generate，把结果落盘到 output/。
 
@@ -2618,6 +2630,11 @@ def _gen_run(job: dict, payload: dict) -> None:
             # 预检在这种情况下只会误降级（见 _audiocpp_cuda_ready 的 10-11 实测）
             ok, free = (True, None) if _audiocpp_cuda_ready() else _vram_ok_for_gpu()
             if not ok:
+                if not _cpu_fallback_allowed():
+                    raise RuntimeError(
+                        f"显存预检不足（空闲 {free}MB），且已禁用 CPU 回退"
+                        "（secrets\\local_env.bat 里 YUE2_DISABLE_CPU_FALLBACK=1）。"
+                        "请缩短短语/歌词后重试，或换显存更大的显卡。")
                 used_cpu_fallback = True
                 job.update(
                     status="running", cpu_fallback=True,
@@ -2648,6 +2665,15 @@ def _gen_run(job: dict, payload: dict) -> None:
         # Vulkan 也走这条兜底：核显吃统一内存，OOM 的后果同样是"几小时的歌白跑"（评审 B18）。
         if (code != 200 and not used_cpu_fallback
                 and backend_mode() in ("cuda", "vulkan") and _is_vram_error(detail)):
+            if not _cpu_fallback_allowed():
+                # 不偷偷重算：把引擎的原话交给用户，任务直接失败（评审 B18 的用户侧开关）
+                job.update(status="error", sec=round(time.time() - started, 1),
+                           error=f"{str(detail)[:700]}（已禁用 CPU 回退：核显上 CPU 慢 14 倍以上，"
+                                 f"且回退会从头重算）")
+                _output_write_meta(job)
+                _win_toast("✕ 生成失败：" + (job.get("style") or "").split(",")[0][:40],
+                           str(detail)[:120])
+                return
             used_cpu_fallback = True
             job.update(
                 status="running", cpu_fallback=True,
@@ -2790,6 +2816,46 @@ def generate_plan_abc(payload: dict):
         msg += "；" + note
     return {"ok": True, "abc": abc, "truncated": truncated, "wall_sec": wall,
             "seed": seed, "cot": cot, "message": msg}
+
+
+@router.post("/generate/resume/{rid}")
+async def generate_resume(rid: str):
+    """从失败/取消的任务一键继续：用原参数重新提交，AR 已完成时不会重跑 AR。
+
+    实现在开源网关 main.py：它把生成拆成两段（AR → 语义 token 检查点；NAR+VAE → 音频），
+    检查点按"style/lyrics/cot/seed/步数"的哈希落盘。同参数重提 → 直接跳过 AR。
+    实测（Vulkan，96 token）：一次性 193.5 秒；AR 检查点 135.4 秒；从检查点渲染 22~33 秒。
+    注意：从检查点渲染的波形与一次性生成**不逐字节相同**（同一 token 流、同一时长，
+    RNG 流不同），语义与时长一致。
+    """
+    rid = os.path.basename((rid or "").replace("\\", "/"))
+    meta_path = OUTPUT_DIR / f"{rid}.json"
+    if not rid or not meta_path.is_file():
+        raise HTTPException(status_code=404, detail=f"找不到任务记录：{rid}")
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"任务记录读不出来：{exc}") from exc
+    if meta.get("status") not in ("error", "cancelled"):
+        raise HTTPException(status_code=400,
+                            detail=f"只有失败/取消的任务才能继续（当前 {meta.get('status')}）")
+    style = str(meta.get("style") or "").strip()
+    if not style:
+        raise HTTPException(status_code=400, detail="这条记录没有 style，无法继续")
+    params = dict(meta.get("params") or {})
+    payload = {
+        "style": style,
+        "lyrics": str(meta.get("lyrics") or ""),
+        "cot": str(meta.get("cot") or "full"),
+        "abc": str(meta.get("abc") or ""),
+        "model": str(meta.get("model") or "yue2"),
+        "task_name": str(meta.get("task_name") or ""),
+        "count": 1,
+        **params,
+    }
+    out = await generate_start(payload)
+    return {**out, "resumed_from": rid,
+            "message": "已按原参数重新提交；AR 检查点存在时会直接跳过 AR 渲染"}
 
 
 @router.post("/generate/stop")

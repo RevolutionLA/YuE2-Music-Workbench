@@ -230,7 +230,7 @@ git clone https://github.com/RevolutionLA/YuE2-Music-Workbench.git
 >   `static/index.html` 是自包含单文件），所以不依赖 `main.cp312-win_amd64.pyd`。
 >   如果你手上有那份 `.pyd`，把它放到仓库根即可——`import main` 会优先选中编译内核（同名同位置）。
 >   兼容性用例在 `tests/test_shim_main.py`（含"把 `request.options` 那层摘掉立刻变红"的变异验证）。
-> * **依赖清单进了仓库**：根 `requirements.txt` 是实测跑绿 614 条用例的那一对版本
+> * **依赖清单进了仓库**：根 `requirements.txt` 是实测跑绿 642 条用例的那一对版本
 >   （fastapi 0.115.12 + starlette 0.46.2；最新 FastAPI 会把"空 filename 的 file part"
 >   当成合法上传收下并真的入队跑 GPU，回归用例锁的是当场 422）。**注意这份文件必须存成
 >   UTF-8 with BOM**，否则中文 Windows 上 pip 按 cp936 解它，连清单都读不进来。
@@ -313,7 +313,7 @@ py312\python.exe scripts\download_models.py --q8     :: q8_0（约4GB，质量�
 | `app.py` | 网关扩展路由：任务托管 / 批量排队 / 终止 / 模型切换 / 换声 / 歌词对齐 / 本机接口守卫 |
 | `main.py` | **开源兼容网关**（本仓库自带）：顶替闭源 `main.cp312-win_amd64.pyd` 剩下的那几件事——`app`/`settings`、`/api/health`、`/api/music/generate`、导入时拉起引擎。参数白名单运行时读 `cpp/model_specs/yue2.json`，不手抄常量；用例在 `tests/test_shim_main.py` |
 | `main.cp312-win_amd64.pyd` | 编译网关内核（不可改、不入库）。有它就优先用它（同名同位置）；没有也能靠上面的 `main.py` 跑起来 |
-| `requirements.txt` | 跑绿 614 条用例的那套依赖版本（**必须 UTF-8 with BOM**，见下方编码规矩） |
+| `requirements.txt` | 跑绿 642 条用例的那套依赖版本（**必须 UTF-8 with BOM**，见下方编码规矩） |
 | `server.json.example` | audio.cpp 引擎配置模板；`scripts/setup_runtime.py` 按硬件把它写成 `cpp/server.json`（`busy_timeout_ms` 必须是 0，否则引擎 5 分钟 busy 守卫会掐断长跑） |
 | `audiocpp.py` | 内核运行期真正依赖的推理引擎适配层（可改，改引擎调用参数在这里） |
 | `src/lrc_align.py` | 歌词强制对齐引擎（字/词级时间戳 → LRC + 增强 ELRC 卡拉OK逐字高亮） |
@@ -393,6 +393,25 @@ py312\python.exe scripts\download_models.py --q8     :: q8_0（约4GB，质量�
 4. `git tag -a v<主>.<日>.<序> -m "..."` 后推标签：`git -c http.proxy=http://127.0.0.1:7890 push origin --tags`。
 
 ## ❓ 常见问题
+
+<details>
+<summary><b>生成到一半 GPU 显存不够了，能不能接着跑？</b></summary>
+
+能，从 v10.21.1 起生成拆成两段：**先只跑 AR**（拿语义 token + 计划谱，落盘成检查点），
+**再渲染 NAR+VAE**。第二段失败（核显上典型是 VAE 分配失败）时检查点会保留：
+
+* 失败卡片上点「↻ 从检查点继续」，或 `POST /api/generate/resume/<任务ID>`；
+* 系统按「style/歌词/cot/种子/步数」的哈希找回检查点，**直接跳过 AR**，只重渲染；
+* 检查点 7 天过期；成功出一首即删。
+
+实测（Vulkan，96 token）：一次性 193.5 秒；AR 检查点 135.4 秒；**从检查点渲染 20 秒**。
+整首几分钟的歌里 AR 占大头，续跑省的就是这一段。**诚实的差异**：续跑的波形与一次性生成
+不逐字节相同（同 token、同时长、同语义，RNG 流不同）。CPU 后端不产语义产物，
+会自动退回一次性生成（语义都不丢，只是没有检查点）。
+
+核显机器上建议在 `secrets/local_env.bat` 里写 `set YUE2_DISABLE_CPU_FALLBACK=1`：
+GPU 分配失败时任务直接失败并提示可续跑，而不是整首重算到慢 14 倍的 CPU 上。
+</details>
 
 <details>
 <summary><b>没有 NVIDIA 显卡能跑吗？</b></summary>

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import types
@@ -180,6 +181,34 @@ class BackendProbe(unittest.TestCase):
             self.assertEqual(app.resolve_backend("cuda"), ("cuda", ""))
         finally:
             pass
+
+
+class CpuFallbackGate(unittest.TestCase):
+    """核显机器默认不许"分配失败就偷偷整首重算成 CPU"（用户侧开关）。"""
+
+    def setUp(self):
+        self._saved = os.environ.get("YUE2_DISABLE_CPU_FALLBACK")
+
+    def tearDown(self):
+        if self._saved is None:
+            os.environ.pop("YUE2_DISABLE_CPU_FALLBACK", None)
+        else:
+            os.environ["YUE2_DISABLE_CPU_FALLBACK"] = self._saved
+
+    def test_default_allows(self):
+        os.environ.pop("YUE2_DISABLE_CPU_FALLBACK", None)
+        self.assertTrue(app._cpu_fallback_allowed())
+
+    def test_flag_disables(self):
+        for v in ("1", "true", "YES", "on"):
+            os.environ["YUE2_DISABLE_CPU_FALLBACK"] = v
+            self.assertFalse(app._cpu_fallback_allowed(), v)
+
+    def test_both_fallback_branches_consult_the_gate(self):
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertGreaterEqual(src.count("_cpu_fallback_allowed()"), 3,
+                                "预检分支与错误分支都必须过这道闸（含函数定义一行）")
+        self.assertIn("已禁用 CPU 回退", src, "失败时必须把原因说给用户看")
 
 
 class SeedHeader(unittest.TestCase):
