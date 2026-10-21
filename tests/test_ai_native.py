@@ -31,7 +31,10 @@ def client():
     return TestClient(app)
 
 INDEX = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-LAUNCH_BAT = (ROOT / "scripts" / "启动音乐工作台.bat").read_text(encoding="utf-8")
+# 启动脚本按项目规矩存成 GBK（OEM cp936）：cmd.exe 用控制台自身的码页解析批处理，
+# UTF-8 的 .bat 在 936 控制台下会把一行中文切成半截、命令少跑几条。
+# 规矩与挡回归的用例见 tests/test_script_encoding.py 与 .gitattributes。
+LAUNCH_BAT = (ROOT / "scripts" / "启动音乐工作台.bat").read_bytes().decode("gbk")
 
 
 class TestChatRunsInsideGateway(unittest.TestCase):

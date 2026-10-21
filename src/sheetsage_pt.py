@@ -30,7 +30,12 @@ def configure_hf_home() -> Path:
     os.environ["HF_HOME"] = str(dest)
     os.environ["HF_HUB_CACHE"] = str(hub)
     os.environ["HUGGINGFACE_HUB_CACHE"] = str(hub)
-    os.environ["TRANSFORMERS_CACHE"] = str(dest / "transformers")
+    # TRANSFORMERS_CACHE 是废弃变量，但 transformers 4.45 的 cached_file() 仍**优先**用它。
+    # 以前这里指到 transform/ 目录：转谱时 checkpoints/modeling_sheetsage2.py:248 会去那儿找
+    # m-a-p/MERT-v2-FullSong 的 configuration_mert2.py，而权重复实际下载在 hub/ 下 →
+    # 必然 OSError，再被 get_model() 吞成一句"本地缓存不完整"（实测 2026-10-21，干净机器
+    # 100% 复现）。与 hub 同源才与下载落点一致。
+    os.environ["TRANSFORMERS_CACHE"] = str(hub)
     os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
     return dest
 
@@ -112,12 +117,15 @@ def get_model() -> Any:
             trust_remote_code=True,
             local_files_only=offline,
         )
-    except Exception:
+    except Exception as exc:
         if offline:
+            # 别把原因吞掉：原来的 `from None` 只留一句"本地缓存不完整"，实测排障时
+            # 真正的异常（缺哪个文件、用的哪个 revision）全被抹掉了。
             raise RuntimeError(
                 "本地缓存不完整。请联网一次让 MERT-v2-FullSong 下到项目 hf_download，"
-                "或把已有缓存拷进 hf_download/hub"
-            ) from None
+                "或把已有缓存拷进 hf_download/hub。原始错误："
+                f"{type(exc).__name__}: {str(exc)[:400]}"
+            ) from exc
         raise
     _model = model.eval().to(_device)
     return _model

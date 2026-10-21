@@ -1,32 +1,36 @@
 @echo off
+rem [encoding] THIS FILE IS GBK (OEM cp936) ON PURPOSE. cmd.exe parses a batch file with the
+rem [encoding] console's OEM codepage; a UTF-8 batch under cp936 splits lines mid-character
+rem [encoding] and some commands silently stop running (not just a display issue). Do NOT
+rem [encoding] re-save as UTF-8 and do NOT add a mid-file code-page switch.
 rem ============================================================
-rem  æ³¨å†Œ yue2workbench:// è‡ªå®šä¹‰åè®®ï¼ˆä¸€æ¬¡å³å¯ï¼Œä¹‹åå¯åˆ æœ¬è„šæœ¬ï¼‰
-rem  ä½œç”¨ï¼šå‰ç«¯é¡µé¢æ£€æµ‹åˆ°åç«¯ç¦»çº¿æ—¶ï¼Œç‚¹ã€Œç¦»çº¿ã€æŒ‰é’®å³å¯é€šè¿‡
-rem        yue2workbench:// åè®®å”¤èµ·ã€Œå¯åŠ¨éŸ³ä¹å·¥ä½œå°.batã€
-rem  å†™å…¥ HKCUï¼ˆå½“å‰ç”¨æˆ·ï¼‰ï¼Œä¸éœ€è¦ç®¡ç†å‘˜æƒé™ã€‚
+rem  ×¢²á yue2workbench:// ×Ô¶¨ÒåĞ­Òé£¨Ò»´Î¼´¿É£¬Ö®ºó¿ÉÉ¾±¾½Å±¾£©
+rem  ×÷ÓÃ£ºÇ°¶ËÒ³Ãæ¼ì²âµ½ºó¶ËÀëÏßÊ±£¬µã¡¸ÀëÏß¡¹°´Å¥¼´¿ÉÍ¨¹ı
+rem        yue2workbench:// Ğ­Òé»½Æğ¡¸Æô¶¯ÒôÀÖ¹¤×÷Ì¨.bat¡¹
+rem  Ğ´Èë HKCU£¨µ±Ç°ÓÃ»§£©£¬²»ĞèÒª¹ÜÀíÔ±È¨ÏŞ¡£
 rem ============================================================
 setlocal
 set "BAT_DIR=%~dp0"
-set "START_BAT=%BAT_DIR%å¯åŠ¨éŸ³ä¹å·¥ä½œå°.bat"
+set "START_BAT=%BAT_DIR%Æô¶¯ÒôÀÖ¹¤×÷Ì¨.bat"
 
 if not exist "%START_BAT%" (
-  echo [é”™è¯¯] æœªæ‰¾åˆ°å¯åŠ¨è„šæœ¬ï¼š%START_BAT%
-  echo è¯·å°†æœ¬è„šæœ¬æ”¾åœ¨ scripts\ ç›®å½•ä¸‹å†è¿è¡Œã€‚
+  echo [´íÎó] Î´ÕÒµ½Æô¶¯½Å±¾£º%START_BAT%
+  echo Çë½«±¾½Å±¾·ÅÔÚ scripts\ Ä¿Â¼ÏÂÔÙÔËĞĞ¡£
   pause
   exit /b 1
 )
 
-rem Windows è¦æ±‚åè®®å‘½ä»¤å¸¦å¼•å·åŒ…è£¹å®Œæ•´è·¯å¾„ã€‚
-rem è¿™é‡Œåˆ»æ„ä¸æŠŠ URLï¼ˆ%1ï¼‰è½¬å‘ç»™å¯åŠ¨è„šæœ¬ï¼šå¯åŠ¨è„šæœ¬ä»ä¸è¯» %1ï¼Œå®ƒåªæ˜¯è¢«å”¤èµ·å³å¯ã€‚
-rem ä»¥å‰å†™æˆ cmd /c ""...bat" %1"ï¼Œ%1 ç”± shell åŸæ ·æ›¿æ¢ï¼Œç½‘é¡µå¯æ„é€ 
-rem yue2workbench://x"&calc.exe è¿™ç±»å¸¦å¼•å·/ä¸å·çš„ URL æ‹¼è¿›å‘½ä»¤è¡Œæ‰§è¡Œä»»æ„å‘½ä»¤ã€‚
+rem Windows ÒªÇóĞ­ÒéÃüÁî´øÒıºÅ°ü¹üÍêÕûÂ·¾¶¡£
+rem ÕâÀï¿ÌÒâ²»°Ñ URL£¨%1£©×ª·¢¸øÆô¶¯½Å±¾£ºÆô¶¯½Å±¾´Ó²»¶Á %1£¬ËüÖ»ÊÇ±»»½Æğ¼´¿É¡£
+rem ÒÔÇ°Ğ´³É cmd /c ""...bat" %1"£¬%1 ÓÉ shell Ô­ÑùÌæ»»£¬ÍøÒ³¿É¹¹Ôì
+rem yue2workbench://x"&calc.exe ÕâÀà´øÒıºÅ/ÓëºÅµÄ URL Æ´½øÃüÁîĞĞÖ´ĞĞÈÎÒâÃüÁî¡£
 reg add "HKCU\Software\Classes\yue2workbench" /ve /d "URL:YuE2 Music Workbench" /f
 reg add "HKCU\Software\Classes\yue2workbench" /v "URL Protocol" /d "" /f
 reg add "HKCU\Software\Classes\yue2workbench\shell\open\command" /ve /d "\"%START_BAT%\"" /f
 
 if %errorlevel%==0 (
-  echo [æˆåŠŸ] åè®® yue2workbench:// å·²æ³¨å†Œï¼ŒæŒ‡å‘ï¼š%START_BAT%
+  echo [³É¹¦] Ğ­Òé yue2workbench:// ÒÑ×¢²á£¬Ö¸Ïò£º%START_BAT%
 ) else (
-  echo [å¤±è´¥] æ³¨å†ŒæœªæˆåŠŸï¼Œerrorlevel=%errorlevel%
+  echo [Ê§°Ü] ×¢²áÎ´³É¹¦£¬errorlevel=%errorlevel%
 )
 pause

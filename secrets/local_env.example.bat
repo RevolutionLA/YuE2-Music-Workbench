@@ -1,3 +1,3 @@
 @echo off
-rem å¤åˆ¶æœ¬æ–‡ä»¶ä¸º local_env.bat å¹¶å¡«å…¥ä½ è‡ªå·±çš„å¯†é’¥ï¼ˆlocal_env.bat å·²è¢« .gitignore æ’é™¤ï¼‰
+rem ¸´ÖÆ±¾ÎÄ¼şÎª local_env.bat ²¢ÌîÈëÄã×Ô¼ºµÄÃÜÔ¿£¨local_env.bat ÒÑ±» .gitignore ÅÅ³ı£©
 rem set DEEPSEEK_API_KEY=sk-xxxxxxxx

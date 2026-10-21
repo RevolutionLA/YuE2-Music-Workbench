@@ -3,7 +3,8 @@
 本仓库是 **YuE2 音乐工作台**：围绕上游模型构建的本地推理网关、Web 工作台与音频工具链。
 分发/二次分发前请逐层核对下面的许可归属——本文件不授予任何超出下列条款的权利。
 
-## 1. 本仓库自研代码（`app.py`、`src/`、`static/`、`dsh-plugin/`、`scripts/`、`watchdog.py`、`settings.py`）
+## 1. 本仓库自研代码（`app.py`、`main.py`、`src/`、`static/`、`dsh-plugin/`、`scripts/`、
+`requirements*.txt`、`server.json.example`、`*.bat`、`watchdog.py`、`settings.py`）
 
 Copyright (c) 2026 RevolutionLA
 

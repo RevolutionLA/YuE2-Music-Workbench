@@ -1,3 +1,7 @@
 @echo off
-rem åœæ­¢éŸ³ä¹å·¥ä½œå°ï¼ˆæ­£å¼é€»è¾‘åœ¨ scripts\ï¼Œæ­¤æ–‡ä»¶ä»…è½¬è°ƒï¼‰
-call "%~dp0scripts\åœæ­¢éŸ³ä¹å·¥ä½œå°.bat" %*
+rem [encoding] THIS FILE IS GBK (OEM cp936) ON PURPOSE. cmd.exe parses a batch file with the
+rem [encoding] console's OEM codepage; a UTF-8 batch under cp936 splits lines mid-character
+rem [encoding] and some commands silently stop running (not just a display issue). Do NOT
+rem [encoding] re-save as UTF-8 and do NOT add a mid-file code-page switch.
+rem Í£Ö¹ÒôÀÖ¹¤×÷Ì¨£¨ÕıÊ½Âß¼­ÔÚ scripts\£¬´ËÎÄ¼ş½ö×ªµ÷£©
+call "%~dp0scripts\Í£Ö¹ÒôÀÖ¹¤×÷Ì¨.bat" %*

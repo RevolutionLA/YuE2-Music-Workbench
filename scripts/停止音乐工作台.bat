@@ -1,37 +1,40 @@
 @echo off
-chcp 65001 >nul
-title éŸ³ä¹å·¥ä½œå° - åœæ­¢
+rem [encoding] THIS FILE IS GBK (OEM cp936) ON PURPOSE. cmd.exe parses a batch file with the
+rem [encoding] console's OEM codepage; a UTF-8 batch under cp936 splits lines mid-character
+rem [encoding] and some commands silently stop running (not just a display issue). Do NOT
+rem [encoding] re-save as UTF-8 and do NOT add a mid-file code-page switch.
+title ÒôÀÖ¹¤×÷Ì¨ - Í£Ö¹
 cd /d %~dp0..
-rem æœ¬è„šæœ¬ä½äºŽ scripts\ï¼Œæ‰€æœ‰ç›¸å¯¹è·¯å¾„å‡ä»¥ä»“åº“æ ¹ä¸ºåŸºå‡†
+rem ±¾½Å±¾Î»ÓÚ scripts\£¬ËùÓÐÏà¶ÔÂ·¾¶¾ùÒÔ²Ö¿â¸ùÎª»ù×¼
 
-rem ---- ç«¯å£ï¼šå”¯ä¸€çœŸæº ports.jsonï¼ˆä¸Žå¯åŠ¨è„šæœ¬åŒæºï¼‰----
+rem ---- ¶Ë¿Ú£ºÎ¨Ò»ÕæÔ´ ports.json£¨ÓëÆô¶¯½Å±¾Í¬Ô´£©----
 set "GATEWAY_PORT=7863"
 set "DSH_PORT=3081"
 for /f "usebackq tokens=*" %%p in (`powershell -NoProfile -Command "try{$j=Get-Content '%cd%\ports.json' -Raw | ConvertFrom-Json; '{0} {1}' -f $(if($j.gateway){$j.gateway}else{'7863'}),$(if($j.dsh){$j.dsh}else{'3081'})}catch{'7863 3081'}" 2^>nul`) do (
   for /f "tokens=1,2" %%a in ("%%p") do (set "GATEWAY_PORT=%%a" & set "DSH_PORT=%%b")
 )
 
-echo åœæ­¢ éŸ³ä¹å·¥ä½œå°ï¼ˆæ­£åœ¨è¿›è¡Œçš„ç”Ÿæˆä»»åŠ¡å°†è¢«ä¸­æ–­ï¼‰...
+echo Í£Ö¹ ÒôÀÖ¹¤×÷Ì¨£¨ÕýÔÚ½øÐÐµÄÉú³ÉÈÎÎñ½«±»ÖÐ¶Ï£©...
 
-rem å…ˆåœçœ‹é—¨ç‹—ï¼Œå¦åˆ™å®ƒä¼šç«‹åˆ»æŠŠç½‘å…³é‡æ–°æ‹‰èµ·æ¥
+rem ÏÈÍ£¿´ÃÅ¹·£¬·ñÔòËü»áÁ¢¿Ì°ÑÍø¹ØÖØÐÂÀ­ÆðÀ´
 if exist "runtime\_watchdog.pid" (
   for /f %%p in (runtime\_watchdog.pid) do taskkill /PID %%p /F >nul 2>&1
   del /q "runtime\_watchdog.pid" >nul 2>&1
 )
 taskkill /IM pythonw.exe /F >nul 2>&1
 
-rem å¹²æŽ‰ MCP å·¥å…·è¿›ç¨‹ï¼ˆdsh è°ƒç”¨ AI å·¥å…·æ—¶æ‹‰èµ·ï¼Œè„šæœ¬åœ¨ src\mcp_server.pyï¼‰ã€‚
-rem æŒ‰å‘½ä»¤è¡ŒåŒ¹é…è€Œéžè¿›ç¨‹åï¼Œé¿å…è¯¯æ€ py312 ä¸‹å…¶å®ƒ python è¿›ç¨‹ã€‚
+rem ¸Éµô MCP ¹¤¾ß½ø³Ì£¨dsh µ÷ÓÃ AI ¹¤¾ßÊ±À­Æð£¬½Å±¾ÔÚ src\mcp_server.py£©¡£
+rem °´ÃüÁîÐÐÆ¥Åä¶ø·Ç½ø³ÌÃû£¬±ÜÃâÎóÉ± py312 ÏÂÆäËü python ½ø³Ì¡£
 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*mcp_server.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 
-rem ç«¯å£åŒ¹é…å¸¦å°¾éšç©ºæ ¼ï¼Œé¿å… :7863 è¯¯å‘½ä¸­ :17863
-rem å±€åŸŸç½‘å¼€æ”¾åŽä¸èƒ½å†æ— è„‘æŒ‰ç«¯å£æ€ç›‘å¬ï¼šnetsh portproxy çš„ç›‘å¬å£ï¼ˆå¦‚
-rem 192.168.1.6:3081ï¼‰å±žäºŽ svchost é‡Œçš„ IP Helperï¼ˆiphlpsvcï¼‰ï¼ŒæŒ‰ç«¯å£æ€ä¼šæŠŠè¿™ä¸ª
-rem ç³»ç»ŸæœåŠ¡å®¿ä¸»ä¸€èµ·å¹²æŽ‰ï¼Œè½¬å‘è§„åˆ™è¿˜åœ¨ä½†ä¸å†ç›‘å¬ï¼Œç—‡çŠ¶æ˜¯"å±€åŸŸç½‘çªç„¶æ‰“ä¸å¼€ã€
-rem æœ¬æœº 3081 ä¸€åˆ‡æ­£å¸¸"ã€‚æ‰€ä»¥åªæ€ç»‘åœ¨å›žçŽ¯/é€šé…åœ°å€ä¸Šçš„ç›‘å¬è¿›ç¨‹ï¼ˆé‚£æ‰æ˜¯ç½‘å…³ä¸Ž dshï¼‰ã€‚
+rem ¶Ë¿ÚÆ¥Åä´øÎ²Ëæ¿Õ¸ñ£¬±ÜÃâ :7863 ÎóÃüÖÐ :17863
+rem ¾ÖÓòÍø¿ª·Åºó²»ÄÜÔÙÎÞÄÔ°´¶Ë¿ÚÉ±¼àÌý£ºnetsh portproxy µÄ¼àÌý¿Ú£¨Èç
+rem 192.168.1.6:3081£©ÊôÓÚ svchost ÀïµÄ IP Helper£¨iphlpsvc£©£¬°´¶Ë¿ÚÉ±»á°ÑÕâ¸ö
+rem ÏµÍ³·þÎñËÞÖ÷Ò»Æð¸Éµô£¬×ª·¢¹æÔò»¹ÔÚµ«²»ÔÙ¼àÌý£¬Ö¢×´ÊÇ"¾ÖÓòÍøÍ»È»´ò²»¿ª¡¢
+rem ±¾»ú 3081 Ò»ÇÐÕý³£"¡£ËùÒÔÖ»É±°óÔÚ»Ø»·/Í¨ÅäµØÖ·ÉÏµÄ¼àÌý½ø³Ì£¨ÄÇ²ÅÊÇÍø¹ØÓë dsh£©¡£
 powershell -NoProfile -Command "foreach($pt in @($env:DSH_PORT,$env:GATEWAY_PORT)){Get-NetTCPConnection -State Listen -LocalPort $pt -ErrorAction SilentlyContinue | Where-Object { $_.LocalAddress -in '127.0.0.1','0.0.0.0','::','::0' } | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }}"
 taskkill /IM audiocpp_server.exe /F >nul 2>&1
 
-echo å…¨éƒ¨å·²åœæ­¢ï¼ˆç½‘å…³ :%GATEWAY_PORT% / å·¥ä½œå° :%DSH_PORT% / æŽ¨ç†å¼•æ“Ž :8080ï¼‰ã€‚
+echo È«²¿ÒÑÍ£Ö¹£¨Íø¹Ø :%GATEWAY_PORT% / ¹¤×÷Ì¨ :%DSH_PORT% / ÍÆÀíÒýÇæ :8080£©¡£
 ping -n 3 127.0.0.1 >nul
 exit /b 0

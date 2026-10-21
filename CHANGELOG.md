@@ -9,6 +9,54 @@
 版本的唯一真源是 git 的**附注标签**（`git tag -l -n`），本文件是给人看的说明；
 宣传文案里要写的版本号从本文件顶部条目取，不在别处另记一份数字（`app.py:_version_from_changelog()` 读本文件首条）。
 
+## [v10.21.0] - 2026-10-21
+
+来源：用户「把项目部署到这台没有 N 卡的新机器上，补齐功能、测试、优化，然后推送」。
+本次改动只动"部署可用性与后端选择"，不改生成算法；13 页 UI 与既有语义保持。
+
+### 纯 clone 现在能真的跑起来
+- 新增**开源兼容网关 `main.py`**：顶上闭源 `main.cp312-win_amd64.pyd` 剩下的事
+  （`app`/`settings`、`GET /api/health`、`POST /api/music/generate`、导入时拉起引擎）。
+  参数白名单运行时读 `cpp/model_specs/yue2.json`，不手抄常量。有 .pyd 时仍优先用它。
+  `/api/health` 分三态（ok / busy / down）且**永远 200**：看门狗把 5xx 当死，而生成中
+  `/health` 超时是"忙"不是"死"；`gateway` 字段只在引擎 ok/busy 时才是 "ok"。
+- 新增根 `requirements.txt`（fastapi 0.115.12 + starlette 0.46.2 成对钉死；最新 FastAPI 会把
+  "空 filename 的 file part"当合法上传真入队）、`requirements-transcribe.txt`、
+  `server.json.example`、`.gitattributes`、`一键补齐运行件.bat`、
+  `scripts/setup_runtime.py`（一键：py312/引擎/权重/转谱/换声/LRC，幂等）、
+  `scripts/fetch_models.py`（分块并发下载 + Content-Range 窗口核对 + GGUF/safetensors 结构校验）。
+
+### 用上核显：Vulkan 后端
+- 无 N 卡时按 `Vulkan → CPU` 选后端；`app.py` 后端白名单放开 `vulkan`，
+  `engine_backends()` 用 `--version` 读构建能力，`resolve_backend()` 把页面上的「切GPU」
+  落到真正可用的后端（N 卡→cuda，核显→vulkan，都没有→cpu 并说明）。
+- **实测**（i7-1165G7 + Iris Xe、q4_k_m）：同一条请求 CPU 5,610 秒 → Vulkan 318 秒（约 14 倍）；
+  3.84 秒片段 582~672 秒 → 25~38 秒（15~27 倍）。输出长度/时长完全一致，RMS 与峰值同档。
+
+### 补齐的可选功能（均可从公开上游自动安装）
+- ③④ 转谱：torch 一套 + SheetSage2 权重；修了 `TRANSFORMERS_CACHE` 与 `HF_HUB_CACHE` 不同源
+  导致转谱 100% 报"本地缓存不完整"的缺陷；MERT 按 `checkpoints/config.json` 钉的 revision 下载。
+- ⑩ 分离/净化：官方 RVC 自带 PyMSS；预下 5 个模型（约 590MB）；`vocal_separation_ready` 实时为真。
+- ⑦⑨ 换声/音色制作：克隆官方 RVC（py312 支持）、hubert/rmvpe/预训练权重，
+  并应用 `patches/` 里的 fcpe 与 `--filter-radius` 补丁；`sitecustomize` 补
+  `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD`（torch 2.6+ 的 `torch.load` 默认值变更）。
+- 逐字 LRC/eLRC：funasr fa-zh（中文）+ wav2vec2 CTC（英文）+ faster-whisper 兜底。
+
+### 修掉的真实缺陷（均由三方评审给出复现命令）
+- `app.py` 用了从未定义的 `logger`：强制对齐失败的 fallback 本身会 NameError，
+  `.lrcjob` 只留一句 `name 'logger' is not defined`，whisper 兜底一次没跑过。
+- 出歌期间没有防睡眠声明（只有 RVC 训练有）：机器进新式待机时 AR 解码被冻住过。
+- `README`/`requirements` 的测试计数漂移、`.gitattributes` 描述与文件不符、
+  两只漏网的 UTF-8 `.bat`、`X-Seed` 因 httpx 头小写化永远读不到、`engine_backends()` 把一次
+  探测失败永久缓存成"只有 cpu"、CPU 回退后用写死的 cuda 覆盖原后端等（共 4 条 P0 + 7 条 P1）。
+
+### 验证
+- `py312\python.exe -m unittest discover -s tests` → **614 条通过**（本机约 2 分钟）。
+- 新用例含变异验证：`request.options` 双层、`finally` 撤销防睡眠、`cuda→vulkan` 落地、
+  下载器窗口错位、`TRANSFORMERS_CACHE` 实际生效值、health 三态与"永不 5xx"。
+- 三方对抗式评审报告：`docs/review/BLUE-TEAM-REVIEW-v10.17.1-deploy.md` /
+  `THIRD-PARTY-REVIEW-v10.17.1-deploy.md` / `ADJUDICATION-v10.17.1-deploy.md`。
+
 ## [v10.17.1] - 2026-10-17
 
 来源：用户「继续完成后续开发任务，检查 UI 布局，测试没问题就推新版」——把上一版留下的三条待办做完。

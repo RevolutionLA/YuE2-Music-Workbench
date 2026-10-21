@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import base64
+import logging
 import re
 import secrets
 import shutil
@@ -57,6 +58,12 @@ except Exception:  # funasr 未安装 / 模型缺失
 
 router = APIRouter(prefix="/api")
 app = main.app  # 复用编译网关的 FastAPI 应用
+
+# 与 src/lrc.py、src/lrc_align.py 用同一个 logger 名。这里原先没有定义 logger，
+# 而 :2094 那句「强制对齐失败，退回旧链路」正好用它——NameError 会把这条兜底
+# 本身炸掉，外层只留下 "error": "name 'logger' is not defined"，whisper 旧链路
+# 一次都没跑过，.lrc 也永远不落盘（没装 funasr 的机器 100% 走到这里）。
+logger = logging.getLogger("fireredtts3_gateway")
 
 # 网关 7863 页面一律不自动弹出：用户入口统一是 3081 工作台（启动脚本负责打开）。
 # 不论双击 bat 还是看门狗自动重启网关，都不会再弹 7863 迷惑用户；7863 服务本身保留。
@@ -461,8 +468,76 @@ def _loaded_lora_label() -> str:
 
 
 def backend_mode() -> str:
-    mode = _engine_state_read().get("backend", "cuda")
-    return mode if mode in ("cuda", "cpu") else "cuda"
+    # 顺序：engine_state → cpp/server.json 的 backend → cpu。
+    # 缺省不再直接写 cuda：在只有 cpu/vulkan 的构建上（本机就是），cuda 是起不来的后端；
+    # 而 server.json 是"引擎真正会读的那份"，以它为准两边才不打架（评审 B17）。
+    mode = str(_engine_state_read().get("backend") or "").strip().lower()
+    if mode not in ("cuda", "cpu", "vulkan"):
+        try:
+            cfg = json.loads(SERVER_JSON.read_text(encoding="utf-8"))
+            mode = str(cfg.get("backend") or "").strip().lower()
+        except Exception:  # noqa: BLE001
+            mode = ""
+    return mode if mode in ("cuda", "cpu", "vulkan") else "cpu"
+
+
+_ENGINE_BACKENDS_CACHE: list[str] | None = None
+
+
+def engine_backends() -> list[str]:
+    """问引擎二进制自己支持哪些后端（`--version` 输出里的 `backends: cpu,vulkan`）。
+
+    为什么问二进制而不是看有没有 nvidia-smi：CUDA 构建只认 N 卡，Vulkan 构建里
+    同时带 cpu 与 vulkan。用户点「切GPU」时，必须按**这份构建实际支持什么**落后端，
+    否则会出现"页面说切成功、引擎根本起不来"。
+    """
+    global _ENGINE_BACKENDS_CACHE
+    if _ENGINE_BACKENDS_CACHE is not None:
+        return _ENGINE_BACKENDS_CACHE
+    found: list[str] = []
+    try:
+        got = subprocess.run(
+            [str(AUDIOCPP_BIN), "--version"], capture_output=True, text=True, timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).stdout or ""
+        for line in got.splitlines():
+            s = line.strip().lower()
+            if s.startswith("backends:"):
+                found = [x.strip() for x in s.split(":", 1)[1].split(",") if x.strip()]
+                break
+    except Exception:  # noqa: BLE001
+        found = []
+    if not found:
+        # 探测失败**不落缓存**：一次瞬时失败会把本机永久当成"只有 cpu"，
+        # 之后 `_restart_audiocpp` 会一直传 --backend cpu 把 CUDA 机器静默降速（评审 T2）。
+        return []
+    _ENGINE_BACKENDS_CACHE = found
+    return found
+
+
+def resolve_backend(requested: str) -> tuple[str, str]:
+    """把要的 cuda/vulkan/cpu 落到这份构建真能跑的后端，返回 (后端, 给用户看的说明)。
+
+    "切GPU"在产品语义上是"用显卡"，不是"用 CUDA"：N 卡机器上 GPU=CUDA，
+    核显机器上 GPU=Vulkan。构建里没有对应后端时如实说明，不许假装切成功。
+    """
+    want = (requested or "").strip().lower()
+    have = engine_backends()
+    if not have:
+        # 探不到就不猜：原样透传，让引擎自己拒绝。静默改成 cpu 属于"界面说 GPU、实际跑 CPU"。
+        return want, ""
+    listed = ",".join(have)
+    if want == "cuda":
+        if "cuda" in have:
+            return "cuda", ""
+        if "vulkan" in have:
+            return "vulkan", f"该引擎构建没有 CUDA 后端（可用：{listed}），已切到 Vulkan（集显）"
+        return "cpu", f"该引擎构建既没有 CUDA 也没有 Vulkan（可用：{listed}），只能用 CPU"
+    if want == "vulkan":
+        if "vulkan" in have:
+            return "vulkan", ""
+        return "cpu", f"该引擎构建没有 Vulkan 后端（可用：{listed}），只能用 CPU"
+    return "cpu", ""
 
 
 def _gpu_free_mb() -> int | None:
@@ -537,9 +612,17 @@ def _restart_audiocpp(server_json_path: str, backend: str | None = None) -> None
     time.sleep(1.0)
     exe = str(AUDIOCPP_BIN)
     args = [exe, "--config", server_json_path]
-    mode = (backend or backend_mode()).lower()
-    if mode != "cuda":
+    # 显式传后端：以前 cuda 时干脆不传、靠 server.json 里的 backend——那份配置可能写着
+    # vulkan，于是"状态说 cuda、引擎跑 vulkan"两套口径。现在先按构建能力解析再传。
+    wanted = (backend or backend_mode()).lower()
+    mode, note = resolve_backend(wanted)
+    if note:
+        logger.warning("后端已按引擎能力改写：%s", note)
+    if engine_backends():
         args += ["--backend", mode]
+    else:
+        # 探测不到构建能力时不让 --backend 覆盖 server.json：传错后端只会当场起不来。
+        logger.warning("探测不到引擎后端能力，按 cpp/server.json 的 backend 启动（不显式传参）")
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     workdir = str(AUDIOCPP_BIN.parent)
     if creationflags:
@@ -683,6 +766,8 @@ def backend_mode_get():
     ok, free = _vram_ok_for_gpu()
     return {
         "mode": backend_mode(),
+        # 前端据此决定"切GPU"该提交 cuda 还是 vulkan：核显机器上 GPU≠CUDA
+        "available": engine_backends(),
         "vram_free_mb": free,
         "vram_ok": ok,
         "headroom_mb": _VRAM_HEADROOM_MB,
@@ -691,18 +776,30 @@ def backend_mode_get():
 
 @router.post("/backend/mode")
 def backend_mode_set(payload: dict):
-    mode = (payload.get("mode") or "").strip().lower()
-    if mode not in ("cuda", "cpu"):
-        raise HTTPException(status_code=400, detail="mode must be cuda or cpu")
+    want = (payload.get("mode") or "").strip().lower()
+    have = engine_backends()
+    if want not in ("cuda", "cpu", "vulkan"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"mode must be one of: cuda, cpu, vulkan（本机引擎构建支持：{','.join(have)}）",
+        )
+    # "GPU" 落到这份构建真能跑的后端：CUDA 构建→cuda，Vulkan 构建→vulkan，
+    # 两者都没有就只能在 CPU 上跑，并把原因写进回包（前端会原样弹出来）。
+    mode, note = resolve_backend(want)
     if mode == backend_mode():
-        return {"ok": True, "mode": mode, "message": f"引擎已是 {mode} 模式"}
+        return {"ok": True, "mode": mode, "message": note or f"引擎已是 {mode} 模式",
+                "available": have}
     _engine_state_write({"backend": mode})
     _restart_audiocpp(str(SERVER_JSON))
+    base = ("已切换 CPU 模式：显存不足也能出结果，但速度慢约 5-10 倍"
+            if mode == "cpu" else
+            "已切到 Vulkan（集显/核显）模式：没有 N 卡时通常比 CPU 快一个数量级"
+            if mode == "vulkan" else "已切回 GPU（CUDA）模式")
     return {
         "ok": True,
         "mode": mode,
-        "message": ("已切换 CPU 模式：显存不足也能出结果，但速度慢约 5-10 倍"
-                    if mode == "cpu" else "已切回 GPU（CUDA）模式"),
+        "message": f"{note}；{base}" if note else base,
+        "available": have,
     }
 
 
@@ -2346,12 +2443,23 @@ def _is_vram_error(msg: str) -> bool:
 
 
 def _gen_run_once(payload: dict) -> tuple[int, str, bytes, dict]:
-    """调用一次 /api/music/generate，返回 (status_code, detail, content, headers)。"""
-    with httpx.Client(
-        base_url=f"http://127.0.0.1:{settings.app_port}", timeout=settings.audiocpp_timeout_sec,
-        trust_env=False,
-    ) as client:
-        r = client.post("/api/music/generate", json=payload)
+    """调用一次 /api/music/generate，返回 (status_code, detail, content, headers)。
+
+    整个调用期间按住"别进睡眠"。2026-10-21 凌晨实测：系统在新式待机里把在跑的 AR
+    解码冻住过（02:27 / 03:12 / 04:52 多次），一首歌被拖长、且引擎是靠运气没崩。
+    RVC 训练早有 _rvc_keep_awake，出歌这条路原来没有——一跑就是几小时，更需要。
+    SetThreadExecutionState 按线程生效：这里开/关都在本线程，不会误关训练那边的声明。
+    """
+    _rvc_keep_awake(True)
+    try:
+        with httpx.Client(
+            base_url=f"http://127.0.0.1:{settings.app_port}",
+            timeout=settings.audiocpp_timeout_sec,
+            trust_env=False,
+        ) as client:
+            r = client.post("/api/music/generate", json=payload)
+    finally:
+        _rvc_keep_awake(False)
     detail = r.text[:800]
     try:
         detail = json.loads(detail).get("detail", detail)
@@ -2461,6 +2569,15 @@ def _win_toast(title: str, body: str) -> None:
         pass
 
 
+def _seed_from_headers(headers: dict, payload: dict):
+    """引擎实际用的种子：优先响应头，其次提交值。
+
+    httpx 的头在 `dict(r.headers)` 之后键全是小写，所以 `get("X-Seed")` 永远取不到
+    （三方评审 B13 实测）。两个大小写都查，行为不变但契约不再死。
+    """
+    return headers.get("x-seed") or headers.get("X-Seed") or payload.get("seed")
+
+
 def _gen_run(job: dict, payload: dict) -> None:
     """后台线程：调用本网关的 /api/music/generate，把结果落盘到 output/。
 
@@ -2471,6 +2588,7 @@ def _gen_run(job: dict, payload: dict) -> None:
     rid = job["id"]
     started = time.time()
     used_cpu_fallback = False
+    orig_backend = backend_mode()      # 回退结束要切回它，而不是写死 cuda（评审 T6 的反向问题）
     # 收尾段在送引擎之前的最后一刻补：存盘那份必须是用户自己写的词（回填、LRC
     # 强制对齐、重跑都以它为准），只有引擎需要"一定有收尾段"的这份。挂在这个唯一
     # 出口上，单首与批量两条入口就不必各补一次。
@@ -2486,7 +2604,8 @@ def _gen_run(job: dict, payload: dict) -> None:
             raise RuntimeError(
                 f"系统可用提交内存不足（剩 {cf // 1024}GB，需 ≥8GB）。"
                 "请关闭其他占内存的程序后重试；或把页面文件调大（建议初始 30GB/最大 48GB）。")
-        # 生成前显存预检：不足就直接用 CPU，不先撞一次墙
+        # 生成前显存预检：不足就直接用 CPU，不先撞一次墙。Vulkan 走统一内存，
+        # nvidia-smi 查不到，这里仍只对 cuda 做"提前"预检；vulkan 靠下面的错误兜底。
         if backend_mode() == "cuda":
             # 若之前提取过乐谱，SheetSage2/MERT 模型常驻 GPU 会挤占显存，
             # 先把它们从显存卸载并清空缓存，避免生成被误判降级 CPU。
@@ -2506,6 +2625,7 @@ def _gen_run(job: dict, payload: dict) -> None:
                     note="显存不足，已自动切换 CPU 后端（速度慢约 5-10 倍）",
                 )
                 _output_write_meta(job)
+                _engine_state_write({"backend": "cpu"})
                 _restart_audiocpp(str(SERVER_JSON), backend="cpu")
                 _wait_backend_ready()
 
@@ -2525,7 +2645,9 @@ def _gen_run(job: dict, payload: dict) -> None:
             return
 
         # 引擎仍然报显存类错误（预检漏网/竞争）：切 CPU 重试一次
-        if code != 200 and not used_cpu_fallback and backend_mode() == "cuda" and _is_vram_error(detail):
+        # Vulkan 也走这条兜底：核显吃统一内存，OOM 的后果同样是"几小时的歌白跑"（评审 B18）。
+        if (code != 200 and not used_cpu_fallback
+                and backend_mode() in ("cuda", "vulkan") and _is_vram_error(detail)):
             used_cpu_fallback = True
             job.update(
                 status="running", cpu_fallback=True,
@@ -2533,6 +2655,7 @@ def _gen_run(job: dict, payload: dict) -> None:
                 note="显存不足，已自动切换 CPU 后端重试（速度慢约 5-10 倍）",
             )
             _output_write_meta(job)
+            _engine_state_write({"backend": "cpu"})
             _restart_audiocpp(str(SERVER_JSON), backend="cpu")
             _wait_backend_ready()
             if _stop_requested():
@@ -2546,7 +2669,7 @@ def _gen_run(job: dict, payload: dict) -> None:
             _output_write_meta(job)
             _win_toast("✕ 生成失败：" + title, str(detail)[:120])
         else:
-            seed_actual = headers.get("X-Seed") or payload.get("seed")
+            seed_actual = _seed_from_headers(headers, payload)
             wav = _output_wav_path(rid)
             wav.write_bytes(content)
             job.update(
@@ -2564,11 +2687,11 @@ def _gen_run(job: dict, payload: dict) -> None:
                 f"耗时 {int(elapsed // 60)} 分 {int(elapsed % 60)} 秒，已保存到 output/",
             )
 
-        # 兜底用完把引擎切回 GPU，避免下次不明不白变慢
+        # 兜底用完切回**原来的**后端（可能是 vulkan），不要写死 cuda
         if used_cpu_fallback and backend_mode() == "cpu":
             try:
-                _engine_state_write({"backend": "cuda"})
-                _restart_audiocpp(str(SERVER_JSON), backend="cuda")
+                _engine_state_write({"backend": orig_backend})
+                _restart_audiocpp(str(SERVER_JSON), backend=orig_backend)
             except Exception:
                 pass
     except Exception as e:  # 网络/超时/后端崩溃都算失败，同样落盘

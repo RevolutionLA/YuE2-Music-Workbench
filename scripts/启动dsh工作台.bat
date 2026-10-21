@@ -1,50 +1,53 @@
 @echo off
-chcp 65001 >nul
-rem ä»…å¯åŠ¨ dsh å·¥ä½œå° UIï¼ˆç«¯å£é»˜è®¤ 3081ï¼Œè¯» ports.jsonï¼‰ã€‚
-rem ä¸»å¯åŠ¨è„šæœ¬ï¼ˆå¯åŠ¨éŸ³ä¹å·¥ä½œå°.batï¼‰ä¸Žçœ‹é—¨ç‹—ï¼ˆwatchdog.pyï¼‰å…±ç”¨æœ¬æ–‡ä»¶ï¼Œ
-rem é¿å…åŒä¸€ä»½å¯åŠ¨å‚æ•°åœ¨ä¸¤ä¸ªåœ°æ–¹å„å†™ä¸€éã€æ”¹ä¸€å¤„æ¼ä¸€å¤„ã€‚
+rem [encoding] THIS FILE IS GBK (OEM cp936) ON PURPOSE. cmd.exe parses a batch file with the
+rem [encoding] console's OEM codepage; a UTF-8 batch under cp936 splits lines mid-character
+rem [encoding] and some commands silently stop running (not just a display issue). Do NOT
+rem [encoding] re-save as UTF-8 and do NOT add a mid-file code-page switch.
+rem ½öÆô¶¯ dsh ¹¤×÷Ì¨ UI£¨¶Ë¿ÚÄ¬ÈÏ 3081£¬¶Á ports.json£©¡£
+rem Ö÷Æô¶¯½Å±¾£¨Æô¶¯ÒôÀÖ¹¤×÷Ì¨.bat£©Óë¿´ÃÅ¹·£¨watchdog.py£©¹²ÓÃ±¾ÎÄ¼þ£¬
+rem ±ÜÃâÍ¬Ò»·ÝÆô¶¯²ÎÊýÔÚÁ½¸öµØ·½¸÷Ð´Ò»±é¡¢¸ÄÒ»´¦Â©Ò»´¦¡£
 cd /d %~dp0..
 
-rem ---- ç«¯å£ï¼šå”¯ä¸€çœŸæº ports.json ----
+rem ---- ¶Ë¿Ú£ºÎ¨Ò»ÕæÔ´ ports.json ----
 set "DSH_PORT=3081"
 for /f "usebackq tokens=*" %%p in (`powershell -NoProfile -Command "try{$j=Get-Content '%cd%\ports.json' -Raw | ConvertFrom-Json; if($j.dsh){$j.dsh}else{'3081'}}catch{'3081'}" 2^>nul`) do set "DSH_PORT=%%p"
 
-rem ---- node å®šä½ï¼šä¼˜å…ˆ PATHï¼Œé€€å›žå¸¸è§å®‰è£…ä½ ----
+rem ---- node ¶¨Î»£ºÓÅÏÈ PATH£¬ÍË»Ø³£¼û°²×°Î» ----
 set "NODE_EXE=node"
 where node >nul 2>&1
 if errorlevel 1 if exist "C:\Program Files\nodejs\node.exe" set "NODE_EXE=C:\Program Files\nodejs\node.exe"
 
 set "DSH_HOME=%cd%\dsh-plugin\_dsh_home"
 if not exist "%DSH_HOME%" mkdir "%DSH_HOME%"
-rem ä»“åº“æ ¹ï¼šdsh ä¼šæŠŠæ’ä»¶æ‹·åˆ° _dsh_home ä¸‹å†åŠ è½½ï¼Œæ’ä»¶è‡ªå·±æŽ¨ä¸å‡ºçœŸå®žè·¯å¾„ï¼Œ
-rem è¿™é‡Œæ˜¾å¼æ³¨å…¥ï¼ŒUI é™æ€æ‰˜ç®¡æ‰èƒ½æ‰¾åˆ° static/index.html
-rem å¯†é’¥ä»Žæœ¬åœ°æœªå…¥åº“æ–‡ä»¶è¯»å–ï¼ˆå‚è€ƒ secrets\local_env.example.bat åˆ›å»ºè‡ªå·±çš„ local_env.batï¼‰
+rem ²Ö¿â¸ù£ºdsh »á°Ñ²å¼þ¿½µ½ _dsh_home ÏÂÔÙ¼ÓÔØ£¬²å¼þ×Ô¼ºÍÆ²»³öÕæÊµÂ·¾¶£¬
+rem ÕâÀïÏÔÊ½×¢Èë£¬UI ¾²Ì¬ÍÐ¹Ü²ÅÄÜÕÒµ½ static/index.html
+rem ÃÜÔ¿´Ó±¾µØÎ´Èë¿âÎÄ¼þ¶ÁÈ¡£¨²Î¿¼ secrets\local_env.example.bat ´´½¨×Ô¼ºµÄ local_env.bat£©
 if exist "%cd%\secrets\local_env.bat" call "%cd%\secrets\local_env.bat"
 
-rem æ— çª—å£æ‹‰èµ· nodeï¼ˆä¸Žç½‘å…³åŒæ¬¾ï¼‰ã€‚è“å†› S5/S6ï¼šåŽŸå…ˆç”¨ WMI Win32_Process.Createï¼Œ
-rem WMI æ´¾ç”Ÿè¿›ç¨‹ç»§æ‰¿çš„æ˜¯ WMI æœåŠ¡çš„çŽ¯å¢ƒè€Œä¸æ˜¯æœ¬ cmd çš„çŽ¯å¢ƒ â€”â€” å®žæµ‹å¯¹ç…§åŒä¸€æ®µæŽ¢é’ˆå­è¿›ç¨‹è„šæœ¬ï¼š
-rem WMI è¯»ä¸åˆ°çˆ¶è¿›ç¨‹å˜é‡ï¼ŒStart-Process -WindowStyle Hidden è¯»å¾—åˆ°ã€‚æ‰€ä»¥é‚£æ®µæ—¶é—´é‡Œ
-rem ä¸Šé¢ call local_env.bat å¡žè¿›æ¥çš„ DEEPSEEK_API_KEY æ ¹æœ¬æ²¡ä¼ åˆ° nodeï¼ŒAI å·¥ä½œå°æ‹¿ä¸åˆ°å¯†é’¥ï¼Œ
-rem è€Œå¯†é’¥å‡ºçŽ°åœ¨å‘½ä»¤è¡Œå­—ç¬¦ä¸²åˆæ˜¯å¦ä¸€å›žäº‹ï¼ˆå‘½ä»¤è¡Œå…¨å±€å¯è§ï¼Œç»ä¸èƒ½ç”¨ %DEEPSEEK_API_KEY% å±•å¼€ï¼‰ã€‚
-rem çŽ°åœ¨ï¼šéœ€è¦åœ¨ node ä¾§ç”Ÿæ•ˆçš„å˜é‡ä¸€å¾‹ç”¨ set æ”¾è¿›æœ¬ cmd çŽ¯å¢ƒï¼Œç”± powershellâ†’node é€å±‚ç»§æ‰¿ï¼›
-rem ä»ç„¶ä¸ç¢° $env:ï¼ˆæœ¬æœº PowerShell çš„ Start-Process è¢«è‡ªå®šä¹‰å°è£…ï¼Œæ”¹ $env: ä¼šæŠŠä»£ç†å˜é‡
-rem æŒ‰å¤§å°å†™å„å¡žä¸€ä»½è¿› -Environment å“ˆå¸Œè¡¨ï¼Œé”®é‡å¤ç›´æŽ¥æŠ¥é”™ï¼‰ã€‚
+rem ÎÞ´°¿ÚÀ­Æð node£¨ÓëÍø¹ØÍ¬¿î£©¡£À¶¾ü S5/S6£ºÔ­ÏÈÓÃ WMI Win32_Process.Create£¬
+rem WMI ÅÉÉú½ø³Ì¼Ì³ÐµÄÊÇ WMI ·þÎñµÄ»·¾³¶ø²»ÊÇ±¾ cmd µÄ»·¾³ ¡ª¡ª Êµ²â¶ÔÕÕÍ¬Ò»¶ÎÌ½Õë×Ó½ø³Ì½Å±¾£º
+rem WMI ¶Á²»µ½¸¸½ø³Ì±äÁ¿£¬Start-Process -WindowStyle Hidden ¶ÁµÃµ½¡£ËùÒÔÄÇ¶ÎÊ±¼äÀï
+rem ÉÏÃæ call local_env.bat Èû½øÀ´µÄ DEEPSEEK_API_KEY ¸ù±¾Ã»´«µ½ node£¬AI ¹¤×÷Ì¨ÄÃ²»µ½ÃÜÔ¿£¬
+rem ¶øÃÜÔ¿³öÏÖÔÚÃüÁîÐÐ×Ö·û´®ÓÖÊÇÁíÒ»»ØÊÂ£¨ÃüÁîÐÐÈ«¾Ö¿É¼û£¬¾ø²»ÄÜÓÃ %DEEPSEEK_API_KEY% Õ¹¿ª£©¡£
+rem ÏÖÔÚ£ºÐèÒªÔÚ node ²àÉúÐ§µÄ±äÁ¿Ò»ÂÉÓÃ set ·Å½ø±¾ cmd »·¾³£¬ÓÉ powershell¡únode Öð²ã¼Ì³Ð£»
+rem ÈÔÈ»²»Åö $env:£¨±¾»ú PowerShell µÄ Start-Process ±»×Ô¶¨Òå·â×°£¬¸Ä $env: »á°Ñ´úÀí±äÁ¿
+rem °´´óÐ¡Ð´¸÷ÈûÒ»·Ý½ø -Environment ¹þÏ£±í£¬¼üÖØ¸´Ö±½Ó±¨´í£©¡£
 set "DSH_NO_BROWSER=1"
 set "YUE2_ROOT=%cd%"
-rem è“å†› N-9ï¼šç›®å½•/æ–‡ä»¶åä¸€å¾‹èµ°çŽ¯å¢ƒå˜é‡ï¼Œä¸æ‹¼è¿› PowerShell çš„å•å¼•å·å­—é¢é‡ã€‚
-rem æ‹¼å­—é¢é‡æ—¶è·¯å¾„é‡Œä¸€ä¸ªå•å¼•å·ï¼ˆC:\Users\O'Brien\...ï¼‰å°±è®©ç”¨æˆ·ç›®å½•ä¸‹çš„æ•´æ¡å‘½ä»¤è¯­æ³•å´©ï¼Œ
-rem è€Œ catch{exit 1} æŠŠæŠ¥é”™åžå…‰ï¼Œä¸»è„šæœ¬ç»§ç»­å¾€ä¸‹èµ°åˆ°"å·¥ä½œå°æœªå°±ç»ª"ï¼Œæ ¹å› æ°¸è¿œçœ‹ä¸åˆ°ã€‚
+rem À¶¾ü N-9£ºÄ¿Â¼/ÎÄ¼þÃûÒ»ÂÉ×ß»·¾³±äÁ¿£¬²»Æ´½ø PowerShell µÄµ¥ÒýºÅ×ÖÃæÁ¿¡£
+rem Æ´×ÖÃæÁ¿Ê±Â·¾¶ÀïÒ»¸öµ¥ÒýºÅ£¨C:\Users\O'Brien\...£©¾ÍÈÃÓÃ»§Ä¿Â¼ÏÂµÄÕûÌõÃüÁîÓï·¨±À£¬
+rem ¶ø catch{exit 1} °Ñ±¨´íÍÌ¹â£¬Ö÷½Å±¾¼ÌÐøÍùÏÂ×ßµ½"¹¤×÷Ì¨Î´¾ÍÐ÷"£¬¸ùÒòÓÀÔ¶¿´²»µ½¡£
 set "YUE2_DSH_DIR=%cd%\dsh-plugin"
 set "YUE2_DSH_OUT=%cd%\dsh-plugin\_dsh_web.log"
 set "YUE2_DSH_ERRLOG=%cd%\dsh-plugin\_dsh_err.log"
 set "YUE2_DSH_BIN=node_modules\@deepseek-ai\dsh\lib\bin.js"
-rem ---- å±€åŸŸç½‘å¼€æ”¾ï¼šæŠŠ YUE2_LAN_HOSTS ç¿»æˆ dsh çš„ /api ä¿¡ä»»æ …æ ç™½åå• ----
-rem dsh å‡ºäºŽå®‰å…¨æ‹’ç» --host 0.0.0.0ï¼ˆå®ƒå¸¦èƒ½è¯»å†™æœ¬æœºæ–‡ä»¶çš„ agent å·¥å…·ï¼‰ï¼Œæ‰€ä»¥æœ¬è¿›ç¨‹
-rem ç…§æ—§åªç»‘ 127.0.0.1ï¼Œå¯¹å¤–ç”± netsh portproxyï¼ˆè§ scripts\å¼€æ”¾å±€åŸŸç½‘.batï¼‰æŠŠ
-rem <æœ¬æœº LAN IP>:3081 è½¬è¿›æ¥ã€‚è½¬å‘ä¸æ”¹ Host å¤´ï¼Œæµè§ˆå™¨å‘å‡ºçš„ Host/Origin ä»æ˜¯
-rem 192.168.1.6:3081ï¼Œä¸åœ¨ dsh å›žçŽ¯æ´¾ç”Ÿåå•é‡Œå°±ä¼šè¢« /api æ …æ  403 æŽ‰â€”â€”ç—‡çŠ¶æ˜¯
-rem "é¡µé¢èƒ½æ‰“å¼€ã€æŒ‰é’®å…¨éƒ½æ²¡ååº”"ã€‚æ•…å‡¡å¼€äº† YUE2_LAN_HOSTS å°±é€ä¸ªè¡¥æˆ --trusted-host
-rem ï¼ˆä¸å¸¦ç«¯å£ = è¯¥ä¸»æœºä»»æ„ç«¯å£ï¼Œæ­£å¥½è¦†ç›– 3081 ä¸Žå†…åµŒä»£ç†ç”¨çš„ 7863ï¼‰ã€‚
+rem ---- ¾ÖÓòÍø¿ª·Å£º°Ñ YUE2_LAN_HOSTS ·­³É dsh µÄ /api ÐÅÈÎÕ¤À¸°×Ãûµ¥ ----
+rem dsh ³öÓÚ°²È«¾Ü¾ø --host 0.0.0.0£¨Ëü´øÄÜ¶ÁÐ´±¾»úÎÄ¼þµÄ agent ¹¤¾ß£©£¬ËùÒÔ±¾½ø³Ì
+rem ÕÕ¾ÉÖ»°ó 127.0.0.1£¬¶ÔÍâÓÉ netsh portproxy£¨¼û scripts\¿ª·Å¾ÖÓòÍø.bat£©°Ñ
+rem <±¾»ú LAN IP>:3081 ×ª½øÀ´¡£×ª·¢²»¸Ä Host Í·£¬ä¯ÀÀÆ÷·¢³öµÄ Host/Origin ÈÔÊÇ
+rem 192.168.1.6:3081£¬²»ÔÚ dsh »Ø»·ÅÉÉúÃûµ¥Àï¾Í»á±» /api Õ¤À¸ 403 µô¡ª¡ªÖ¢×´ÊÇ
+rem "Ò³ÃæÄÜ´ò¿ª¡¢°´Å¥È«¶¼Ã»·´Ó¦"¡£¹Ê·²¿ªÁË YUE2_LAN_HOSTS ¾ÍÖð¸ö²¹³É --trusted-host
+rem £¨²»´ø¶Ë¿Ú = ¸ÃÖ÷»úÈÎÒâ¶Ë¿Ú£¬ÕýºÃ¸²¸Ç 3081 ÓëÄÚÇ¶´úÀíÓÃµÄ 7863£©¡£
 set "YUE2_DSH_TRUSTED="
 if defined YUE2_LAN_HOSTS set "YUE2_DSH_TRUSTED=--trusted-host %YUE2_LAN_HOSTS:,= %"
 powershell -NoProfile -Command "$Extra=@(); if($env:YUE2_DSH_TRUSTED){$Extra=$env:YUE2_DSH_TRUSTED -split '\s+' | Where-Object {$_}}; try{Start-Process -WindowStyle Hidden -FilePath $env:NODE_EXE -WorkingDirectory $env:YUE2_DSH_DIR -RedirectStandardOutput $env:YUE2_DSH_OUT -RedirectStandardError $env:YUE2_DSH_ERRLOG -ArgumentList (($env:YUE2_DSH_BIN,'web','--port',$env:DSH_PORT,'--no-open') + $Extra) -ErrorAction Stop | Out-Null}catch{exit 1}"

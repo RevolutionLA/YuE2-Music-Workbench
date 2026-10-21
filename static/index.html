@@ -4954,6 +4954,8 @@ function fillRecentLyrics(p) {
 
 // ---------- health & models ----------
 let engineMode = "cuda";
+// 「GPU」在核显机器上是 Vulkan、在 N 卡机器上是 CUDA —— 由后端按引擎构建能力告知
+let engineGpu = "cuda";
 // 离线时「网关未连通」可点击：通过 yue2workbench:// 协议唤起启动脚本
 // （协议需先运行 scripts/register_protocol.bat 注册一次；页面由网关自己服务，
 //   网关停了页面自然没有任何 API 可调，只能靠浏览器→系统的这条路。）
@@ -4975,10 +4977,18 @@ async function refreshHealth() {
     const h = $("health");
     // /api/health 返回 {gateway:"ok", audiocpp:{status,backend}, models:{...}}
     const be = j.audiocpp || {};
-    if (r.ok && (j.gateway === "ok" || be.status === "ok")) {
+    const st = be.status || "";
+    const mode = (be.backend || "").toUpperCase();
+    const model = j.models?.yue2 || "yue2";
+    // 只有引擎自己回 ok 才算"就绪"；busy = 端口在、生成中被打满，不是坏了；
+    // down 才是真没起来。以前用 gateway==="ok" 兜底会让引擎全死时也亮绿灯（评审 B1）。
+    if (r.ok && st === "ok") {
       h.className = "foot-row ok";
-      const mode = (be.backend || "").toUpperCase();
-      $("healthText").textContent = "引擎就绪 · " + (j.models?.yue2 || "yue2") + (mode ? " · " + mode : "");
+      $("healthText").textContent = "引擎就绪 · " + model + (mode ? " · " + mode : "");
+      unbindOfflineStart(h);
+    } else if (r.ok && st === "busy") {
+      h.className = "foot-row ok";
+      $("healthText").textContent = "引擎忙碌（生成中）· " + model + (mode ? " · " + mode : "");
       unbindOfflineStart(h);
     } else {
       h.className = "foot-row err";
@@ -5038,20 +5048,24 @@ async function refreshEngineMode() {
   try {
     const j = await (await fetch("/api/backend/mode")).json();
     engineMode = j.mode || "cuda";
+    const avail = Array.isArray(j.available) ? j.available : [];
+    engineGpu = avail.includes("cuda") ? "cuda" : (avail.includes("vulkan") ? "vulkan" : "cuda");
     $("modeRow").style.display = "";
     $("modeText").textContent = engineMode === "cpu"
       ? "CPU 模式 · 慢 5-10 倍"
-      : (j.vram_ok === false
+      : engineMode === "vulkan"
+        ? "GPU 模式 · Vulkan（集显，共享内存）"
+        : (j.vram_ok === false
           ? "GPU 模式 · 显存不足(" + Math.round((j.vram_free_mb||0)/1024) + "GB空闲)"
           : "GPU 模式 · 显存 " + (j.vram_free_mb ? (j.vram_free_mb/1024).toFixed(1) + "GB 空闲" : "状态未知"));
     $("modeBtn").textContent = engineMode === "cpu" ? "切GPU" : "切CPU";
     $("modeBtn").title = engineMode === "cpu"
-      ? "切回 GPU（CUDA）模式，速度快"
-      : "显存不足时切换 CPU 兜底（慢但能出结果）";
+      ? (engineGpu === "vulkan" ? "切回 GPU 模式（本机引擎走 Vulkan 集显）" : "切回 GPU（CUDA）模式，速度快")
+      : "切到 CPU 兜底（慢但能出结果）";
   } catch { $("modeRow").style.display = "none"; }
 }
 $("modeBtn").onclick = async () => {
-  const target = engineMode === "cpu" ? "cuda" : "cpu";
+  const target = engineMode === "cpu" ? engineGpu : "cpu";
   if (target === "cpu" && !confirm("切到 CPU 模式？生成会慢 5-10 倍，但显存不足也能出结果。")) return;
   $("modeBtn").disabled = true;
   try {

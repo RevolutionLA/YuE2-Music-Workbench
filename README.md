@@ -202,30 +202,58 @@ v10.12 起，**每个页面拿出来都能单独使用**。判据只有一条：
 
 ## 🚀 三步开唱
 
-> **Windows x64 / 16GB+ 内存 / 建议 6GB+ 显存**（无独显也能跑，自动走 CPU，慢一些）
+> **Windows x64 / 16GB+ 内存 / 建议 6GB+ 显存。**
+> 无独显也能跑：**有核显就先用 Vulkan**（本机实测比 CPU 快约 14 倍，见 FAQ「没有 NVIDIA 显卡能跑吗」），只有 CPU 时请把"慢"当回事。下面是纯 CPU 的锚点（i7-1165G7、audio.cpp v0.9.2
+> `backends: cpu`、q4_k_m）：一段 66.7 秒的歌，`cot=off + 1 步`，跑了 **93.5 分钟**
+> （RTF≈84）。按阶段拆是 AR≈0.9 秒/token、NAR 随步数线性增长、VAE≈0.5 秒/帧——
+> 所以步数从 1 加到 8 主要是把 NAR 那一段乘上去。据此推一首 3~4 分钟的歌：
+> `full + 8 步`是**十几个小时**量级，`full + 32 步`（默认音质档）以**天**计。
+> 页面顶部那句 ETA 是按显卡机器标定的，纯 CPU 出歌时别照着安排时间。
+> **笔记本务必插电**：电池状态下的系统睡眠会掐断整条队列。
 
 ```bat
 :: 1. 下载本仓库（Green 一键解压也行）
 git clone https://github.com/RevolutionLA/YuE2-Music-Workbench.git
 
-:: 2. 双击「启动音乐工作台.bat」（根目录或 scripts/ 下均可）
+:: 2. 双击「一键补齐运行件.bat」——它负责建 py312\、装依赖、下 audio.cpp 引擎、
+::    写 cpp\server.json、下 GGUF 权重；每步幂等，中断了重跑就接着来
+::    （命令行里加 --proxy http://127.0.0.1:7890 可以走代理，GitHub 直连在国内经常不动）
 
-:: 3. 浏览器自动打开工作台 → 填风格和歌词 → 点「生成歌曲」
+:: 3. 双击「启动音乐工作台.bat」→ 浏览器打开 http://127.0.0.1:7863 → 填风格和歌词 → 点「生成歌曲」
 ```
 
-> ⚠️ **诚实说明：`git clone` 只拿到工作台代码，拿不到运行时二进制。** 下面这几件因体积与上游许可不入库（见 `.gitignore`），缺任何一件都起不来，需从完整分发包（Green 版）或各自上游获取后放到指定路径：
+> ✅ **纯 clone 现在真的能跑起来了。** 两件最大的门槛已经拆掉：
 >
-> | 不入库的东西 | 放到哪 | 从哪来 |
-> | --- | --- | --- |
-> | `py312/`（Python 3.12 运行环境 + 全部依赖） | 仓库根 `py312/` | 自备 Python 3.12 环境（本仓库**没有**根 `requirements.txt`，依赖清单以分发包为准；`checkpoints/requirements*.txt` 只覆盖转谱那一块） |
-> | `main.cp312-win_amd64.pyd`（编译网关内核） | 仓库根 | 随 YuE2 引擎分发包提供，**本仓库不含、也不得二次分发** |
-> | `cpp/`（`audiocpp_server.exe` 推理引擎 + `server.json`） | 仓库根 `cpp/` | 同上；GGUF 模型可用 `scripts/download_models.py` 自动下载 |
-> | `checkpoints/model.safetensors`（SheetSage2/MERT2 权重） | `checkpoints/` | 从 `m-a-p/MERT-v2-30s` / `MERT-v2-FullSong` 手动下载放入（转谱功能必需，其余功能不受影响） |
-> | `runtime/models/`（本地 ASR/对齐权重，约 1.6GB） | `runtime/models/` | 歌词逐字对齐功能按需放置；不做逐字对齐可以不管 |
->
-> 缺上面任何一件时，对应功能会在启动或用该功能时报明确错误，而不是静默降级。也就是说：**这条"三步开唱"路线目前只对拿到完整分发包的人成立**；纯 clone 用户需要自己补齐上面五行。这一限制已记录在 `docs/review/RESPONSE-308f833.md`（蓝军 D1），不是文档笔误。
+> * **闭源网关内核不再是必需**：仓库自带开源兼容网关 `main.py`，它只做内核剩下的那几件事
+>   （提供 `app`/`settings`、`GET /api/health`、`POST /api/music/generate`、导入时拉起引擎）。
+>   13 页 UI 与 AI 写词本来就由开源层直出（`app.py` 的 `_INDEX_ROUTE` 覆盖了 `/`，
+>   `static/index.html` 是自包含单文件），所以不依赖 `main.cp312-win_amd64.pyd`。
+>   如果你手上有那份 `.pyd`，把它放到仓库根即可——`import main` 会优先选中编译内核（同名同位置）。
+>   兼容性用例在 `tests/test_shim_main.py`（含"把 `request.options` 那层摘掉立刻变红"的变异验证）。
+> * **依赖清单进了仓库**：根 `requirements.txt` 是实测跑绿 614 条用例的那一对版本
+>   （fastapi 0.115.12 + starlette 0.46.2；最新 FastAPI 会把"空 filename 的 file part"
+>   当成合法上传收下并真的入队跑 GPU，回归用例锁的是当场 422）。**注意这份文件必须存成
+>   UTF-8 with BOM**，否则中文 Windows 上 pip 按 cp936 解它，连清单都读不进来。
 
-**第一次运行会自动下载模型吗？会！** 启动脚本检测到模型缺失时，自动从 **hf-mirror.com 大陆镜像**（约 2.7GB，支持断点续传）下载 YuE2-3B GGUF 模型 + VAE，下载完直接开唱。中断了？重新双击启动脚本，接着下。
+> 仍然需要自备的（缺了对应功能会明确报错，不会静默降级）：
+> **可选功能一条命令补齐**：`一键补齐运行件.bat --with-transcribe`（③④ 转谱）、`--with-rvc`（⑦⑨⑩ 换声/音色制作/分离，约 1.2GB）、`--with-lrc`（逐字 LRC/eLRC，约 200MB）。四块都可叠加，重复执行幂等。
+
+>
+> | 不入库的东西 | 放到哪 | 说明 |
+> | --- | --- | --- |
+> | `cpp/`（`audiocpp_server.exe` 引擎 + `server.json` + GGUF 权重） | 仓库根 `cpp/` | `一键补齐运行件.bat` 全自动：按硬件挑 CPU/CUDA 档，权重走多路分块下载 |
+> | `checkpoints/model.safetensors`（SheetSage2/MERT2 权重） | `checkpoints/` | ③④ 转谱必需。`一键补齐运行件.bat --with-transcribe` 会装 torch 一套（`requirements-transcribe.txt`）并下好它，**连 MERT-v2-FullSong 也按 `checkpoints/config.json` 里钉住的 revision 下**（下 main 会因 revision 路径不匹配而加载失败，实测）。CPU 上转谱很慢：6 秒片段实测 489 秒，一首 3~4 分钟的歌约 5 小时 |
+> | `runtime/models/`（可选） | `runtime/models/` | 逐字对齐的旧版权重位；现在 `--with-lrc` 走 FunASR/ModelScope 自动下载，一般不用手工放 |
+> | `runtime/rvc/`（官方 RVC + PyMSS + hubert/rmvpe/预训练） | `runtime/rvc/` | ⑦⑨⑩ 换声/音色制作/人声分离。**公开可装**：`一键补齐运行件.bat --with-rvc` 会 clone 官方 RVC（它自带 `tools/pymss`）、装推理依赖、拉权重并打上 `patches/` 里的补丁。CPU 上换声慢、训练以小时计；换声还需要一个你自己的 `.pth` 音色。去和声（HP5）走外部 GPT-SoVITS，属可选 |
+> | `secrets/local_env.bat` | 仓库根 `secrets/` | ⑥ AI 写词的密钥：复制 `local_env.example.bat` 填 `DEEPSEEK_API_KEY` |
+>
+> 这一串限制原来记在 `docs/review/RESPONSE-308f833.md`（蓝军 D1）。上面第一块已经把
+> "clone 起来却跑不起来"的两条主因消掉，剩下的都是**功能级**的缺失，不再是"整个工作台起不来"。
+
+**第一次运行会自动下载模型吗？会！** `一键补齐运行件.bat` 与启动脚本都会检查权重是否齐全。
+默认走 **hf-mirror.com 大陆镜像**（q4_k_m 约 2.7GB，断点续传）。实测这个镜像**单连接只有
+92KB/s、四到六路 Range 并行能到约 650KB/s**，所以 `scripts/fetch_models.py` 是分块并发下的
+（2.7GB 实测 18 分钟）；仓库原有的 `scripts/download_models.py` 保留不动，两条路都通。
 
 <details>
 <summary><b>🌐 大陆网络加速说明（点开）</b></summary>
@@ -283,20 +311,44 @@ py312\python.exe scripts\download_models.py --q8     :: q8_0（约4GB，质量�
 | 目录 | 内容 |
 |---|---|
 | `app.py` | 网关扩展路由：任务托管 / 批量排队 / 终止 / 模型切换 / 换声 / 歌词对齐 / 本机接口守卫 |
-| `main.cp312-win_amd64.pyd` | **编译网关内核（不可改、不入库）**，`app.py` 通过 `import main` 取得 `app` 并在其外挂路由 |
+| `main.py` | **开源兼容网关**（本仓库自带）：顶替闭源 `main.cp312-win_amd64.pyd` 剩下的那几件事——`app`/`settings`、`/api/health`、`/api/music/generate`、导入时拉起引擎。参数白名单运行时读 `cpp/model_specs/yue2.json`，不手抄常量；用例在 `tests/test_shim_main.py` |
+| `main.cp312-win_amd64.pyd` | 编译网关内核（不可改、不入库）。有它就优先用它（同名同位置）；没有也能靠上面的 `main.py` 跑起来 |
+| `requirements.txt` | 跑绿 614 条用例的那套依赖版本（**必须 UTF-8 with BOM**，见下方编码规矩） |
+| `server.json.example` | audio.cpp 引擎配置模板；`scripts/setup_runtime.py` 按硬件把它写成 `cpp/server.json`（`busy_timeout_ms` 必须是 0，否则引擎 5 分钟 busy 守卫会掐断长跑） |
 | `audiocpp.py` | 内核运行期真正依赖的推理引擎适配层（可改，改引擎调用参数在这里） |
 | `src/lrc_align.py` | 歌词强制对齐引擎（字/词级时间戳 → LRC + 增强 ELRC 卡拉OK逐字高亮） |
 | `src/ports.py` | 端口唯一真源（ports.json 读取 + 环境变量覆盖 + 缺失回退） |
 | `ports.json` | 服务端口配置（改端口只改这一处） |
 | `static/` | 工作台前端（13 个页面，明暗双主题，刷新不丢状态） |
 | `dsh-plugin/` | 曾经是 UI 入口与鉴权宿主；v10.14 起入口已收回 7863，这一坨只剩局域网兼容与历史包袱，正在摘除 |
-| `scripts/` | 启动/停止/模型下载/dsh 工作台启动脚本、ASR 与降噪辅助 |
+| `scripts/` | 启动/停止/一键补齐运行件/模型下载（单连接与多路分块两条）/dsh 工作台启动脚本、ASR 与降噪辅助 |
 | `watchdog.py` | 看门狗（网关 + 工作台双进程假死自愈，无窗口静默运行） |
 | `cpp/` | YuE2 GGUF 推理引擎（`audiocpp_server.exe` + `server.json`）与模型目录；**引擎与模型都不入库**，GGUF 模型可用 `scripts/download_models.py` 自动下载 |
 | `checkpoints/` | SheetSage2 乐谱提取（含上游许可；纯旋律谱 / 旋律+和弦完整谱两档） |
 | `tests/` | 回归用例（`py312\python.exe -m pytest tests -q`，纯本机文件/参数校验，不跑任何 GPU 计算） |
 | `LICENSE` | 分层许可声明：自研代码随上游 CC BY-NC 4.0，含第三方随仓资产清单 |
 | `pic/` | README 截图 |
+
+## 🧾 编码规矩（改脚本前先看，都是踩出来的）
+
+* **`.bat` 存成 GBK（OEM cp936），不许改回 UTF-8，也不许在文件中间 `chcp`。**
+  cmd.exe 用控制台自身的 OEM 码页解析批处理：UTF-8 的 `.bat` 在 936 控制台下会把一行中文
+  按多字节切成半截，后果不是"显示难看"而是**命令少跑几条**（实测 `echo` 的后半段被当成
+  独立命令执行，报「'xxx' 不是内部或外部命令」）。而在文件第 2 行加 `chcp 65001` 救不了——
+  cmd 早已按 936 打开了这个文件，中途换码页只会让字节偏移更错位（两条都已实测）。
+  GBK 文件在英文 Windows（单字节码页）上只会字符难看、行结构不会错，所以是安全的下限。
+  `.gitattributes` 里用 `*.bat text eol=crlf`：仓库内存 LF、检出时给 CRLF，换行归一化只动 CR/LF、不碰 GBK 字节（GBK 尾字节范围 0x40–0xFE 不含 0x0A/0x0D）。`.ps1` 同理 `text eol=crlf`；BOM 属于文件内容，git 属性保证不了，靠测试挡。
+* **`.bat` 里不能放 GBK 编不出的字符**（`✅🎵` 这类 emoji 直接写不进去）。要给用户打勾就
+  用 `[OK]`/`[x]`/`[!]` 这种 ASCII 记号。
+* **`.ps1` 必须是 UTF-8 with BOM。** Windows PowerShell 5.1 读无 BOM 的 UTF-8 会按 ANSI 解，
+  而 `scripts/开放局域网.ps1` 里 `$RuleName = "YuE2 工作台 · 局域网 <端口>"` 是防火墙规则的
+  匹配键——解错编码就会出现"规则加了却删不掉"。
+* **`requirements.txt` 必须是 UTF-8 with BOM。** pip 的 `auto_decode` 没有 BOM 就按当前区域
+  编码（中文 Windows 上是 cp936）解，这份带中文注释的清单会直接 UnicodeDecodeError。
+  `scripts/setup_runtime.py` 里有一条自证检查。
+* **启动脚本给 Python 设 `PYTHONIOENCODING=cp<当前码页>:backslashreplace`。** 实测不加时
+  `print("模型下载完成 ✅")` 会 UnicodeEncodeError 退出非 0，启动脚本随即以为模型缺失、
+  又想去重下 2.9GB。
 
 ## 🗂 版本与发版
 
@@ -345,7 +397,30 @@ py312\python.exe scripts\download_models.py --q8     :: q8_0（约4GB，质量�
 <details>
 <summary><b>没有 NVIDIA 显卡能跑吗？</b></summary>
 
-能。显存不足或无独显时自动切换 CPU 后端，生成完成后自动切回。16GB 内存 + 现代多核 CPU 即可出歌，只是等待时间更长。**诚实的限制**：CPU 慢多少没有本机基准数据，社区经验值约 5-10 倍，请以你自己的实测为准（同一歌词多次生成波动可达 ±40%，单点数字本来就不可信，页面因此显示区间而非精确 ETA）。
+能，而且**先看有没有能用的核显**。没有 N 卡时按 `Vulkan → CPU` 的顺序选后端：
+
+* **核显 Vulkan（首选）**。本机实测（i7-1165G7 + Intel Iris Xe、audio.cpp v0.9.2 的
+  `backends: cpu,vulkan` 构建、q4_k_m）：同一条请求，CPU 5,610 秒 → **Vulkan 318 秒（约 14 倍）**；
+  3.84 秒片段在 CPU 上 582~672 秒、Vulkan 25~38 秒（15~27 倍）。两边输出**长度与时长完全一致**
+  （737,068 字节 / 3.838 秒）、RMS 与峰值同档；逐字节哈希不同属正常（不同 kernel 的浮点舍入）。
+  `一键补齐运行件.bat` 会自动下 Vulkan 包并 `--list-devices --backend vulkan` 探一次，
+  探到设备才把后端写成 `vulkan`，探不到就退回 `cpu`（同一个包里两个后端都有）。
+  注意核显走**统一内存**，跑歌时别同时开大程序；`cpp/audiocpp_server-cpu.exe` 是 CPU 版备份，
+  把 `cpp/server.json` 和 `runtime/data/engine_state.json` 的 `backend` 都改回 `cpu` 即切回。
+* **只有 CPU 时**，16GB 内存 + 现代多核也能出歌，但等待时间以**小时、乃至天**计。
+  实测锚点（纯 CPU、q4_k_m）：66.7 秒的歌 `cot=off + 1 步` 跑了 93.5 分钟（RTF≈84）；
+  拆到每阶段是 AR≈0.87 秒/token、NAR≈0.79 秒/帧/步、VAE≈0.47 秒/帧，NAR 随
+  `num_inference_steps` 线性放大。一首 3~4 分钟的歌 `full + 8 步`是十几个小时量级、
+  `full + 32 步`以天计——想一夜出一首，降步数或缩短歌词段落，别按页面那句 ETA 安排
+  （那是按显卡机器标定的）。
+
+三条硬规矩：**笔记本插电**；`cpp/server.json` 的 `busy_timeout_ms` 必须是 `0`（引擎自带的
+5 分钟 busy 守卫会把长跑中的请求直接 503 掐断）；`runtime/data/engine_state.json` 的
+`backend` 必须与实际构建支持的后端一致（`cuda` / `vulkan` / `cpu`）：枚举值写错会被拒绝；
+写了一个构建不支持的后端时，工作台会按 `audiocpp_server.exe --version` 探测到的能力落到可用后端，
+并在回包/日志里说明改了什么。出歌期间网关已声明"别进睡眠"（`app.py::_gen_run_once`），但合盖仍可能待机。
+诚实的限制：不同机器、不同驱动的 Vulkan 表现可能差很多，同一歌词多次生成波动可达 ±40%，
+单点数字本来就不可信，页面因此显示区间而非精确 ETA。
 </details>
 
 <details>

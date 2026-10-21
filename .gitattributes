@@ -1,0 +1,16 @@
+# 批处理脚本必须是 GBK（OEM cp936）字节，且不能被换行规范化碰。
+# 原因：cmd.exe 用控制台自身的 OEM 码页解析 .bat。UTF-8 的 .bat 在 936 控制台下会把
+# 一行中文按多字节切成半截，后果不是"显示难看"而是命令少跑几条（实测 echo 的后半段
+# 被当成独立命令执行，报「'xxx' 不是内部或外部命令」）。在文件里加 chcp 65001 也救不了：
+# cmd 早已按 936 打开了这个文件，中途换码页只会让字节偏移更错位。
+# 所以：这些 .bat 在仓库里就是 GBK 字节，别改回 UTF-8，也别在中间插 chcp。
+# 英文 Windows（单字节码页）读 GBK 只会字符难看，行结构不会错，因此是可接受的下限。
+# text eol=crlf：仓库内存 LF、检出时给 CRLF（cmd 要 CRLF），但不碰内容字节——
+# 这些文件是 GBK，git 的换行归一化只动行尾、不动编码，两者互不影响。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# PowerShell 脚本反过来：Windows PowerShell 5.1 读"无 BOM 的 UTF-8"会按 ANSI 解码，
+# 而 scripts/开放局域网.ps1 里的 $RuleName = "YuE2 工作台 · 局域网 <端口>" 是防火墙规则的
+# 匹配键——解错编码就出现"规则加了却删不掉"。ps1 必须带 UTF-8 BOM。
+*.ps1 text eol=crlf

@@ -1,14 +1,17 @@
 @echo off
-chcp 65001 >nul
-title éŸ³ä¹å·¥ä½œå°
+rem [encoding] THIS FILE IS GBK (OEM cp936) ON PURPOSE. cmd.exe parses a batch file with the
+rem [encoding] console's OEM codepage; a UTF-8 batch under cp936 splits lines mid-character
+rem [encoding] and some commands silently stop running (not just a display issue). Do NOT
+rem [encoding] re-save as UTF-8 and do NOT add a mid-file code-page switch.
+title ÒôÀÖ¹¤×÷Ì¨
 cd /d %~dp0..
-rem æœ¬è„šæœ¬ä½äºŽ scripts\ï¼Œæ‰€æœ‰ç›¸å¯¹è·¯å¾„å‡ä»¥ä»“åº“æ ¹ä¸ºåŸºå‡†
+rem ±¾½Å±¾Î»ÓÚ scripts\£¬ËùÓÐÏà¶ÔÂ·¾¶¾ùÒÔ²Ö¿â¸ùÎª»ù×¼
 
 echo ================================================
-echo   éŸ³ä¹å·¥ä½œå° ä¸€é”®å¯åŠ¨
+echo   ÒôÀÖ¹¤×÷Ì¨ Ò»¼üÆô¶¯
 echo ================================================
 
-rem ---- ç«¯å£ï¼šå”¯ä¸€çœŸæº ports.jsonï¼ˆä¸Ž settings.py / watchdog.py / dsh æ’ä»¶åŒæºï¼‰----
+rem ---- ¶Ë¿Ú£ºÎ¨Ò»ÕæÔ´ ports.json£¨Óë settings.py / watchdog.py / dsh ²å¼þÍ¬Ô´£©----
 set "GATEWAY_PORT=7863"
 set "DSH_PORT=3081"
 for /f "usebackq tokens=*" %%p in (`powershell -NoProfile -Command "try{$j=Get-Content '%cd%\ports.json' -Raw | ConvertFrom-Json; '{0} {1}' -f $(if($j.gateway){$j.gateway}else{'7863'}),$(if($j.dsh){$j.dsh}else{'3081'})}catch{'7863 3081'}" 2^>nul`) do (
@@ -17,20 +20,29 @@ for /f "usebackq tokens=*" %%p in (`powershell -NoProfile -Command "try{$j=Get-C
 
 set GATEWAY_UP=0
 set DSH_UP=0
-rem å­˜æ´»åˆ¤æ–­åªè®¤"è‡ªå®¶ç»‘å®š"çš„ç›‘å¬åœ°å€ã€‚å¼€è¿‡å±€åŸŸç½‘åŽ 3081 ä¸Šä¼šé•¿æœŸæŒ‚ç€ä¸€æ¡ netsh portproxy
-rem ç›‘å¬ï¼ˆ192.168.1.6:3081 â†’ 127.0.0.1:3081ï¼Œå®¿ä¸»æ˜¯ svchost/iphlpsvcï¼‰ï¼Œè·ŸçœŸæœåŠ¡åŒä¸€ä¸ªç«¯å£å·ã€‚
-rem æ—§å†™æ³• ":PORT .*LISTENING" ä¸åŒºåˆ†æœ¬åœ°åœ°å€ï¼šçœŸæœåŠ¡æ²¡èµ·æ¥æ—¶ä¹Ÿä¼šè¢«å®ƒåˆ¤æˆ"å·²åœ¨è¿è¡Œ" â†’
-rem è·³è¿‡ [3/3] å¯åŠ¨ â†’ æ²¡äººåŽ»æ‹‰çœŸæœåŠ¡ï¼Œåªå‰©æœ¬è„šæœ¬æ‹¿æ—¥å¿—é‡Œçš„æ—§ token åŽ» curl 127.0.0.1:PORTï¼Œ
-rem è¿žæŽ¥è¢«æ‹’ â†’ HTTP 000 åˆ·å±ã€‚2026-09-30 23:41 å®žæµ‹ï¼šç”¨æˆ·è¿žçœ‹ 6 è¡Œ"é—¨ç¥¨æœªç”Ÿæ•ˆï¼ˆHTTP 000ï¼‰"ï¼Œ
-rem å·¥ä½œå°å…¶å®žæ˜¯ 36 ç§’åŽè¢«çœ‹é—¨ç‹—æ•‘æ´»çš„ã€‚watchdog.py é‡ŒåŒä¸€ä¸ªå‘æ—©å°±æ”¶å£è¿‡
-rem ï¼ˆ_OWN_BIND_PREFIXESï¼‰ï¼Œè¿™é‡Œè¡¥ä¸ŠåŒä¸€ä»½å£å¾„ï¼›ç«¯å£åŽç•™ç©ºæ ¼é¿å… :3081 è¯¯å‘½ä¸­ :30810ã€‚
+rem ´æ»îÅÐ¶ÏÖ»ÈÏ"×Ô¼Ò°ó¶¨"µÄ¼àÌýµØÖ·¡£¿ª¹ý¾ÖÓòÍøºó 3081 ÉÏ»á³¤ÆÚ¹Ò×ÅÒ»Ìõ netsh portproxy
+rem ¼àÌý£¨192.168.1.6:3081 ¡ú 127.0.0.1:3081£¬ËÞÖ÷ÊÇ svchost/iphlpsvc£©£¬¸úÕæ·þÎñÍ¬Ò»¸ö¶Ë¿ÚºÅ¡£
+rem ¾ÉÐ´·¨ ":PORT .*LISTENING" ²»Çø·Ö±¾µØµØÖ·£ºÕæ·þÎñÃ»ÆðÀ´Ê±Ò²»á±»ËüÅÐ³É"ÒÑÔÚÔËÐÐ" ¡ú
+rem Ìø¹ý [3/3] Æô¶¯ ¡ú Ã»ÈËÈ¥À­Õæ·þÎñ£¬Ö»Ê£±¾½Å±¾ÄÃÈÕÖ¾ÀïµÄ¾É token È¥ curl 127.0.0.1:PORT£¬
+rem Á¬½Ó±»¾Ü ¡ú HTTP 000 Ë¢ÆÁ¡£2026-09-30 23:41 Êµ²â£ºÓÃ»§Á¬¿´ 6 ÐÐ"ÃÅÆ±Î´ÉúÐ§£¨HTTP 000£©"£¬
+rem ¹¤×÷Ì¨ÆäÊµÊÇ 36 Ãëºó±»¿´ÃÅ¹·¾È»îµÄ¡£watchdog.py ÀïÍ¬Ò»¸ö¿ÓÔç¾ÍÊÕ¿Ú¹ý
+rem £¨_OWN_BIND_PREFIXES£©£¬ÕâÀï²¹ÉÏÍ¬Ò»·Ý¿Ú¾¶£»¶Ë¿ÚºóÁô¿Õ¸ñ±ÜÃâ :3081 ÎóÃüÖÐ :30810¡£
 netstat -ano -p tcp | findstr /R /C:"127.0.0.1:%GATEWAY_PORT% .*LISTENING" /C:"0.0.0.0:%GATEWAY_PORT% .*LISTENING" /C:"\[::1\]:%GATEWAY_PORT% .*LISTENING" /C:"\[::\]:%GATEWAY_PORT% .*LISTENING" >nul && set GATEWAY_UP=1
 netstat -ano -p tcp | findstr /R /C:"127.0.0.1:%DSH_PORT% .*LISTENING" /C:"0.0.0.0:%DSH_PORT% .*LISTENING" /C:"\[::1\]:%DSH_PORT% .*LISTENING" /C:"\[::\]:%DSH_PORT% .*LISTENING" >nul && set DSH_UP=1
 
 set GRADIO_TEMP_DIR=%cd%\tmp\
 set PYTHON_PATH=%cd%\py312\
-rem è“å†› N-9ï¼šPowerShell ä¾§ä¸€å¾‹ä»ŽçŽ¯å¢ƒå˜é‡å–ç›®å½•ï¼Œä¸æŠŠè·¯å¾„æ‹¼è¿›å­—ç¬¦ä¸²å­—é¢é‡
-rem ï¼ˆè·¯å¾„å«å•å¼•å·ä¼šè®©æ•´æ¡å‘½ä»¤è¯­æ³•å´©ï¼Œä¸”è¢« catch åžæŽ‰çœ‹ä¸åˆ°æ ¹å› ï¼‰ã€‚
+rem Python µÄÊä³ö±ØÐë¸ú×Å±¾¿ØÖÆÌ¨µÄ OEM ÂëÒ³×ß£¬Óöµ½±à²»³öµÄ×Ö·ûÖ»½µ¼¶²»±À¡£
+rem ÒÔÇ°ÕâÌõ¿¿ chcp 65001 ¶µ×Å£»ÏÖÔÚÅú´¦Àí±¾ÉíÊÇ GBK£¨¼û .gitattributes£©£¬²»ÄÜÔÙÖÐÍ¾»»ÂëÒ³£¬
+rem ËùÒÔ¶Áµ±Ç°ÂëÒ³Æ´ PYTHONIOENCODING¡£Êµ²â²»¼ÓÕâÐÐÊ± print(emoji) »á UnicodeEncodeError£¬
+rem °ÑÏÂÔØ½Å±¾ÅÐ³ÉÊ§°Ü£¬Æô¶¯½Å±¾Ëæ¼´ÒÔÎªÄ£ÐÍÈ±Ê§¡¢ÓÖÏëÈ¥ÖØÏÂ 2.9GB¡£
+for /f "tokens=2 delims=:" %%p in ('chcp') do set "OEMCP=%%p"
+set "OEMCP=%OEMCP: =%"
+rem Ö»ÈÏ´¿Êý×Ö£º»ûÐÎÖµ£¨¿Õ/´øµã/´ø¿Õ¸ñ£©»áÈÃ Python ³õÊ¼»¯Ö±½Ó Fatal£¨ÆÀÉó T7£©
+echo %OEMCP%|findstr /r "^[0-9][0-9]*$" >nul || set "OEMCP=936"
+set "PYTHONIOENCODING=cp%OEMCP%:backslashreplace"
+rem À¶¾ü N-9£ºPowerShell ²àÒ»ÂÉ´Ó»·¾³±äÁ¿È¡Ä¿Â¼£¬²»°ÑÂ·¾¶Æ´½ø×Ö·û´®×ÖÃæÁ¿
+rem £¨Â·¾¶º¬µ¥ÒýºÅ»áÈÃÕûÌõÃüÁîÓï·¨±À£¬ÇÒ±» catch ÍÌµô¿´²»µ½¸ùÒò£©¡£
 set "YUE2_ROOT_DIR=%cd%"
 set PYTHONHOME=
 set PYTHONPATH=
@@ -42,42 +54,42 @@ set HF_ENDPOINT=https://hf-mirror.com
 set "HF_HOME=%cd%\runtime\hf_download"
 set NO_PROXY=127.0.0.1,localhost,::1
 set no_proxy=127.0.0.1,localhost,::1
-rem é™é»˜å¯åŠ¨å™¨è°ƒç”¨æ—¶ç¦æ­¢ç½‘å…³è‡ªè¡Œå¼€æµè§ˆå™¨ï¼ˆç”± vbs ç»Ÿä¸€å¼€å·¥ä½œå°é¡µé¢ï¼‰
+rem ¾²Ä¬Æô¶¯Æ÷µ÷ÓÃÊ±½ûÖ¹Íø¹Ø×ÔÐÐ¿ªä¯ÀÀÆ÷£¨ÓÉ vbs Í³Ò»¿ª¹¤×÷Ì¨Ò³Ãæ£©
 if "%~1"=="no-open" (echo > "%TEMP%\_lab_no_open.marker" && set "_LAB_NO_OPEN_MARKER=1") else (del /q "%TEMP%\_lab_no_open.marker" 2>nul)
 set CU_PATH=%PYTHON_PATH%\Lib\site-packages\torch\lib
 set CUDA_HOME=%PYTHON_PATH%\Library
 set PATH=%PYTHON_PATH%;%PYTHON_PATH%\Scripts;%FFMPEG_PATH%;%SOX_PATH%;%PATH%
 
-rem å¯†é’¥ä»Žæœ¬åœ°æœªå…¥åº“æ–‡ä»¶è¯»å–ï¼ˆå‚è€ƒ secrets/local_env.example.bat åˆ›å»ºè‡ªå·±çš„ local_env.batï¼‰
+rem ÃÜÔ¿´Ó±¾µØÎ´Èë¿âÎÄ¼þ¶ÁÈ¡£¨²Î¿¼ secrets/local_env.example.bat ´´½¨×Ô¼ºµÄ local_env.bat£©
 if exist "%~dp0..\secrets\local_env.bat" call "%~dp0..\secrets\local_env.bat"
-rem é¦–æ¬¡è¿è¡Œï¼šæ¨¡åž‹ç¼ºå¤±æ—¶è‡ªåŠ¨ä»Žå¤§é™†é•œåƒä¸‹è½½ï¼ˆçº¦2.7GBï¼Œæ”¯æŒæ–­ç‚¹ç»­ä¼ ï¼‰
+rem Ê×´ÎÔËÐÐ£ºÄ£ÐÍÈ±Ê§Ê±×Ô¶¯´Ó´óÂ½¾µÏñÏÂÔØ£¨Ô¼2.7GB£¬Ö§³Ö¶ÏµãÐø´«£©
 "%~dp0..\py312\python.exe" "%~dp0..\scripts\download_models.py" --check >nul 2>&1
 if errorlevel 1 (
     echo.
-    echo   [é¦–æ¬¡è¿è¡Œ] æ£€æµ‹åˆ°æ¨¡åž‹ç¼ºå¤±ï¼Œå¼€å§‹è‡ªåŠ¨ä¸‹è½½ YuE2 æ¨¡åž‹ï¼ˆå¤§é™†é•œåƒåŠ é€Ÿï¼‰...
-    echo   ä¸‹è½½çº¦ 2.7GBï¼Œæ”¯æŒæ–­ç‚¹ç»­ä¼ ï¼Œä¸­æ–­åŽé‡æ–°è¿è¡Œæœ¬è„šæœ¬å³å¯ç»§ç»­
+    echo   [Ê×´ÎÔËÐÐ] ¼ì²âµ½Ä£ÐÍÈ±Ê§£¬¿ªÊ¼×Ô¶¯ÏÂÔØ YuE2 Ä£ÐÍ£¨´óÂ½¾µÏñ¼ÓËÙ£©...
+    echo   ÏÂÔØÔ¼ 2.7GB£¬Ö§³Ö¶ÏµãÐø´«£¬ÖÐ¶ÏºóÖØÐÂÔËÐÐ±¾½Å±¾¼´¿É¼ÌÐø
     "%~dp0..\py312\python.exe" "%~dp0..\scripts\download_models.py"
     if errorlevel 1 (
-        echo   æ¨¡åž‹ä¸‹è½½å¤±è´¥ï¼Œè¯·æ£€æŸ¥ç½‘ç»œåŽé‡æ–°è¿è¡Œæœ¬è„šæœ¬
+        echo   Ä£ÐÍÏÂÔØÊ§°Ü£¬Çë¼ì²éÍøÂçºóÖØÐÂÔËÐÐ±¾½Å±¾
         pause
         exit /b 1
     )
 )
 
 if "%GATEWAY_UP%"=="1" goto watchdog
-echo [1/3] å¯åŠ¨ç½‘å…³ :%GATEWAY_PORT%ï¼ˆæ— çª—å£å¯åŠ¨ï¼Œç»§æ‰¿æœ¬è„šæœ¬çŽ¯å¢ƒå˜é‡ï¼‰...
-rem è“å†› S5ï¼šè¿™é‡ŒåŽŸå…ˆç”¨ WMI Win32_Process.Create æ‹‰èµ·ã€‚WMI æ´¾ç”Ÿçš„è¿›ç¨‹ç»§æ‰¿çš„æ˜¯ WMI æœåŠ¡çš„çŽ¯å¢ƒï¼Œ
-rem ä¸æ˜¯æœ¬ cmd çš„çŽ¯å¢ƒ â€”â€” ä¸Šé¢ set çš„ HF_ENDPOINT/HF_HOME/TORCH_HOME/FFMPEG_PATH/NO_PROXY/å¯†é’¥
-rem å¯¹é¦–å¯çš„ç½‘å…³å…¨éƒ¨æ— æ•ˆï¼ˆçœ‹é—¨ç‹—é‡å¯é‚£æ¡å´æ˜¯å¸¦ç€ env çš„ï¼‰ï¼ŒäºŽæ˜¯"é¦–æ¬¡è¿è¡Œèµ°é•œåƒã€é‡å¯åŽèµ°åˆ«çš„"
-rem ä¸¤å¥—è¡Œä¸ºã€‚å®žæµ‹å¯¹ç…§ï¼ˆåŒä¸€æ®µå­è¿›ç¨‹è„šæœ¬ï¼Œåªæ¢æ‹‰èµ·æ–¹å¼ï¼‰ï¼šWMI è¯»ä¸åˆ°æŽ¢é’ˆå˜é‡ï¼ŒStart-Process è¯»å¾—åˆ°ã€‚
-rem Start-Process -WindowStyle Hidden åŒæ ·ä¸å¼¹æŽ§åˆ¶å°çª—å£ï¼Œä¸”é€å±‚ç»§æ‰¿çˆ¶è¿›ç¨‹çŽ¯å¢ƒï¼Œæ•…æ”¹ç”¨å®ƒã€‚
-rem ç›®å½•ä»ŽçŽ¯å¢ƒå˜é‡å–ï¼ˆè„šæœ¬å¼€å¤´ set çš„ YUE2_ROOT_DIRï¼‰ï¼Œä¸æ‹¼è¿› PS å­—ç¬¦ä¸²å­—é¢é‡ï¼š
-rem è·¯å¾„é‡Œæœ‰å•å¼•å·ï¼ˆC:\Users\O'Brien\...ï¼‰ä¼šè®©æ•´æ¡ PS å‘½ä»¤è¯­æ³•å´©ï¼Œè€Œ catch{exit 1}
-rem æŠŠæ ¹å› åžå¾—å¹²å¹²å‡€å‡€ï¼Œç”¨æˆ·åªèƒ½çœ‹åˆ°"ç½‘å…³æœªå°±ç»ª"ã€‚
+echo [1/3] Æô¶¯Íø¹Ø :%GATEWAY_PORT%£¨ÎÞ´°¿ÚÆô¶¯£¬¼Ì³Ð±¾½Å±¾»·¾³±äÁ¿£©...
+rem À¶¾ü S5£ºÕâÀïÔ­ÏÈÓÃ WMI Win32_Process.Create À­Æð¡£WMI ÅÉÉúµÄ½ø³Ì¼Ì³ÐµÄÊÇ WMI ·þÎñµÄ»·¾³£¬
+rem ²»ÊÇ±¾ cmd µÄ»·¾³ ¡ª¡ª ÉÏÃæ set µÄ HF_ENDPOINT/HF_HOME/TORCH_HOME/FFMPEG_PATH/NO_PROXY/ÃÜÔ¿
+rem ¶ÔÊ×ÆôµÄÍø¹ØÈ«²¿ÎÞÐ§£¨¿´ÃÅ¹·ÖØÆôÄÇÌõÈ´ÊÇ´ø×Å env µÄ£©£¬ÓÚÊÇ"Ê×´ÎÔËÐÐ×ß¾µÏñ¡¢ÖØÆôºó×ß±ðµÄ"
+rem Á½Ì×ÐÐÎª¡£Êµ²â¶ÔÕÕ£¨Í¬Ò»¶Î×Ó½ø³Ì½Å±¾£¬Ö»»»À­Æð·½Ê½£©£ºWMI ¶Á²»µ½Ì½Õë±äÁ¿£¬Start-Process ¶ÁµÃµ½¡£
+rem Start-Process -WindowStyle Hidden Í¬Ñù²»µ¯¿ØÖÆÌ¨´°¿Ú£¬ÇÒÖð²ã¼Ì³Ð¸¸½ø³Ì»·¾³£¬¹Ê¸ÄÓÃËü¡£
+rem Ä¿Â¼´Ó»·¾³±äÁ¿È¡£¨½Å±¾¿ªÍ· set µÄ YUE2_ROOT_DIR£©£¬²»Æ´½ø PS ×Ö·û´®×ÖÃæÁ¿£º
+rem Â·¾¶ÀïÓÐµ¥ÒýºÅ£¨C:\Users\O'Brien\...£©»áÈÃÕûÌõ PS ÃüÁîÓï·¨±À£¬¶ø catch{exit 1}
+rem °Ñ¸ùÒòÍÌµÃ¸É¸É¾»¾»£¬ÓÃ»§Ö»ÄÜ¿´µ½"Íø¹ØÎ´¾ÍÐ÷"¡£
 powershell -NoProfile -Command "try{Start-Process -WindowStyle Hidden -FilePath (Join-Path $env:YUE2_ROOT_DIR 'py312\python.exe') -ArgumentList '-s',(Join-Path $env:YUE2_ROOT_DIR 'app.py') -WorkingDirectory $env:YUE2_ROOT_DIR -PassThru -ErrorAction Stop | Out-Null}catch{exit 1}"
 
 :watchdog
-rem çœ‹é—¨ç‹—ï¼šç½‘å…³å‡æ­»ï¼ˆhealth æ— å“åº”ï¼‰è‡ªåŠ¨é‡å¯ï¼›pythonw æ— çª—å£ï¼Œæ—¥å¿—å†™ runtime\data\logs\watchdog.log
+rem ¿´ÃÅ¹·£ºÍø¹Ø¼ÙËÀ£¨health ÎÞÏìÓ¦£©×Ô¶¯ÖØÆô£»pythonw ÎÞ´°¿Ú£¬ÈÕÖ¾Ð´ runtime\data\logs\watchdog.log
 tasklist /FI "IMAGENAME eq pythonw.exe" /V 2>nul | findstr /C:"watchdog" >nul
 if not errorlevel 1 goto dsh
 if exist "runtime\_watchdog.pid" (
@@ -85,78 +97,79 @@ if exist "runtime\_watchdog.pid" (
   if not errorlevel 1 del /q "runtime\_watchdog.pid" 2>nul
 )
 if exist "runtime\_watchdog.pid" (
-  echo [2/3] çœ‹é—¨ç‹—å·²åœ¨è¿è¡Œï¼Œè·³è¿‡
+  echo [2/3] ¿´ÃÅ¹·ÒÑÔÚÔËÐÐ£¬Ìø¹ý
   goto dsh2
 )
-echo [2/3] å¯åŠ¨ç½‘å…³çœ‹é—¨ç‹—ï¼ˆå‡æ­»è‡ªæ„ˆï¼Œæ— çª—å£ï¼‰...
+echo [2/3] Æô¶¯Íø¹Ø¿´ÃÅ¹·£¨¼ÙËÀ×ÔÓú£¬ÎÞ´°¿Ú£©...
 powershell -NoProfile -Command "$wd = if ($env:YUE2_ROOT_DIR) { $env:YUE2_ROOT_DIR } else { (Get-Location).Path }; $p = Start-Process -WindowStyle Hidden (Join-Path $wd 'py312\pythonw.exe') -WorkingDirectory $wd -ArgumentList 'watchdog.py' -PassThru; $p.Id | Out-File -Encoding ascii (Join-Path $wd 'runtime\_watchdog.pid')"
 goto dsh2
 :dsh
-echo [2/3] çœ‹é—¨ç‹—å·²åœ¨è¿è¡Œï¼Œè·³è¿‡
+echo [2/3] ¿´ÃÅ¹·ÒÑÔÚÔËÐÐ£¬Ìø¹ý
 :dsh2
 if not "%DSH_UP%"=="1" goto dshstart
-rem ç«¯å£ä¸Š"æœ‰äºº"ä¸ç­‰äºŽæœåŠ¡æ´»ç€ï¼šå‡æ­»çš„ dsh ä¸€æ ·å ç€ç«¯å£å´ä¸å›žè¯ã€‚è¡¥ä¸€æ¬¡çœŸå®ž HTTP æŽ¢æ´»â€”â€”
-rem curl åªè¦å®Œæˆä¸€æ¬¡ä¼ è¾“å°±è¿”å›ž 0ï¼ˆ401/403/200 éƒ½è¯´æ˜ŽæœåŠ¡åœ¨ï¼‰ï¼Œåªæœ‰åŽ‹æ ¹è¿žä¸ä¸Šæ‰éž 0ï¼Œ
-rem é‚£ç§æƒ…å†µæŒ‰"æ²¡èµ·æ¥"å¤„ç†ï¼Œäº¤ç»™ä¸‹é¢æ­£å¸¸å¯åŠ¨ä¸€æ¬¡ï¼Œåˆ«å†è®©æ—§ token å¹²ç­‰ 24 è½®ã€‚
+rem ¶Ë¿ÚÉÏ"ÓÐÈË"²»µÈÓÚ·þÎñ»î×Å£º¼ÙËÀµÄ dsh Ò»ÑùÕ¼×Å¶Ë¿ÚÈ´²»»Ø»°¡£²¹Ò»´ÎÕæÊµ HTTP Ì½»î¡ª¡ª
+rem curl Ö»ÒªÍê³ÉÒ»´Î´«Êä¾Í·µ»Ø 0£¨401/403/200 ¶¼ËµÃ÷·þÎñÔÚ£©£¬Ö»ÓÐÑ¹¸ùÁ¬²»ÉÏ²Å·Ç 0£¬
+rem ÄÇÖÖÇé¿ö°´"Ã»ÆðÀ´"´¦Àí£¬½»¸øÏÂÃæÕý³£Æô¶¯Ò»´Î£¬±ðÔÙÈÃ¾É token ¸ÉµÈ 24 ÂÖ¡£
 "%SystemRoot%\System32\curl.exe" -s --noproxy "*" -m 5 -o nul "http://127.0.0.1:%DSH_PORT%/" >nul 2>&1
 if not errorlevel 1 goto wait
-echo     ç«¯å£ :%DSH_PORT% æœ‰ç›‘å¬ä½†ä¸å›žè¯ï¼ˆå‡æ­»/å ä½è¿›ç¨‹ï¼‰ï¼ŒæŒ‰æœªå¯åŠ¨å¤„ç†
+echo     ¶Ë¿Ú :%DSH_PORT% ÓÐ¼àÌýµ«²»»Ø»°£¨¼ÙËÀ/Õ¼Î»½ø³Ì£©£¬°´Î´Æô¶¯´¦Àí
 :dshstart
-echo [3/3] å¯åŠ¨ dsh :%DSH_PORT%ï¼ˆå±€åŸŸç½‘å…¼å®¹ç”¨ï¼›å·¥ä½œå°å…¥å£å·²æ˜¯ %GATEWAY_PORT%ï¼Œä¸é å®ƒï¼‰...
-rem å¯åŠ¨å‚æ•°é›†ä¸­åœ¨ scripts\å¯åŠ¨dshå·¥ä½œå°.batï¼ˆçœ‹é—¨ç‹—é‡å¯ 3081 æ—¶å¤ç”¨åŒä¸€ä»½ï¼‰
-call "%~dp0å¯åŠ¨dshå·¥ä½œå°.bat"
+echo [3/3] Æô¶¯ dsh :%DSH_PORT%£¨¾ÖÓòÍø¼æÈÝÓÃ£»¹¤×÷Ì¨Èë¿ÚÒÑÊÇ %GATEWAY_PORT%£¬²»¿¿Ëü£©...
+rem Æô¶¯²ÎÊý¼¯ÖÐÔÚ scripts\Æô¶¯dsh¹¤×÷Ì¨.bat£¨¿´ÃÅ¹·ÖØÆô 3081 Ê±¸´ÓÃÍ¬Ò»·Ý£©
+call "%~dp0Æô¶¯dsh¹¤×÷Ì¨.bat"
 
-rem è¿™ä¸¤ä¸ªè®¡æ•°åœ¨ :ready é‡Œä¹Ÿä¼šå„ç½®ä¸€æ¬¡ï¼›æå‰åˆ°è¿™é‡Œæ˜¯å› ä¸º :notready â†’ dshwait é‚£æ¡è·¯
-rem ç»•è¿‡äº† :readyï¼Œå±Šæ—¶ DSH_TRIES/DSH_VT å°šæœªå®šä¹‰ï¼Œif åˆ¤æ–­ä¼šå±•å¼€æˆè¯­æ³•é”™è¯¯ã€‚
+rem ÕâÁ½¸ö¼ÆÊýÔÚ :ready ÀïÒ²»á¸÷ÖÃÒ»´Î£»ÌáÇ°µ½ÕâÀïÊÇÒòÎª :notready ¡ú dshwait ÄÇÌõÂ·
+rem ÈÆ¹ýÁË :ready£¬½ìÊ± DSH_TRIES/DSH_VT ÉÐÎ´¶¨Òå£¬if ÅÐ¶Ï»áÕ¹¿ª³ÉÓï·¨´íÎó¡£
 set /a DSH_TRIES=0
 set /a DSH_VT=0
 :wait
 set /a TRIES=0
 :waitloop
 ping -n 3 127.0.0.1 >nul
-"%SystemRoot%\System32\curl.exe" -s --noproxy "*" -m 3 http://127.0.0.1:%GATEWAY_PORT%/api/health >nul 2>&1
+"%SystemRoot%\System32\curl.exe" -s --noproxy "*" -m 10 http://127.0.0.1:%GATEWAY_PORT%/api/health >nul 2>&1
 if not errorlevel 1 goto ready
 set /a TRIES+=1
 if %TRIES% geq 20 goto notready
-echo     ç­‰å¾…ç½‘å…³å°±ç»ª... %TRIES%/20
+echo     µÈ´ýÍø¹Ø¾ÍÐ÷... %TRIES%/20
 goto waitloop
 
 :notready
 echo.
-echo   [è­¦å‘Š] ç½‘å…³ %GATEWAY_PORT% æœªå°±ç»ªï¼ˆå¯åŠ¨å¯èƒ½å¤±è´¥ï¼‰ï¼Œè¯·æŸ¥çœ‹ runtime\data\logs\ ä¸Ž _gateway æ—¥å¿—
-echo   å¸¸è§åŽŸå› ï¼šæ˜¾å­˜ä¸è¶³ã€æ¨¡åž‹ç¼ºå¤±ã€ç«¯å£è¢«å ç”¨
+echo   [¾¯¸æ] Íø¹Ø %GATEWAY_PORT% Î´¾ÍÐ÷£¨Æô¶¯¿ÉÄÜÊ§°Ü£©£¬Çë²é¿´ runtime\data\logs\ Óë _gateway ÈÕÖ¾
+echo   ³£¼ûÔ­Òò£ºÏÔ´æ²»×ã¡¢Ä£ÐÍÈ±Ê§¡¢¶Ë¿Ú±»Õ¼ÓÃ£»
+echo   ±¾»úÕýÔÚ³ö¸èÊ± CPU ±»´òÂú£¬Íø¹Ø»Ø»°±¾Éí¾Í»áÂýÊ®¼¸Ãë¡ª¡ªÕâÖÖÇé¿ö²»ÊÇ»µÁË£¬ÉÔºóÖØÊÔ¼´¿É
 goto dshwait
 
 :ready
 echo.
 echo ================================================
-echo   å…¨éƒ¨å°±ç»ªï¼
-echo   å·¥ä½œå°:  http://127.0.0.1:%GATEWAY_PORT%
-echo   AI åŠ©æ‰‹: é¡µé¢å†… "AI å·¥ä½œå°" é¡µç­¾
+echo   È«²¿¾ÍÐ÷£¡
+echo   ¹¤×÷Ì¨:  http://127.0.0.1:%GATEWAY_PORT%
+echo   AI ÖúÊÖ: Ò³ÃæÄÚ "AI ¹¤×÷Ì¨" Ò³Ç©
 echo ================================================
-rem æ‰“å¼€ç½‘å…³ç›´å‡ºçš„å·¥ä½œå°é¡µé¢ï¼ˆv10.14 èµ· UI çš„å®¶å°±æ˜¯ %GATEWAY_PORT%ï¼‰
+rem ´ò¿ªÍø¹ØÖ±³öµÄ¹¤×÷Ì¨Ò³Ãæ£¨v10.14 Æð UI µÄ¼Ò¾ÍÊÇ %GATEWAY_PORT%£©
 set /a DSH_TRIES=0
 set /a DSH_VT=0
 set "DSH_CODE=000"
 :dshwait
-rem ä»¥å‰è¿™é‡Œè¦ç­‰ 3081 çš„é—¨ç¥¨ã€å¹¶å®žæµ‹ 24 è½®ã€‚v10.14 èµ·é—¨ç¥¨ä¸å†æ˜¯å…¥å£æ¡ä»¶ï¼š
-rem ä¸Šæ¸¸ openclaw/dsh æŠŠæ—¥å¿—é‡Œçš„ token æ‰“äº†ç ï¼Œè¯»åˆ°çš„æ°¸è¿œæ˜¯ ***redacted***ï¼ŒéªŒç¥¨å¿…ç„¶ 401ã€‚
+rem ÒÔÇ°ÕâÀïÒªµÈ 3081 µÄÃÅÆ±¡¢²¢Êµ²â 24 ÂÖ¡£v10.14 ÆðÃÅÆ±²»ÔÙÊÇÈë¿ÚÌõ¼þ£º
+rem ÉÏÓÎ openclaw/dsh °ÑÈÕÖ¾ÀïµÄ token ´òÁËÂë£¬¶Áµ½µÄÓÀÔ¶ÊÇ ***redacted***£¬ÑéÆ±±ØÈ» 401¡£
 goto open
 
 :open
-rem é™é»˜å¯åŠ¨å™¨ï¼ˆè®¡åˆ’ä»»åŠ¡ no-openï¼‰ä¸è´Ÿè´£å¼€æµè§ˆå™¨ï¼Œç›´æŽ¥é€€å‡º
+rem ¾²Ä¬Æô¶¯Æ÷£¨¼Æ»®ÈÎÎñ no-open£©²»¸ºÔð¿ªä¯ÀÀÆ÷£¬Ö±½ÓÍË³ö
 if "%~1"=="no-open" exit /b 0
-rem æ‰“å¼€ç½‘å…³ç›´å‡ºçš„å·¥ä½œå°ï¼šå…ˆå®žæµ‹ä¸€æ¬¡ HTTP 200 å†å¼¹ï¼Œå…å¾—"é¡µé¢å¼€äº†ä½†æ˜¯ç©ºçš„"
+rem ´ò¿ªÍø¹ØÖ±³öµÄ¹¤×÷Ì¨£ºÏÈÊµ²âÒ»´Î HTTP 200 ÔÙµ¯£¬ÃâµÃ"Ò³Ãæ¿ªÁËµ«ÊÇ¿ÕµÄ"
 set "LAB_URL=http://127.0.0.1:%GATEWAY_PORT%/"
 set "GW_CODE=000"
 "%SystemRoot%\System32\curl.exe" -s --noproxy "*" -m 5 -o nul -w "%%{http_code}" "%LAB_URL%" > "%TEMP%\_lab_gw_verify.tmp" 2>nul
 set /p GW_CODE=<"%TEMP%\_lab_gw_verify.tmp"
 del /q "%TEMP%\_lab_gw_verify.tmp" 2>nul
 if not "%GW_CODE%"=="200" (
-    echo   å·¥ä½œå°é¡µé¢æ²¡èµ·æ¥ï¼ˆHTTP %GW_CODE%ï¼‰ï¼š%GATEWAY_PORT% å¯èƒ½æ­£åœ¨é‡å¯ï¼Œç¨åŽå†åŒå‡»æœ¬è„šæœ¬
-    echo   ä¹Ÿå¯ä»¥å…ˆæ‰‹åŠ¨æ‰“å¼€ %LAB_URL%
+    echo   ¹¤×÷Ì¨Ò³ÃæÃ»ÆðÀ´£¨HTTP %GW_CODE%£©£º%GATEWAY_PORT% ¿ÉÄÜÕýÔÚÖØÆô£¬ÉÔºóÔÙË«»÷±¾½Å±¾
+    echo   Ò²¿ÉÒÔÏÈÊÖ¶¯´ò¿ª %LAB_URL%
     exit /b 0
 )
-echo   æ‰“å¼€å·¥ä½œå°: %LAB_URL%
+echo   ´ò¿ª¹¤×÷Ì¨: %LAB_URL%
 start "" "%LAB_URL%"
 exit /b 0
