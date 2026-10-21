@@ -59,9 +59,14 @@ class Sandbox(unittest.TestCase):
         self.tmp = Path(self._tmp.name)
         self._saved: dict[str, object] = {}
         for name in ("OUTPUT_DIR", "SCORES_DIR", "HIST_DIR", "HIST_JSON",
-                     "RVC_JOB_DIR", "RVC_TRAIN_DIR", "_BATCH_STATE"):
+                     "RVC_JOB_DIR", "RVC_TRAIN_DIR", "_BATCH_STATE", "_ENGINE_STATE"):
             self._saved[name] = getattr(app, name)
             setattr(app, name, self.tmp / name.lower())
+        # engine_state 不是目录而是文件：显式放到临时目录并给一份干净状态。
+        # 不重定向的话，模拟"显存不足→CPU 回退"的用例会把用户机器上的后端
+        # 永久改成 cpu（2026-10-22 03:29 实测：跑完整套测试后引擎下次按 cpu 拉起）。
+        app._ENGINE_STATE = self.tmp / "engine_state.json"
+        app._ENGINE_STATE.write_text('{"backend": "vulkan"}', encoding="utf-8")
         for d in (app.OUTPUT_DIR, app.SCORES_DIR, app.HIST_DIR,
                   app.RVC_JOB_DIR, app.RVC_TRAIN_DIR):
             Path(d).mkdir(parents=True, exist_ok=True)
@@ -557,6 +562,9 @@ class TestVramPrecheckGuard(Sandbox):
         self.assertTrue(job.get("cpu_fallback"))
         self.assertIn("cpu", self.restarts)
         self.assertIn("空闲 245MB", str(job.get("gpu_error")))
+        # 这次回退写的必须是沙箱里的状态文件，不许碰用户机器上的真实 engine_state
+        self.assertEqual(
+            json.loads(Path(app._ENGINE_STATE).read_text(encoding="utf-8"))["backend"], "cpu")
 
 
 class TestSweepHonesty(Sandbox):
