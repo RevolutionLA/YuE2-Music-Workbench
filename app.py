@@ -2746,16 +2746,21 @@ def _gen_run(job: dict, payload: dict) -> None:
                 f"耗时 {int(elapsed // 60)} 分 {int(elapsed % 60)} 秒，已保存到 output/",
             )
 
-        # 兜底用完切回**原来的**后端（可能是 vulkan），不要写死 cuda
-        if used_cpu_fallback and backend_mode() == "cpu":
-            try:
-                _engine_state_write({"backend": orig_backend})
-                _restart_audiocpp(str(SERVER_JSON), backend=orig_backend)
-            except Exception:
-                pass
+        # 兜底用完切回**原来的**后端（可能是 vulkan），不要写死 cuda。
+        # 放在 finally：终止/异常也会走到这里——旧写法只在正常收尾时还原，
+        # 一旦在中途 return，engine_state 就永远停在 cpu，下一次启动会用 CPU
+        # 跑一整首歌（2026-10-22 03:20 实测：网关重启后引擎按 cpu 拉起）。
     except Exception as e:  # 网络/超时/后端崩溃都算失败，同样落盘
         job.update(status="error", error=str(e)[:800], sec=round(time.time() - started, 1))
         _output_write_meta(job)
+    finally:
+        if used_cpu_fallback and backend_mode() == "cpu":
+            try:
+                _engine_state_write({"backend": orig_backend})
+                if _audiocpp_alive():
+                    _restart_audiocpp(str(SERVER_JSON), backend=orig_backend)
+            except Exception:
+                pass
 
 
 def _wait_backend_ready(timeout: float = 300.0) -> bool:
@@ -3365,6 +3370,21 @@ def _batch_snapshot() -> dict:
         return _batch_read()
 
 
+def _resolve_batch_seed(stored, incoming):
+    """队列条目的种子：已有真实种子就沿用，否则把「随机」定成真实种子。
+
+    2026-10-22 实测：批量条目原本每次派发都重新抽种子，于是长歌失败后重试时
+    检查点键（含 seed）对不上，01:18 那份 5556 token 的 AR 检查点成了孤儿，
+    重试从头又跑了 3 小时 AR。种子一旦定下就必须跟着条目走。
+
+    纯函数、不加锁：调用点已经在 _BATCH_LOCK 里（同一把锁不可重入）。
+    """
+    bad = isinstance(incoming, bool) or not isinstance(incoming, int) or incoming < 0
+    if bad and isinstance(stored, int) and not isinstance(stored, bool) and stored >= 0:
+        return stored
+    return _materialize_seed(incoming)
+
+
 def _batch_run_worker() -> None:
     """批量队列工作线程：逐个执行 pending 任务；失败记录后继续下一个。"""
     _clear_stop_flags()
@@ -3397,38 +3417,43 @@ def _batch_run_worker() -> None:
                 nxt["status"] = "running"
                 nxt["started_ts"] = datetime.now().isoformat(timespec="seconds")
                 state["current"] = nxt_id
-                _batch_write(state)
                 payload = dict(nxt["payload"])
-                # ★ 「随机」必须在派发这一刻定成真实种子，不能留给引擎去随机（评审 B-2）。
-                #   单首那条路一直是这么做的（generate_start 里 _materialize_seed），
-                #   批量这条是漏的——于是队列产物永远说不清自己用哪个种子出来的。
-                payload["seed"] = _materialize_seed(payload.get("seed"))
+                # 种子在同一把锁内一次写盘：调用 _batch_take_seed 那种"自己再加锁"的
+                # 写法会在这把非重入锁上死锁（2026-10-22 03:22 现场：worker 卡死，
+                # 所有 /batch/status 超时，health 却正常）。
+                payload["seed"] = _resolve_batch_seed((nxt.get("payload") or {}).get("seed"),
+                                                      payload.get("seed"))
+                nxt.setdefault("payload", {})["seed"] = payload["seed"]
+                _batch_write(state)
                 rid = nxt["id"]
-                job = {
-                    "id": rid,
-                    "status": "running",
-                    "ts": nxt["started_ts"],
-                    "style": payload.get("style", "")[:_MAX_STYLE],
-                    "lyrics": str(payload.get("lyrics") or "")[:_MAX_LYRICS],
-                    "cot": payload.get("cot", "full"),
-                    "abc": str(payload.get("abc") or "")[:_MAX_ABC],
-                    "task_name": str(nxt.get("name") or "")[:100],
-                    "model": payload.get("model", "yue2"),
-                    "params": {
-                        k: payload.get(k)
-                        for k in ("seed", "cfg_scale", "num_inference_steps",
-                                  "abc_temperature", "abc_top_p", "abc_top_k",
-                                  "semantic_temperature", "semantic_top_p", "semantic_top_k")
-                        if payload.get(k) is not None
-                    },
-                    "batch": True,
-                    "batch_name": nxt.get("name", ""),
-                    # ★ 入队时算出来的那条说明以前只留在队列状态文件里，跑完写产物 meta
-                    #   就断了 —— 队列卡上看不见、⑪ 里也查不到，等于"改过档但没留痕"。
-                    "cot_note": str(nxt.get("cot_note") or "")[:400],
-                }
-                _output_write_meta(job)
-                _gen_set_job(job)
+                started_ts = nxt["started_ts"]
+                queue_name = str(nxt.get("name") or "")
+                cot_note = str(nxt.get("cot_note") or "")
+            job = {
+                "id": rid,
+                "status": "running",
+                "ts": started_ts,
+                "style": payload.get("style", "")[:_MAX_STYLE],
+                "lyrics": str(payload.get("lyrics") or "")[:_MAX_LYRICS],
+                "cot": payload.get("cot", "full"),
+                "abc": str(payload.get("abc") or "")[:_MAX_ABC],
+                "task_name": queue_name[:100],
+                "model": payload.get("model", "yue2"),
+                "params": {
+                    k: payload.get(k)
+                    for k in ("seed", "cfg_scale", "num_inference_steps",
+                              "abc_temperature", "abc_top_p", "abc_top_k",
+                              "semantic_temperature", "semantic_top_p", "semantic_top_k")
+                    if payload.get(k) is not None
+                },
+                "batch": True,
+                "batch_name": queue_name,
+                # ★ 入队时算出来的那条说明以前只留在队列状态文件里，跑完写产物 meta
+                #   就断了 —— 队列卡上看不见、⑪ 里也查不到，等于"改过档但没留痕"。
+                "cot_note": cot_note[:400],
+            }
+            _output_write_meta(job)
+            _gen_set_job(job)
             _gen_run(job, payload)
             if _stop_requested():
                 # 蓝军 N-5：取消必须落终态。旧写法在这里 break，条目卡在 running，
@@ -3719,59 +3744,80 @@ def batch_stop():
 
 @router.post("/batch/resume")
 def batch_resume():
-    """一键继续：把意外终止遗留的卡死条目重新入队并拉起 worker。
+    """一键继续 / 一键重启失败：把当前队列里失败、取消、卡死的条目复位为 pending。
 
-    应用崩溃/被杀时，正在跑的条目会永远停在 running（重启后 worker 只取
-    pending，不会碰它）；stop 停掉的 pending 则变成 cancelled。这里把
-    running 与 cancelled 一并复位为 pending，从头重跑这些条目（已完成的
-    done 条目不动），然后确保 worker 线程在跑。
+    队列正在跑时也允许（用户要求：失败卡片必须能一键重启，不必先停下整队）——
+    此时只把失败条目排回待跑，正在算的那一条不动，跑完按顺序接上。
+    只处理当前队列（state["qid"]）：batch_state 里还留着历史队列的条目，
+    全量复位会把几个月前的旧失败也一起重跑。
     """
     state = _batch_snapshot()
-    if state.get("running"):
-        raise HTTPException(status_code=409, detail="队列正在运行，无需继续")
+    was_running = bool(state.get("running"))
+    cur_qid = str(state.get("qid") or "")
     restored = 0
-    for it in state["items"]:
-        if it["status"] in ("running", "cancelled", "error"):
+    for it in state.get("items") or []:
+        if cur_qid and str(it.get("qid") or "") != cur_qid:
+            continue
+        if it.get("status") in ("running", "cancelled", "error"):
+            if was_running and it.get("status") == "running":
+                continue        # 正在算的这一条不能被打成 pending，否则会重复跑
             it["status"] = "pending"
-            it.pop("current", None)
+            it.pop("error", None)
             restored += 1
     # 有 pending（含本就等待中的假死队列）就拉起 worker——
     # 不能因 restored==0 提前返回，否则"等待中却没在跑"的队列永远无法手动启动
-    has_pending = any(it["status"] == "pending" for it in state["items"])
+    has_pending = any(
+        it.get("status") == "pending" and (not cur_qid or str(it.get("qid") or "") == cur_qid)
+        for it in state.get("items") or []
+    )
     if not has_pending:
-        return {"ok": True, "message": "没有可继续的任务（队列全部完成或为空）", "restored": 0}
+        return {"ok": True, "message": "当前队列没有可继续/可重启的任务", "restored": 0}
     state["running"] = True
-    state["current"] = None
+    if not was_running:
+        state["current"] = None
     _batch_store(state)
-    _clear_stop_flags()
+    if not was_running:
+        _clear_stop_flags()     # 正跑着时清标志会把用户刚点的「终止」吃掉
     _batch_ensure_worker()
-    msg = f"已恢复 {restored} 个未完成任务，继续执行" if restored else "队列已在等待中，继续执行"
+    if was_running:
+        msg = (f"已重启 {restored} 条失败/取消的任务；当前这首继续跑，跑完按顺序接上"
+               if restored else "队列正在跑，剩余任务会按顺序执行")
+    else:
+        msg = f"已恢复 {restored} 个未完成任务，继续执行" if restored else "队列已在等待中，继续执行"
     return {"ok": True, "message": msg, "restored": restored}
 
 
 @router.post("/batch/retry")
 def batch_retry(payload: dict):
-    """单条重试：把一个 error/cancelled 条目复位为 pending 并拉起 worker。"""
+    """单条重试：把一个失败/取消的条目复位为 pending。
+
+    队列正在跑别的歌时也允许——只排回待跑，不影响当前这条（用户要求：
+    失败卡片必须能单独重启，不必先停下整条队列）。
+    """
     rid = os.path.basename(str(payload.get("id") or ""))
     if not rid:
         raise HTTPException(status_code=400, detail="缺少任务 id")
     with _BATCH_LOCK:
         state = _batch_read()
-        if state.get("running"):
-            raise HTTPException(status_code=409, detail="队列正在运行，稍后再试")
         it = next((x for x in state["items"] if x["id"] == rid), None)
         if it is None:
             raise HTTPException(status_code=404, detail="任务不存在")
+        if it["status"] == "running" and state.get("running") and state.get("current") == rid:
+            raise HTTPException(status_code=409, detail="这条正在生成，不能重新排队")
         if it["status"] not in ("error", "cancelled", "running"):
             raise HTTPException(status_code=409, detail="仅失败/已取消/卡死的任务可重试")
+        was_running = bool(state.get("running"))
         it["status"] = "pending"
         it.pop("error", None)
         state["running"] = True
-        state["current"] = None
+        if not was_running:
+            state["current"] = None
         _batch_write(state)
-    _clear_stop_flags()
+    if not was_running:
+        _clear_stop_flags()
     _batch_ensure_worker()
-    return {"ok": True, "message": "已重新入队"}
+    msg = "已重新排队，当前这首跑完就轮到它" if was_running else "已重新入队"
+    return {"ok": True, "message": msg}
 
 
 @router.delete("/batch/{rid}")

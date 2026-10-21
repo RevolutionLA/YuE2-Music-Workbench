@@ -78,7 +78,9 @@ class TestRewritesLeaveATrace(unittest.TestCase):
         src = self.src = _read(os.path.join(ROOT, "app.py"))
         self.assertIn('"cot_note": str(cot_note or "")[:400]', src,
                       "单首生成的 job 记录里没有 cot_note")
-        self.assertIn('"cot_note": str(nxt.get("cot_note") or "")[:400]', src,
+        self.assertIn("cot_note = str(nxt.get(\"cot_note\") or \"\")", src,
+                      "队列条目开跑时没有把 cot_note 带出来")
+        self.assertIn('"cot_note": cot_note[:400]', src,
                       "队列条目跑完写产物 meta 时又把 cot_note 丢了")
         out = app._unified_task({"id": "x", "status": "done",
                                  "cot_note": "已改用 melody"}, "generate")
@@ -201,8 +203,10 @@ class TestSeedIsMaterializedOnBothPaths(unittest.TestCase):
     def test_both_paths_call_the_same_helper(self):
         for name in ("generate_start", "_batch_run_worker"):
             body = inspect.getsource(getattr(app, name))
-            self.assertIn("_materialize_seed", body,
-                          "%s 没有具体化种子：这一条路出来的歌不可复现" % name)
+            # 批量路径先走 _resolve_batch_seed（沿用条目里已定的种子，保住 AR 检查点），
+            # 再落到同一个 _materialize_seed；单首路径直接调 _materialize_seed。
+            self.assertTrue("_resolve_batch_seed" in body or "_materialize_seed" in body,
+                            "%s 没有具体化种子：这一条路出来的歌不可复现" % name)
 
 
 class TestWeightDisplayTellsTruth(unittest.TestCase):
@@ -307,11 +311,11 @@ class TestPageStillDoesNotTouchOtherPages(unittest.TestCase):
 
     def test_restart_button_stays_inside_its_queue_row(self):
         html = self.html
-        i = html.index('data-restart>')
-        row = html[max(0, i - 260):i]
-        self.assertIn("isQueue", row, "「↻ 重新排队」又对单首任务出现了")
+        i = html.index('data-restart')
+        row = html[max(0, i - 360):i + 120]
+        self.assertIn("isQueue", row, "「↻ 重启」又对单首任务出现了（单首要走 data-regen）")
         self.assertIn('h.status === "error"', row,
-                      "对 running 条目给重排按钮 = 先杀再 404（后端队列运行时一律 409）")
+                      "对 running 条目给重排按钮 = 先杀再 404")
         body = self._body_from("const rsBtn =", limit=1500)
         self.assertNotIn('fetch("/api/generate/stop', body,
                          "重排按钮又盲发全局终止：掐的是此刻在算的那一条，不是用户点的这一条")

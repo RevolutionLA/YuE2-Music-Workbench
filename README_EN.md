@@ -250,6 +250,13 @@ CPU that is 14× slower.
 **One automatic rescue** (v10.21.2): the gateway restarts the engine to release the leaked
 device buffers and retries once (skipping AR when a checkpoint exists). Only if that
 also fails does the job error out with the resume button.
+
+**Restart from the task page** (v10.21.3): failed/cancelled queue items get a visible **↻ 重启**
+button; it works even while the queue is running — the item is put back in the pending list without
+interrupting the current song. The queue bar shows **↻ 重启失败任务 (N)** to requeue all failed items
+of the current queue at once. Batch items persist their seed on first dispatch, so retries reuse the
+same seed — otherwise the checkpoint hash (style/lyrics/cot/seed/steps) would never match. Verified
+2026-10-22 03:25: a 5,556-token checkpoint from 01:18 skipped AR and went straight to NAR+VAE.
 </details>
 
 **No NVIDIA GPU?** Use Vulkan on the integrated GPU if there is one: measured **~14× faster than CPU** on this machine (5,610 s → 318 s for the same request; 15–27× on short clips; identical output length and level). `一键补齐运行件.bat` downloads the Vulkan build, probes `--list-devices --backend vulkan`, and only writes `backend: vulkan` when a device is found — otherwise it falls back to `cpu` (same binary contains both backends). The iGPU uses unified memory, so keep other heavy apps closed. Without any usable GPU it runs CPU-only automatically — expect hours per song (see the measured anchor above).

@@ -5961,10 +5961,21 @@ async function fetchExtraTasks() {
   const out = [];
   try {
     const b = await (await fetch("/api/batch/status")).json();
-    const it0 = (b && b.items || []).filter(x => x.status !== "cancelled" || b.running);
+    // 队列条目全量带回：失败/取消的条目也要能被历史列表认出来（isQueue），
+    // 否则「重新排队这一条」永远不显示——后端以前只给 pending/running，
+    // 而失败条目的 output meta 又让它们看起来只是普通历史记录。
+    const allQ = (b && b.items) || [];
     // 队列身份按「一次提交」划分：一次投 2 首就只报 2 首，历史条目单独计数，
     // 不再把状态文件里所有旧任务的总数当成当前这批（寻兰 58/2 那次误导的根因）
     const q = (b && b.queue) || null;
+    const curQ = q && q.id ? allQ.filter(x => x.qid === q.id) : allQ;
+    // 位次：正在跑 = 第 1 位，其余 pending 顺延；历史队列条目不算位次
+    const posMap = {};
+    let pos = 0;
+    curQ.forEach(x => {
+      if (x.status === "running") posMap[x.id] = 1;
+      else if (x.status === "pending") { pos += 1; posMap[x.id] = pos + (curQ.some(y => y.status === "running") ? 1 : 0); }
+    });
     const bar = $("queueBar");
     if (bar) {
       if (q && q.id) {
@@ -5979,15 +5990,29 @@ async function fetchExtraTasks() {
         bar.innerHTML = seg.join(" · ");
       } else bar.innerHTML = "";
     }
-    // 一键继续按钮显隐：队列没在跑且有未完成任务
-    const un = (b && b.items || []).filter(x => ["pending", "running", "error", "cancelled"].includes(x.status)).length;
+    // 队列按钮：跑着时提供「重启失败任务」（只排回待跑，不打断当前这首）；
+    // 停着时提供「一键继续」。失败数与可继续数都只看当前队列，不碰历史队列。
+    const failedN = curQ.filter(x => x.status === "error" || x.status === "cancelled").length;
+    const unfinished = curQ.filter(x => ["pending", "running", "error", "cancelled"].includes(x.status)).length;
     const resumeBtn = $("batchResume");
-    if (resumeBtn) resumeBtn.style.display = b && !b.running && un > 0 ? "" : "none";
+    if (resumeBtn) {
+      if (b && b.running && failedN > 0) {
+        resumeBtn.style.display = "";
+        resumeBtn.textContent = "↻ 重启失败任务（" + failedN + "）";
+        resumeBtn.title = "把当前队列里失败/取消的任务重新排队；正在算的这首不受影响，跑完按顺序接上";
+      } else if (b && !b.running && unfinished > 0) {
+        resumeBtn.style.display = "";
+        resumeBtn.textContent = "▶ 一键继续";
+        resumeBtn.title = "把意外终止/已停止/失败的队列任务重新入队继续执行";
+      } else {
+        resumeBtn.style.display = "none";
+      }
+    }
     // 「⏹ 停止队列」只在队列正在跑时出现：它停的是"下一条不再开始"，
     // 与「终止任务」（掐掉正在算的这条）是两件事，别让用户猜
     const stopQBtn = $("batchStop");
     if (stopQBtn) stopQBtn.style.display = b && b.running ? "" : "none";
-    it0.forEach(it => {
+    allQ.forEach(it => {
       const p = it.payload || {};
       out.push({
         id: it.id, kind: "generate", status: it.status,
@@ -5998,6 +6023,8 @@ async function fetchExtraTasks() {
         // 于是 pending/running 的队列行是最需要看说明的时候反而没有（评审 B-6）。
         cot_note: it.cot_note || "",
         isQueue: true,
+        qid: it.qid || "",
+        queue_pos: posMap[it.id] || 0,
       });
     });
     // 队列执行中保持轮询刷新（离开任务管理页即停）
@@ -6041,6 +6068,21 @@ async function renderHistory(fetchLimit) {
     let list = Array.isArray(j.items) ? j.items : [];
     // 队列 + 活跃条目并入统一列表（按 id 去重：历史里已完结的优先）
     const extra = await fetchExtraTasks();
+    // 同一 id 在 output meta 与队列里都有时，队列的 pending/running 才是新状态：
+    // 批量任务失败后又被「重新排队」，meta 还留着上一轮的 error；不去覆盖，
+    // 卡片就会把"已在队列里等着"继续画成"这次又失败了"（31 首那次全是这样）。
+    const qmap = new Map(extra.filter(x => x.isQueue).map(x => [x.id, x]));
+    list.forEach(h => {
+      const q = qmap.get(h.id);
+      if (!q) return;
+      h.isQueue = true;
+      if (q.queue_pos) h.queue_pos = q.queue_pos;
+      if (q.status === "pending" || q.status === "running") {
+        h.status = q.status;
+        h.error = "";
+        if (q.cot_note) h.cot_note = q.cot_note;
+      }
+    });
     const seen = new Set(list.map(h => h.id));
     // extra 内部也要去重：同一 id 可能同时来自 batch/status 与 history/active
     // （刚提交、output meta 尚未落盘的那几秒），不去重就渲染成两行同 ID 任务
@@ -6130,10 +6172,14 @@ async function renderHistory(fetchLimit) {
           ${h.status === "done" && !isTrain && !(isRvc && h.assets && h.assets.full_song) ? '<button class="ghost" data-play>▶ 播放</button>' : ''}
           ${h.status === "done" && isRvc && h.assets && h.assets.full_song ? '<button class="ghost" data-play="full" title="换声人声 + 伴奏">▶ 成品</button><button class="ghost" data-play="dry" title="只有换声后的人声，无伴奏">🎤 干声</button>' : ''}
           ${h.status === "done" && !isTrain ? '<button class="ghost" data-dl title="下载 WAV">⬇ 下载</button>' : ''}
+          ${(h.status === "error" || h.status === "cancelled") && !isTrain && !isRvc
+            ? (h.isQueue
+              ? '<button class="ghost" data-restart title="只把这一条排回队列；正在算的这首不受影响，跑完按顺序接上">↻ 重启</button>'
+              : '<button class="ghost" data-regen title="按原参数重新提交；AR 检查点还在时会跳过 AR（不会从头重算）">↻ 重生成</button>')
+            : ''}
           ${h.status !== "pending" ? '<button class="ghost" data-more>⋯ 更多</button>' : ''}
           <div class="h-more" data-more-menu>
             ${h.status === "running" && !isRvc && !isTrain ? '<button class="danger" data-stop>⏹ 终止</button>' : ''}
-            ${h.isQueue && (h.status === "error" || h.status === "cancelled") ? '<button class="ghost" data-restart>↻ 重新排队这一条</button>' : ''}
             ${h.status === "done" && !isTrain && !isRvc ? '<button class="ghost" data-rvc>🎙 送去换声</button>' : ''}
             ${!isTrain && !isRvc && (h.lyrics || "").trim() ? '<button class="ghost" data-lyrics>⬇ LRC歌词</button>' : ''}
             ${!isTrain && !isRvc && (h.lyrics || "").trim() ? '<button class="ghost" data-elrc>⬇ 逐字 eLRC</button>' : ''}
@@ -6220,12 +6266,24 @@ async function renderHistory(fetchLimit) {
           const j = await r.json().catch(() => ({}));
           if (!r.ok || !j.ok) {
             throw new Error(r.status === 409
-              ? (j.detail || "队列还在跑别的，等这一队空出来再重排")
+              ? (j.detail || "这条正在生成，等它跑完再重启")
               : (j.detail || j.message || "重启失败"));
           }
-          toast("已重新排队：" + (h.task_name || h.id), "ok");
-          renderHistory();
+          toast(j.message || ("已重新排队：" + (h.task_name || h.id)), "ok");
+          setTimeout(renderHistory, 800);
         } catch (err) { rsBtn.disabled = false; toast(friendlyErr(err), "err"); }
+      };
+      // 非队列条目（单首生成失败/取消）：按原参数重提，AR 检查点还在时会跳过 AR
+      const rgBtn = d.querySelector("[data-regen]");
+      if (rgBtn) rgBtn.onclick = async (e) => {
+        e.stopPropagation();
+        rgBtn.disabled = true;
+        try {
+          const r = await jfetch("/api/generate/resume/" + encodeURIComponent(h.id), { method: "POST" });
+          const j = await r.json().catch(() => ({}));
+          toast(j.message || "已按原参数重新提交", "ok");
+          setTimeout(renderHistory, 800);
+        } catch (err) { rgBtn.disabled = false; toast(friendlyErr(err), "err"); }
       };
       // 「⋯ 更多」/下载下拉：切换菜单显隐；点条目其他区域时收起
       const moreBtn = d.querySelector("[data-more]");
