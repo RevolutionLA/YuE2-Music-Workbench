@@ -7296,8 +7296,11 @@ def rvc_train_preview(rid: str, payload: dict = Body(default={})):
     final = _rvc_latest_export(name)
     # weights/<name>.pth 已经导出，结构直接可用不必再转换；但它只有在本轮训练
     # 收尾后才该盖过检查点（同名音色的旧成品不能冒充这次训练的结果）
+    # 同一个音色的成品与检查点常在同一秒落盘；NTFS/网络盘的时间戳分辨率会让
+    # 刚写出的成品比检查点“旧”零点几秒，进而误判成“旧成品不能冒充本轮”。
+    # 2 秒容差只吸收这种同批落盘的误差；真正上一轮的成品会旧几分钟以上。
     use_final = final is not None and (not ckpts
-                                       or final.stat().st_mtime >= ckpts[0].stat().st_mtime)
+                                       or final.stat().st_mtime >= ckpts[0].stat().st_mtime - 2.0)
     if ck:
         # 点名要哪个点就必须是那个点——不能"你要 A，我给你最新的 B"还不说明
         want = os.path.basename(ck)
