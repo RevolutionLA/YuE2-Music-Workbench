@@ -5786,6 +5786,11 @@ def vocal_sep_available() -> bool:
     return (RVC_DIR / "tools" / "pymss" / "workflow.py").is_file()
 
 
+def _pymss_device() -> str:
+    """PyMSS 的 --device 只收 auto/cpu/cuda/mps/mlx；Vulkan 机器必须走 CPU。"""
+    return "cuda" if backend_mode() == "cuda" else "cpu"
+
+
 def _pymss_model_dir() -> Path:
     """PyMSS 权重解析顺序（与 tools/pymss/model_registry.py:_default_model_dir 一致）：
     环境变量 PYMSS_MODEL_DIR → 仓库内 tools/all_models → ~/.cache/pymss/models。"""
@@ -6159,10 +6164,14 @@ def _run_vocal_separation(src: Path, in_dir: Path, job: dict,
 
     if vocal_sep_available():
         # PyMSS 一步分离：产物 <stem>_vocals.wav（含和声）+ <stem>_other.wav（伴奏）
-        job["sep_stage"] = "人声分离（PyMSS BS-Roformer-Resurrection，约 1.5 分钟/3.5 分钟歌）"
+        # PyMSS 的 --device 只收 auto/cpu/cuda/mps/mlx；Vulkan 机器必须显式传 cpu，
+        # 传 vulkan 会让 argparse 直接打印 usage 退出（2026-10-22 实测）。
+        sep_device = _pymss_device()
+        job["sep_stage"] = ("人声分离（PyMSS BS-Roformer-Resurrection"
+                            + ("，CPU 模式）" if sep_device == "cpu" else "，约 1.5 分钟/3.5 分钟歌）"))
         r = subprocess.run(
             [str(RVC_PY), "-m", "tools.pymss.cli", "infer", PYMSS_MODEL,
-             "-i", str(src), "-o", str(sep_dir), "--device", backend_mode()],
+             "-i", str(src), "-o", str(sep_dir), "--device", sep_device],
             capture_output=True, timeout=3600,
             creationflags=_pymss_creationflags(),
             cwd=str(RVC_DIR), env=_pymss_env(),

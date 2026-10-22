@@ -201,6 +201,17 @@ class SettingsAndPreflight(BatchRestartBase):
         self.assertIn("乐谱提取 / 转谱", labels)
         self.assertIn("歌曲生成（AR/NAR/VAE）", labels)
 
+    def test_pymss_device_never_passes_vulkan(self):
+        # PyMSS 的 argparse 只收 auto/cpu/cuda/mps/mlx；传 vulkan 会直接 usage 退出
+        saved = app.backend_mode
+        try:
+            app.backend_mode = lambda: "vulkan"
+            self.assertEqual(app._pymss_device(), "cpu")
+            app.backend_mode = lambda: "cuda"
+            self.assertEqual(app._pymss_device(), "cuda")
+        finally:
+            app.backend_mode = saved
+
 
 class DeepseekSetting(BatchRestartBase):
     def test_save_and_clear_never_returns_the_key(self):

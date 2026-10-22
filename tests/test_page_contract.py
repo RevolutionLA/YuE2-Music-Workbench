@@ -90,7 +90,7 @@ class PageContract(unittest.TestCase):
 
     def test_grouped_sidebar(self):
         groups = re.findall(r'<div class="nav-group">([^<]+)</div>', self.html)
-        self.assertEqual(groups, ["创作", "声音", "系统"], "侧栏必须按三组分层")
+        self.assertEqual(groups, ["创作", "声音", "系统", "工具"], "侧栏必须按四组分层")
 
     def test_legacy_tab_names_still_resolve(self):
         self.assertIn("LEGACY_TAB", self.src)

@@ -1199,14 +1199,15 @@
      单行 + ellipsis 是关键：整段 CUDA 报错有 3~4 行，放出来行高照样崩。 */
   .hist-item .h-col:first-child { position: relative; }
   .hist-item .h-errline {
-    position: absolute; left: 0; right: 0; top: calc(100% + 2px);
-    max-width: 100%; white-space: normal; overflow-wrap: anywhere; word-break: break-word;
+    position: absolute; left: 0; right: 8px; top: calc(100% + 2px);
+    max-width: calc(100% - 8px); box-sizing: border-box;
+    white-space: normal; overflow-wrap: anywhere; word-break: break-word;
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
     overflow: hidden; line-height: 1.35;
   }
   .hist-item .h-errline[data-open="1"] {
-    position: absolute; left: 0; top: calc(100% + 2px); z-index: 25;
-    right: auto; width: max-content; max-width: min(520px, calc(100vw - 48px));
+    position: absolute; left: 0; right: 8px; top: calc(100% + 2px); z-index: 25;
+    width: auto; max-width: calc(100% - 8px); box-sizing: border-box;
     display: block; white-space: normal; padding: 7px 10px; border-radius: var(--r-sm);
     background: var(--panel); border: 1px solid var(--err);
     box-shadow: 0 6px 20px rgba(0,0,0,.16);
@@ -1678,6 +1679,8 @@
     <button class="tab" data-tab="history"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.3 2.3"/></svg><span class="tno">⑪</span><span class="tlabel">任务管理</span><span class="badge" id="histCount">0</span></button>
     <button class="tab" data-tab="settings"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.5"/><path d="M8 1.6v1.8M8 12.6v1.8M1.6 8h1.8M12.6 8h1.8M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3"/></svg><span class="tno">⑫</span><span class="tlabel">设置</span></button>
     <button class="tab" data-tab="about"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 11.2V8M8 5.2v.2"/></svg><span class="tno">⑬</span><span class="tlabel">关于</span></button>
+
+    <div class="nav-group">工具</div>
     <button class="tab" data-tab="lrc"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10M3 8h7M3 12.5h9"/><circle cx="12.5" cy="8" r="1.2" fill="currentColor" stroke="none"/></svg><span class="tno">⑭</span><span class="tlabel">歌词时间轴</span></button>
   </nav>
   <div class="side-foot">
@@ -2640,7 +2643,7 @@ We will sing beyond the night</textarea>
 
       <!-- 左＝上传与提交 -->
       <div class="pane pane-in">
-        <div class="pane-head"><b>① 上传歌曲</b><span class="hint-xs">官方 PyMSS BS-Roformer · 3.5 分钟歌约 1.5 分钟</span></div>
+        <div class="pane-head"><b>① 上传歌曲</b><span class="hint-xs">官方 PyMSS BS-Roformer · N 卡约 1.5 分钟；核显机器走 CPU，会明显更慢</span></div>
         <div class="pane-body">
           <label for="sepName" style="margin-top:0;">任务名称（用于历史展示与下载命名）</label>
           <input id="sepName" placeholder="例如：稻香·分离" maxlength="100" />
@@ -8462,6 +8465,9 @@ function bindDropZone(zoneId, inputId, onFiles) {
   const zone = $(zoneId), input = $(inputId);
   if (!zone || !input) return;
   zone.addEventListener("click", () => { if (!input.disabled) input.click(); });
+  // 点选文件走的是 input 的 change；以前只有拖拽路径调用 onFiles，
+  // 于是"点虚线框→选文件"没有任何反应（2026-10-22 用户实测）。
+  input.addEventListener("change", () => { if (onFiles) onFiles(input.files[0]); });
   zone.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && !input.disabled) { e.preventDefault(); input.click(); } });
   ["dragenter", "dragover"].forEach((ev) => zone.addEventListener(ev, (e) => { e.preventDefault(); if (!input.disabled) zone.classList.add("over"); }));
   ["dragleave", "drop"].forEach((ev) => zone.addEventListener(ev, (e) => { e.preventDefault(); zone.classList.remove("over"); }));
@@ -8480,10 +8486,17 @@ function bindDropZone(zoneId, inputId, onFiles) {
 }
 bindDropZone("abcDrop", "abcAudio");
 // ⑨ 与 ⑦ 的上传口：以前直接裸露原生 file 控件，现在是同一套虚线区。
-// 隐藏 input 仍然收 change（选完文件由各自的 *Now 提示行报文件名），
-// 提交前的"没选输入"提示也改指到虚线区，否则对 display:none 的元素滚动/聚焦都是空操作。
-bindDropZone("rvcDrop", "rvcFile");
-bindDropZone("rvcTrainDrop", "rvcTrainFiles");
+// 点选和拖拽都要把文件名报到 *Now 行，否则用户选完文件看不到任何反馈。
+bindDropZone("rvcDrop", "rvcFile", () => {
+  const f = ($("rvcFile").files || [])[0];
+  $("rvcFileNow").textContent = f ? "已选：" + f.name + " · " + fmtMb(f.size) : "";
+});
+bindDropZone("rvcTrainDrop", "rvcTrainFiles", () => {
+  const fs = [...(($("rvcTrainFiles").files) || [])];
+  $("rvcTrainFilesNow").textContent = fs.length
+    ? "已选 " + fs.length + " 个文件：" + fs.map(f => f.name).join("、").slice(0, 160)
+    : "";
+});
 $("abcCopy").onclick = async () => {
   const v = $("abc").value.trim();
   if (!v) { toast("谱框是空的", "err"); return; }

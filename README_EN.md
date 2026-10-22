@@ -60,7 +60,7 @@ so "which step am I on" is self-evident. v10.9 added ⑫ Settings and ⑬ About.
 | **System** | ⑨ Task manager | One view over all five task kinds (generate / convert / train / transcribe / separate) + queues |
 | | ⑫ Settings | Service & model verification, model-tier switch, engine mode, accent colour, maintenance (prefer editing files for config) |
 | | ⑬ About | System info (ports / paths / disk & VRAM / engine readiness, read-only) + credits, license and honest notes |
-| | ⑭ Lyric timeline | Upload a song + paste lyrics → LRC / word-level eLRC; an independent task that needs no VAE and does not occupy the generation queue |
+| **Tools** | ⑭ Lyric timeline | Upload a song + paste lyrics → LRC / word-level eLRC; an independent task that needs no VAE and does not occupy the generation queue |
 
 **② and ④ share one generation panel; ③ and ④ share one ABC editor** — switching pages just moves the
 same DOM node into the target page (`static/index.html: switchTab` / `moveInto`), so there is no second
