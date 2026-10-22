@@ -247,6 +247,11 @@ On iGPU machines, set `set YUE2_DISABLE_CPU_FALLBACK=1` in `secrets/local_env.ba
 allocation failure then fails fast with a resume hint instead of recomputing the whole song on a
 CPU that is 14× slower.
 
+Since v10.21.4 the gateway reads that file directly when the environment variable is absent —
+a batch file saved with LF-only line endings silently broke cmd parsing and the flag never applied
+(one song then spent ~4 hours on CPU). `/api/backend/mode` exposes `cpu_fallback_allowed`, and the
+mode line in the UI shows “分配失败不回退 CPU” when the fallback is disabled.
+
 **One automatic rescue** (v10.21.2): the gateway restarts the engine to release the leaked
 device buffers and retries once (skipping AR when a checkpoint exists). Only if that
 also fails does the job error out with the resume button.

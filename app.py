@@ -768,6 +768,7 @@ def backend_mode_get():
         "mode": backend_mode(),
         # 前端据此决定"切GPU"该提交 cuda 还是 vulkan：核显机器上 GPU≠CUDA
         "available": engine_backends(),
+        "cpu_fallback_allowed": _cpu_fallback_allowed(),
         "vram_free_mb": free,
         "vram_ok": ok,
         "headroom_mb": _VRAM_HEADROOM_MB,
@@ -2591,16 +2592,45 @@ def _seed_from_headers(headers: dict, payload: dict):
     return headers.get("x-seed") or headers.get("X-Seed") or payload.get("seed")
 
 
+def _local_env_value(name: str, path: Path | None = None) -> str:
+    """从 secrets/local_env.bat 读一个变量（进程环境没有时的兜底）。
+
+    2026-10-22 实测的坑：这个文件被写成 LF 换行，cmd.exe 解析 .bat 时把最后一行
+    注释和 `set` 行拼在一起，变量静默没生效——CPU 回退因此被放行，一首长歌在 CPU
+    上跑了近 4 小时。这里直接按行解析文件，不再依赖"启动脚本一定加载成功"。
+    """
+    p = path or (ROOT / "secrets" / "local_env.bat")
+    try:
+        raw = p.read_bytes()
+    except OSError:
+        return ""
+    text = ""
+    for enc in ("utf-8-sig", "gbk"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if not text:
+        text = raw.decode("latin-1", errors="replace")
+    m = re.search(r'^\s*set\s+"?%s=([^"\r\n]*)' % re.escape(name),
+                  text, re.I | re.M)
+    return (m.group(1) if m else "").strip()
+
+
 def _cpu_fallback_allowed() -> bool:
     """GPU 分配失败时，允不允许自动退回 CPU 整首重跑。
 
     默认允许（N 卡机器上 CPU 只是慢 5-10 倍）。但核显机器上两者差 14 倍以上，而且
     回退**不是续跑而是从头重算**——一首 4 分钟的歌会从 1~2 小时变成十小时以上，
     用户明确不想这样。设 `YUE2_DISABLE_CPU_FALLBACK=1` 后，分配失败就直接报错，
-    由用户决定缩短歌词还是换机器。
+    由用户决定缩短歌词还是换机器。进程环境没这个变量时，再从 secrets/local_env.bat
+    读一次（见 _local_env_value 的说明）。
     """
-    return os.environ.get("YUE2_DISABLE_CPU_FALLBACK", "").strip().lower() not in (
-        "1", "true", "yes", "on")
+    val = os.environ.get("YUE2_DISABLE_CPU_FALLBACK")
+    if val is None or not str(val).strip():
+        val = _local_env_value("YUE2_DISABLE_CPU_FALLBACK")
+    return str(val).strip().lower() not in ("1", "true", "yes", "on")
 
 
 def _gen_run(job: dict, payload: dict) -> None:

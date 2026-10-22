@@ -412,6 +412,11 @@ py312\python.exe scripts\download_models.py --q8     :: q8_0（约4GB，质量�
 核显机器上建议在 `secrets/local_env.bat` 里写 `set YUE2_DISABLE_CPU_FALLBACK=1`：
 GPU 分配失败时任务直接失败并提示可续跑，而不是整首重算到慢 14 倍的 CPU 上。
 
+**这个开关从 v10.21.4 起不再依赖启动脚本加载**：网关在进程环境没有该变量时会直接读
+`secrets/local_env.bat`。我们踩过的坑是文件被保存成 LF 换行，cmd 把最后一行注释和 `set`
+拼成一条命令，开关静默失效，一首长歌在 CPU 上白跑了近 4 小时。`/api/backend/mode` 的
+`cpu_fallback_allowed` 和页面模式行（「分配失败不回退 CPU」）会显示当前真实状态。
+
 **分配失败会自动救一次**（v10.21.2）：网关先重启引擎清掉进程内残留的显存分配，
 再生一次（有 AR 检查点就跳过 AR）。只有这次还失败才会报错并留给「从检查点继续」。
 

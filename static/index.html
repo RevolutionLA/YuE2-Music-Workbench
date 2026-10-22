@@ -5051,13 +5051,15 @@ async function refreshEngineMode() {
     const avail = Array.isArray(j.available) ? j.available : [];
     engineGpu = avail.includes("cuda") ? "cuda" : (avail.includes("vulkan") ? "vulkan" : "cuda");
     $("modeRow").style.display = "";
-    $("modeText").textContent = engineMode === "cpu"
+    let modeText = engineMode === "cpu"
       ? "CPU 模式 · 慢 5-10 倍"
       : engineMode === "vulkan"
         ? "GPU 模式 · Vulkan（集显，共享内存）"
         : (j.vram_ok === false
           ? "GPU 模式 · 显存不足(" + Math.round((j.vram_free_mb||0)/1024) + "GB空闲)"
           : "GPU 模式 · 显存 " + (j.vram_free_mb ? (j.vram_free_mb/1024).toFixed(1) + "GB 空闲" : "状态未知"));
+    if (j.cpu_fallback_allowed === false) modeText += " · 分配失败不回退 CPU";
+    $("modeText").textContent = modeText;
     $("modeBtn").textContent = engineMode === "cpu" ? "切GPU" : "切CPU";
     $("modeBtn").title = engineMode === "cpu"
       ? (engineGpu === "vulkan" ? "切回 GPU 模式（本机引擎走 Vulkan 集显）" : "切回 GPU（CUDA）模式，速度快")

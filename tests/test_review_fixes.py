@@ -67,6 +67,10 @@ class Sandbox(unittest.TestCase):
         # 永久改成 cpu（2026-10-22 03:29 实测：跑完整套测试后引擎下次按 cpu 拉起）。
         app._ENGINE_STATE = self.tmp / "engine_state.json"
         app._ENGINE_STATE.write_text('{"backend": "vulkan"}', encoding="utf-8")
+        # local_env.bat 是本机配置：作者机上可能写着"禁用 CPU 回退"，不隔离会让
+        # 回退相关用例在作者机红、在 CI 绿。文件兜底本身在 test_backend_mode 里单测。
+        self._saved["_local_env_value"] = app._local_env_value
+        app._local_env_value = lambda name, path=None: ""
         for d in (app.OUTPUT_DIR, app.SCORES_DIR, app.HIST_DIR,
                   app.RVC_JOB_DIR, app.RVC_TRAIN_DIR):
             Path(d).mkdir(parents=True, exist_ok=True)

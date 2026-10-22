@@ -89,6 +89,8 @@ class ResolveOnIgpu(Base):
         j = self.client.get("/api/backend/mode").json()
         self.assertEqual(j["mode"], "vulkan")
         self.assertEqual(j["available"], IGPU_BUILD, "前端靠它决定「切GPU」提交哪个后端")
+        self.assertIsInstance(j.get("cpu_fallback_allowed"), bool,
+                              "页面/排障需要知道当前是否允许退回 CPU")
 
 
 class ResolveOnCudaMachine(Base):
@@ -188,8 +190,13 @@ class CpuFallbackGate(unittest.TestCase):
 
     def setUp(self):
         self._saved = os.environ.get("YUE2_DISABLE_CPU_FALLBACK")
+        # 默认把文件兜底隔离掉：否则作者机上的 secrets/local_env.bat=1 会让
+        # "默认允许"这条用例在作者机红、在 CI 绿。要测文件兜底的用例自己覆盖。
+        self._saved_local = app._local_env_value
+        app._local_env_value = lambda name, path=None: ""
 
     def tearDown(self):
+        app._local_env_value = self._saved_local
         if self._saved is None:
             os.environ.pop("YUE2_DISABLE_CPU_FALLBACK", None)
         else:
@@ -209,6 +216,30 @@ class CpuFallbackGate(unittest.TestCase):
         self.assertGreaterEqual(src.count("_cpu_fallback_allowed()"), 3,
                                 "预检分支与错误分支都必须过这道闸（含函数定义一行）")
         self.assertIn("已禁用 CPU 回退", src, "失败时必须把原因说给用户看")
+
+    def test_file_fallback_applies_when_process_env_missing(self):
+        """2026-10-22：local_env.bat 是 LF 换行，cmd 没加载成功，CPU 回退跑了 4 小时。
+        进程环境没有变量时必须能从文件里读到。"""
+        os.environ.pop("YUE2_DISABLE_CPU_FALLBACK", None)
+        saved = app._local_env_value
+        app._local_env_value = lambda name, path=None: "1"
+        try:
+            self.assertFalse(app._cpu_fallback_allowed(),
+                             "环境变量缺失时就放弃文件兜底：又会在核显上跑 CPU")
+        finally:
+            app._local_env_value = saved
+
+    def test_local_env_parser_accepts_gbk_crlf_and_utf8(self):
+        import tempfile
+        fn = self._saved_local          # setUp 为了隔离把它换成了空 lambda
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "local_env.bat"
+            p.write_bytes("set YUE2_DISABLE_CPU_FALLBACK=1\r\n".encode("gbk"))
+            self.assertEqual(fn("YUE2_DISABLE_CPU_FALLBACK", p), "1")
+            p.write_bytes('set "YUE2_DISABLE_CPU_FALLBACK=on"\r\n'.encode("utf-8"))
+            self.assertEqual(fn("YUE2_DISABLE_CPU_FALLBACK", p), "on")
+            p.write_bytes("set YUE2_DISABLE_CPU_FALLBACK=1\n".encode("gbk"))
+            self.assertEqual(fn("YUE2_DISABLE_CPU_FALLBACK", p), "1")
 
 
 class EngineRestartOnAlloc(unittest.TestCase):
