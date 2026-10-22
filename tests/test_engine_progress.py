@@ -88,6 +88,21 @@ class EngineProgress(unittest.TestCase):
         self.assertIsNone(app._engine_progress(self.path, seed=999),
                           "日志里是上一首的 seed：不能把旧阶段画到新任务头上")
 
+    def test_bad_seed_returns_none_instead_of_crashing(self):
+        self.write(self.req(seed=123))
+        self.assertIsNone(app._engine_progress(self.path, seed="not-an-int"))
+
+    def test_request_without_stage_lines_is_queued_not_nar(self):
+        # 请求刚发出、引擎还没打任何阶段行时，不能默认画成 NAR（旧分支 -1>=-1 会误判）
+        self.write(self.req())
+        p = app._engine_progress(self.path, seed=123)
+        self.assertEqual(p["stage"], "queued", p)
+
+    def test_task_label_never_uses_style_word(self):
+        self.assertEqual(app._task_label({"style": "English, pop", "id": "20260101_x"}),
+                         "20260101_x", "通知标题不能把 Style 首词当任务名")
+        self.assertEqual(app._task_label({"task_name": "等你回来"}), "等你回来")
+
     def test_missing_log_is_none(self):
         self.assertIsNone(app._engine_progress(Path(self._tmp.name) / "nope.log", seed=1))
 

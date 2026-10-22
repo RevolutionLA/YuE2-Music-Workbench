@@ -780,8 +780,10 @@ def capabilities():
     rvc_ok = RVC_PY.is_file() and (RVC_DIR / "infer" / "cli.py").is_file()
     add("换声 / 音色制作", rvc_ok, "RVC runtime" if rvc_ok else "runtime/rvc 缺 infer/cli.py")
     add("AI 写词", bool(os.environ.get("DEEPSEEK_API_KEY")), "需 DEEPSEEK_API_KEY")
-    add("歌曲生成（AR/NAR/VAE）", True,
-        "VAE 阶段受显存限制；长歌会在开跑前被预检拦下，不会白等")
+    gen_ok = AUDIOCPP_BIN.is_file() and SERVER_JSON.is_file()
+    add("歌曲生成（AR/NAR/VAE）", gen_ok,
+        "VAE 阶段受显存限制；长歌会在开跑前被预检拦下，不会白等"
+        if gen_ok else "缺 audio.cpp 引擎或 cpp/server.json")
     return {"features": feats}
 
 
@@ -2562,7 +2564,11 @@ def _engine_progress(log_path: Path | None = None, seed=None) -> dict | None:
     result = None
     if parsed:
         text, req = parsed
-        if seed is None or int(seed) == req["seed"]:
+        try:
+            seed_ok = seed is None or int(seed) == req["seed"]
+        except (TypeError, ValueError):
+            seed_ok = False
+        if seed_ok:
             body = text[text.find("yue2.request seed="):]
             vae_at = max(body.rfind("framework.oobleck_audio_vae"), body.rfind("yue2.vae"))
             nar_at = body.rfind("yue2.nar.")
@@ -2581,7 +2587,7 @@ def _engine_progress(log_path: Path | None = None, seed=None) -> dict | None:
             if vae_m and vae_at >= nar_at:
                 result = {"stage": "vae", "label": "VAE 解码中（显存峰值阶段）",
                           "pct": 95, "elapsed_sec": round(_age(vae_m[-1].group(1)))}
-            elif nar_at >= ar_at:
+            elif nar_at >= 0 and nar_at >= ar_at:
                 frames = req["frames"]
                 fm = re.search(r"yue2\.nar\.synthesize\.codec_tokens (\d+)", body)
                 if fm:
@@ -2709,13 +2715,16 @@ def _ensure_backend() -> None:
 
 
 def _task_label(job: dict, fallback: str = "任务") -> str:
-    """通知标题用的任务名：优先用户起的名字，其次源文件名/音色名，最后才用风格词。"""
+    """通知标题用的任务名：优先用户起的名字，其次源文件名/音色名。
+
+    不再拿 Style 首词兜底：用户明确抱怨过“English 失败”这种标题，那不是任务名。
+    没有名字时用任务 ID（仍可定位），绝不把曲风第一段当人名。
+    """
     for key in ("task_name", "src_name", "voice_name", "model"):
         v = str(job.get(key) or "").strip()
         if v:
             return v[:60]
-    style = str(job.get("style") or "").split(",")[0].strip()
-    return (style or str(job.get("id") or fallback))[:60]
+    return str(job.get("id") or fallback)[:60]
 
 
 def _win_toast(title: str, body: str) -> None:
@@ -3483,7 +3492,8 @@ def generate_current():
             metas.sort(key=lambda m: m.get("ts", ""), reverse=True)
             latest = metas[0] if metas else None
         return {"job": None, "latest": latest}
-    prog = _engine_progress(seed=(job.get("params") or {}).get("seed"))
+    # 占位 job（id=None，排队中）还没有真实引擎请求，别把上一首的进度贴到它头上
+    prog = _engine_progress(seed=(job.get("params") or {}).get("seed")) if job.get("id") else None
     return {"job": {**job, "progress": prog} if prog else job}
 
 
