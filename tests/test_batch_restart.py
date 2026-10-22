@@ -48,7 +48,11 @@ class BatchRestartBase(unittest.TestCase):
         self.tmp = Path(self._tmp.name)
         self._saved_state = app._BATCH_STATE
         self._saved_ensure = app._batch_ensure_worker
+        self._saved_settings_json = app._SETTINGS_JSON
+        self._saved_local_env = app._local_env_value
         app._BATCH_STATE = self.tmp / "batch_state.json"
+        app._SETTINGS_JSON = self.tmp / "settings.json"
+        app._local_env_value = lambda name, path=None: ""
         self.ensure_calls = 0
 
         def _ensure():
@@ -60,6 +64,8 @@ class BatchRestartBase(unittest.TestCase):
     def tearDown(self) -> None:
         app._BATCH_STATE = self._saved_state
         app._batch_ensure_worker = self._saved_ensure
+        app._SETTINGS_JSON = self._saved_settings_json
+        app._local_env_value = self._saved_local_env
         self._tmp.cleanup()
 
     def write(self, state: dict) -> None:
@@ -139,6 +145,47 @@ class MaterializeSeed(BatchRestartBase):
         self.assertGreaterEqual(out["seed"], 0)
         self.assertEqual(out["status"], "done")
         self.assertFalse(out["running"])
+
+
+class SettingsAndPreflight(BatchRestartBase):
+    def test_cpu_fallback_setting_roundtrip(self):
+        r = self.client.post("/api/settings", json={"cpu_fallback_allowed": True})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(app._cpu_fallback_allowed())
+        self.assertEqual(self.client.get("/api/settings").json()["cpu_fallback_allowed"], True)
+        self.client.post("/api/settings", json={"cpu_fallback_allowed": False})
+        self.assertFalse(app._cpu_fallback_allowed())
+
+    def test_invalid_setting_is_400(self):
+        self.assertEqual(self.client.post("/api/settings", json={}).status_code, 400)
+        self.assertEqual(self.client.post("/api/settings",
+                                          json={"cpu_fallback_allowed": "yes"}).status_code, 400)
+
+    def test_preflight_blocks_song_that_cannot_fit(self):
+        saved = app.backend_mode, app._vulkan_heap_budget_gb, app._cpu_fallback_allowed
+        app.backend_mode = lambda: "vulkan"
+        app._vulkan_heap_budget_gb = lambda: 7.26
+        app._cpu_fallback_allowed = lambda: False
+        try:
+            long_song = app._preflight_memory_estimate({"lyrics": "字" * 600})
+            self.assertFalse(long_song["ok"], long_song)
+            self.assertIn("超过本机 Vulkan 预算", long_song["message"])
+            short_song = app._preflight_memory_estimate({"lyrics": "字" * 150})
+            self.assertTrue(short_song["ok"], short_song)
+            # 开了 CPU 回退时不能硬拦：改为允许并给 warning（用户显式选择了慢路径）
+            app._cpu_fallback_allowed = lambda: True
+            slow = app._preflight_memory_estimate({"lyrics": "字" * 600})
+            self.assertTrue(slow["ok"], slow)
+            self.assertTrue(slow["warning"])
+        finally:
+            app.backend_mode, app._vulkan_heap_budget_gb, app._cpu_fallback_allowed = saved
+
+    def test_capabilities_names_vae_free_features(self):
+        j = self.client.get("/api/capabilities").json()
+        labels = [f["label"] for f in j.get("features") or []]
+        self.assertIn("歌词 TXT 导出", labels)
+        self.assertIn("乐谱提取 / 转谱", labels)
+        self.assertIn("歌曲生成（AR/NAR/VAE）", labels)
 
 
 class RetryWhileRunning(BatchRestartBase):

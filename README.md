@@ -431,6 +431,13 @@ VAE 解码中」。引擎没有进度回调，网关从引擎日志的 TRACE/TIM
 引擎不写日志，步数是按帧数和步数估算的，所以标了「约」。**NAR 目前不能复用**：VAE 失败时
 只有 AR 检查点，重试会重跑 NAR；要省掉 NAR 需要引擎导出 acoustic latent 或提供
 `stop_after=nar`，当前版本没有这个能力。
+
+**设置与预检**（v10.21.6）：⑫ 设置里可以直接开关「GPU 分配失败时自动降级到 CPU」，
+选择写入 `runtime/data/settings.json`，优先于 `secrets/local_env.bat`。生成任务开跑前会按
+歌词/检查点估算 VAE 峰值，明显放不下时 4 秒内直接失败（实测长歌不会启动引擎、不再白等
+一小时）；已允许 CPU 回退时改为 warning，先试 GPU、失败再切 CPU。设置页的「本机可用功能」
+会列出歌词 TXT、LRC/eLRC、转谱、分离、换声/训练、AI 写词各自是否可用；歌词框和历史任务卡
+都可以直接下载歌词 TXT（不依赖 GPU/VAE）。
 </details>
 
 <details>

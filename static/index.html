@@ -1927,6 +1927,7 @@ We will sing beyond the night</textarea>
           <div class="actions">
             <button class="primary" id="go">生成歌曲</button>
             <button class="ghost" id="queue" title="不立即生成，加入队列由后台依次执行">加入队列</button>
+            <button class="ghost" id="exportLyricsTxt" title="把左边歌词导出为 TXT；不需要生成音频，也不占 GPU/VAE">⬇ 歌词 TXT</button>
             <button class="danger" id="stopGen" style="display:none">终止任务</button>
             <button class="ghost" id="randSeed">随机种子</button>
           </div>
@@ -2740,6 +2741,12 @@ We will sing beyond the night</textarea>
           <button id="modeBtn" class="mode-pill" title="切换引擎模式">切GPU</button>
         </div>
         <div class="hint-xs" style="margin-top:6px;">CUDA 模式下若显存不足，生成前会自动降级到 CPU（慢 5-10 倍但能出结果）；生成与换声/训练共用 GPU，串行执行。</div>
+        <label class="foot-row" style="cursor:pointer;margin-top:12px;gap:8px;">
+          <input type="checkbox" id="cpuFallbackToggle" style="width:auto;flex:none;" />
+          <span class="fr-label">GPU 分配失败时自动降级到 CPU</span>
+        </label>
+        <div class="hint-xs" id="cpuFallbackHint">关闭后，GPU 分配失败会直接报错并保留 AR 检查点；不会把整首歌重算到 CPU。核显上开启可能慢十几倍。</div>
+        <div class="lint" id="cpuFallbackStatus"></div>
 
       </div>
 
@@ -2762,6 +2769,12 @@ We will sing beyond the night</textarea>
         </div>
         <div class="hint-xs" style="margin-top:6px;">主题色写进 localStorage，刷新后保持。明暗模式是左侧栏底部那个常驻开关，不属于本页设置。</div>
         <div class="status" id="settingsStatus" style="margin-top:10px;"></div>
+
+        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 3h12v10H2zM5 6h6M5 9h4"/></svg>本机可用功能</div>
+        <div class="hint-xs" id="capabilityList">检测中…</div>
+        <div class="actions" style="margin-top:8px;">
+          <button class="ghost" id="capabilityRefresh">↻ 重新检测</button>
+        </div>
 
         <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 4.5h10M3 8h10M3 11.5h6"/></svg>维护</div>
         <div class="actions">
@@ -3488,6 +3501,8 @@ function switchTab(name) {
     if (typeof loadModels === "function") loadModels();
     // LoRA 清单只在进 ⑫ 时读：cpp/lora 是目录扫描，放启动路径上只会让首屏多等一次 IO
     if (typeof loadLoras === "function") loadLoras(true);
+    if (typeof refreshCpuFallbackSetting === "function") refreshCpuFallbackSetting();
+    if (typeof loadCapabilities === "function") loadCapabilities();
   }
   // ⑬ 关于：进页面刷新系统信息（独立页，只放只读信息）
   if (name === "about" && typeof loadSysInfo === "function") loadSysInfo();
@@ -5080,6 +5095,56 @@ $("modeBtn").onclick = async () => {
   } catch (e) { toast("切换失败：" + friendlyErr(e), "err"); }
   finally { $("modeBtn").disabled = false; }
 };
+
+async function refreshCpuFallbackSetting() {
+  try {
+    const j = await (await fetch("/api/settings")).json();
+    const on = !!j.cpu_fallback_allowed;
+    $("cpuFallbackToggle").checked = on;
+    $("cpuFallbackHint").textContent = on
+      ? "开启：GPU 分配失败会自动切到 CPU，整首从头重算，核显上可能慢十几倍。"
+      : "关闭：GPU 分配失败直接报错并保留 AR 检查点，不会把整首歌重算到 CPU。";
+    $("cpuFallbackStatus").textContent = j.cpu_fallback_source === "setting"
+      ? "（本页设置优先于 secrets/local_env.bat）" : "";
+  } catch (e) {
+    $("cpuFallbackStatus").textContent = "读取失败：" + friendlyErr(e);
+  }
+}
+$("cpuFallbackToggle").onchange = async () => {
+  const el = $("cpuFallbackToggle");
+  const on = el.checked;
+  el.disabled = true;
+  try {
+    const r = await jfetch("/api/settings", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ cpu_fallback_allowed: on }),
+    });
+    const j = await r.json();
+    toast(j.message || "设置已保存", "ok");
+    $("cpuFallbackStatus").textContent = on ? "已允许自动降级 CPU" : "已禁止自动降级 CPU";
+    refreshEngineMode();
+  } catch (e) {
+    el.checked = !on;
+    toast("设置失败：" + friendlyErr(e), "err");
+  } finally { el.disabled = false; }
+};
+
+async function loadCapabilities() {
+  const box = $("capabilityList");
+  if (!box) return;
+  box.textContent = "检测中…";
+  try {
+    const j = await (await fetch("/api/capabilities")).json();
+    box.innerHTML = (j.features || []).map((f) => {
+      const mark = f.ok ? '<span style="color:var(--ok);">✓</span>' : '<span style="color:var(--err);">✕</span>';
+      return `<div style="margin:5px 0;">${mark} ${escapeHtml(f.label)}` +
+        (f.note ? ` <span style="color:var(--muted);">· ${escapeHtml(f.note)}</span>` : "") + `</div>`;
+    }).join("");
+  } catch (e) {
+    box.textContent = "检测失败：" + friendlyErr(e);
+  }
+}
+$("capabilityRefresh").onclick = loadCapabilities;
 async function loadModels() {
   try {
     const r = await fetch("/api/models/list");
@@ -5668,6 +5733,18 @@ $("go").onclick = async () => {
   }
 };
 $("randSeed").onclick = () => { $("seed").value = String(Math.floor(Math.random() * 2147483647)); };
+// 歌词 TXT 导出：纯前端，不依赖生成/VAE。LRC/eLRC 仍需音频时间轴，见历史页。
+$("exportLyricsTxt").onclick = () => {
+  const text = ($("lyrics").value || "").trim();
+  if (!text) { toast("歌词框是空的", "err"); return; }
+  const blob = new Blob([$("lyrics").value], { type: "text/plain;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = dlName(($("taskName") && $("taskName").value.trim()) || "歌词", "txt");
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  toast("已开始下载歌词 TXT", "ok");
+};
 
 // 加入队列：复用批量队列 API，把创作页当前参数作为单任务排入队尾（不抢占正在生成的任务）
 $("queue").onclick = async () => {
@@ -6182,6 +6259,7 @@ async function renderHistory(fetchLimit) {
           ${h.status === "done" && !isTrain && !(isRvc && h.assets && h.assets.full_song) ? '<button class="ghost" data-play>▶ 播放</button>' : ''}
           ${h.status === "done" && isRvc && h.assets && h.assets.full_song ? '<button class="ghost" data-play="full" title="换声人声 + 伴奏">▶ 成品</button><button class="ghost" data-play="dry" title="只有换声后的人声，无伴奏">🎤 干声</button>' : ''}
           ${h.status === "done" && !isTrain ? '<button class="ghost" data-dl title="下载 WAV">⬇ 下载</button>' : ''}
+          ${!isTrain && !isRvc && (h.lyrics || "").trim() ? '<button class="ghost" data-lyrics-txt title="下载纯文本歌词（不依赖音频/VAE）">⬇ 歌词 TXT</button>' : ''}
           ${(h.status === "error" || h.status === "cancelled") && !isTrain && !isRvc
             ? (h.isQueue
               ? '<button class="ghost" data-restart title="只把这一条排回队列；正在算的这首不受影响，跑完按顺序接上">↻ 重启</button>'
@@ -6302,6 +6380,8 @@ async function renderHistory(fetchLimit) {
       if (moreBtn) moreBtn.onclick = (e) => {
         e.stopPropagation();
         const open = !!(moreMenu && moreMenu.classList.contains("open"));
+        // 同一时刻只允许一行展开：先把别的行的菜单收起来，避免互相遮挡
+        closeHistoryMenus(moreMenu, dlMenu);
         // 「更多」与「下载产物」互斥：同时展开会两个面板叠在一起
         if (moreMenu) moreMenu.classList.toggle("open", !open);
         if (dlMenu) dlMenu.classList.toggle("open", open);
@@ -6395,6 +6475,17 @@ async function renderHistory(fetchLimit) {
         } catch (err) { toast((fmt === "elrc" ? "eLRC" : "LRC") + " 下载失败：" + friendlyErr(err), "err"); }
         finally { btn.disabled = false; btn.textContent = oldTxt; }
       }
+      const tx = d.querySelector("[data-lyrics-txt]");
+      if (tx) tx.onclick = (e) => {
+        e.stopPropagation();
+        const blob = new Blob([h.lyrics], { type: "text/plain;charset=utf-8" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = dlName(h.task_name || (h.style || "").split(",")[0] || h.id, "txt");
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+        toast("已开始下载歌词 TXT", "ok");
+      };
       const lb = d.querySelector("[data-lyrics]");
       if (lb) lb.onclick = (e) => { e.stopPropagation(); downloadTrack(lb, "lrc"); };
       const eb = d.querySelector("[data-elrc]");
@@ -6475,6 +6566,22 @@ async function renderHistory(fetchLimit) {
   } catch { $("histList").innerHTML = '<div class="empty">后端未连接。</div>'; }
 }
 $("histRefresh").onclick = () => { renderHistory(); renderRvcModels(); toast("已刷新", "ok"); };
+
+// ⋯ 菜单的唯一收起入口：点页面空白处收起；开另一行时先收起旧菜单。
+// 以前没有这个全局监听，菜单只能再点一次「更多」才关，还会和下一行的菜单叠在一起。
+function closeHistoryMenus(exceptMore, exceptDl) {
+  document.querySelectorAll("#histList [data-more-menu].open, #histList [data-dl-menu].open").forEach((m) => {
+    if (m !== exceptMore && m !== exceptDl) m.classList.remove("open");
+  });
+}
+document.addEventListener("click", (e) => {
+  if (e.target.closest("[data-more], [data-more-menu], [data-dl-menu]")) return;
+  closeHistoryMenus();
+});
+// 点了菜单里的动作后也收起，不让它继续挂在页面上挡下一行
+document.addEventListener("click", (e) => {
+  if (e.target.closest("[data-more-menu] button, [data-dl-menu] button")) closeHistoryMenus();
+});
 // 一键继续：把意外终止/停止/失败的队列任务重新入队执行
 $("batchResume").onclick = async () => {
   const btn = $("batchResume");

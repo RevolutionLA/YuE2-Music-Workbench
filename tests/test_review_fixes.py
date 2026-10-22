@@ -71,6 +71,10 @@ class Sandbox(unittest.TestCase):
         # 回退相关用例在作者机红、在 CI 绿。文件兜底本身在 test_backend_mode 里单测。
         self._saved["_local_env_value"] = app._local_env_value
         app._local_env_value = lambda name, path=None: ""
+        # ⑫ 设置页的显式 CPU 回退选择也不能泄漏进测试：本机 settings.json 可能写着
+        # cpu_fallback_allowed=false，会让"短显存仍回退"的用例在作者机红、CI 绿。
+        self._saved["_settings_read"] = app._settings_read
+        app._settings_read = lambda: {}
         for d in (app.OUTPUT_DIR, app.SCORES_DIR, app.HIST_DIR,
                   app.RVC_JOB_DIR, app.RVC_TRAIN_DIR):
             Path(d).mkdir(parents=True, exist_ok=True)

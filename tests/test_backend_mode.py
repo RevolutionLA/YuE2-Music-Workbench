@@ -190,13 +190,16 @@ class CpuFallbackGate(unittest.TestCase):
 
     def setUp(self):
         self._saved = os.environ.get("YUE2_DISABLE_CPU_FALLBACK")
-        # 默认把文件兜底隔离掉：否则作者机上的 secrets/local_env.bat=1 会让
-        # "默认允许"这条用例在作者机红、在 CI 绿。要测文件兜底的用例自己覆盖。
+        # 默认把文件兜底和显式设置隔离掉：否则作者机上的 secrets/local_env.bat=1
+        # 或 runtime/data/settings.json 会让"默认允许"这条用例在作者机红、在 CI 绿。
         self._saved_local = app._local_env_value
+        self._saved_settings = app._settings_read
         app._local_env_value = lambda name, path=None: ""
+        app._settings_read = lambda: {}
 
     def tearDown(self):
         app._local_env_value = self._saved_local
+        app._settings_read = self._saved_settings
         if self._saved is None:
             os.environ.pop("YUE2_DISABLE_CPU_FALLBACK", None)
         else:
@@ -228,6 +231,15 @@ class CpuFallbackGate(unittest.TestCase):
                              "环境变量缺失时就放弃文件兜底：又会在核显上跑 CPU")
         finally:
             app._local_env_value = saved
+
+    def test_explicit_setting_overrides_env_and_file(self):
+        os.environ["YUE2_DISABLE_CPU_FALLBACK"] = "1"
+        app._settings_read = lambda: {"cpu_fallback_allowed": True}
+        self.assertTrue(app._cpu_fallback_allowed(),
+                        "⑫ 设置页的显式选择必须优先于 local_env.bat")
+        app._settings_read = lambda: {"cpu_fallback_allowed": False}
+        os.environ.pop("YUE2_DISABLE_CPU_FALLBACK", None)
+        self.assertFalse(app._cpu_fallback_allowed())
 
     def test_local_env_parser_accepts_gbk_crlf_and_utf8(self):
         import tempfile

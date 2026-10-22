@@ -269,6 +269,14 @@ log each step, so the step number is estimated from frame count and step count a
 “approx.” **NAR cannot be reused today**: a VAE failure only preserves the AR checkpoint, so a retry
 re-runs NAR. Avoiding that needs an engine acoustic-latent export or `stop_after=nar`, which the
 current engine does not provide.
+
+**Settings and preflight** (v10.21.6): ⑫ Settings now has a **GPU allocation failure → CPU
+fallback** toggle, stored in `runtime/data/settings.json` and taking precedence over
+`secrets/local_env.bat`. Before a generation starts, the gateway estimates the VAE peak from the
+lyrics/AR checkpoint and fails in about four seconds when it clearly cannot fit (verified: no
+engine starts, no hour-long wait). If CPU fallback is explicitly enabled, it becomes a warning and
+the job tries GPU first. The settings page also lists which VAE-free features are available, and
+lyrics can be downloaded as TXT from the lyrics box and every task card (no GPU/VAE needed).
 </details>
 
 **No NVIDIA GPU?** Use Vulkan on the integrated GPU if there is one: measured **~14× faster than CPU** on this machine (5,610 s → 318 s for the same request; 15–27× on short clips; identical output length and level). `一键补齐运行件.bat` downloads the Vulkan build, probes `--list-devices --backend vulkan`, and only writes `backend: vulkan` when a device is found — otherwise it falls back to `cpu` (same binary contains both backends). The iGPU uses unified memory, so keep other heavy apps closed. Without any usable GPU it runs CPU-only automatically — expect hours per song (see the measured anchor above).

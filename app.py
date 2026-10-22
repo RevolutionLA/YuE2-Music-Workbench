@@ -761,6 +761,49 @@ def models_repair_status():
 # --------------------------------------------------------------------------- #
 # 引擎后端模式（cuda / cpu 兜底）
 # --------------------------------------------------------------------------- #
+@router.get("/capabilities")
+def capabilities():
+    """本机当前真正能用/不能用的功能清单（不依赖 VAE 的功能也要让人看见）。"""
+    feats: list[dict] = []
+
+    def add(label: str, ok: bool, note: str = "") -> None:
+        feats.append({"label": label, "ok": bool(ok), "note": note})
+
+    add("歌词 TXT 导出", True, "不需要 GPU/VAE；歌词框和任务卡都能下载")
+    add("LRC / 逐字 eLRC", lrc_align_mod is not None,
+        "需要音频时间轴；已有音频时不用重新生成歌曲" if lrc_align_mod is not None
+        else "缺强制对齐依赖（funasr/模型），当前只有旧链路")
+    add("乐谱提取 / 转谱", (ROOT / "checkpoints" / "model.safetensors").is_file(),
+        "SheetSage2/MERT；不依赖 VAE")
+    sep_ok, sep_why = _sep_available()
+    add("人声/伴奏分离", sep_ok, "" if sep_ok else sep_why)
+    rvc_ok = RVC_PY.is_file() and (RVC_DIR / "infer" / "cli.py").is_file()
+    add("换声 / 音色制作", rvc_ok, "RVC runtime" if rvc_ok else "runtime/rvc 缺 infer/cli.py")
+    add("AI 写词", bool(os.environ.get("DEEPSEEK_API_KEY")), "需 DEEPSEEK_API_KEY")
+    add("歌曲生成（AR/NAR/VAE）", True,
+        "VAE 阶段受显存限制；长歌会在开跑前被预检拦下，不会白等")
+    return {"features": feats}
+
+
+@router.get("/settings")
+def settings_get():
+    return {"cpu_fallback_allowed": _cpu_fallback_allowed(),
+            "cpu_fallback_source": _cpu_fallback_source()}
+
+
+@router.post("/settings")
+def settings_set(payload: dict):
+    if not isinstance(payload.get("cpu_fallback_allowed"), bool):
+        raise HTTPException(status_code=400,
+                            detail="cpu_fallback_allowed 必须是 true/false")
+    _settings_write({"cpu_fallback_allowed": payload["cpu_fallback_allowed"]})
+    allowed = payload["cpu_fallback_allowed"]
+    msg = ("已允许 GPU 分配失败时自动降级到 CPU：会整首重算，核显上可能慢十几倍。"
+           if allowed else
+           "已禁止自动降级 CPU：GPU 分配失败会直接报错，AR 检查点会保留，可稍后重试。")
+    return {"ok": True, "cpu_fallback_allowed": allowed, "message": msg}
+
+
 @router.get("/backend/mode")
 def backend_mode_get():
     ok, free = _vram_ok_for_gpu()
@@ -1284,11 +1327,12 @@ def _score_run(job_id: str, src: Path, melody_only: bool):
             _SCORE_JOBS[job_id].update({"done": True, "abc": abc,
                                         "analysis": rec.get("analysis"), "score_id": rec["id"],
                                         "artifacts": archived})
-        _win_toast("🎼 乐谱提取完成", f"耗时 {int(time.time()-started)//60} 分 {int(time.time()-started)%60} 秒，已入库可回填")
+        _win_toast(f"{src.stem} 乐谱提取成功",
+                   f"耗时 {int(time.time()-started)//60} 分 {int(time.time()-started)%60} 秒，已入库可回填")
     except Exception as e:
         with _SCORE_LOCK:
             _SCORE_JOBS[job_id].update({"done": True, "error": str(e)[:300]})
-        _win_toast("✕ 乐谱提取失败", str(e)[:120])
+        _win_toast(f"{src.stem} 乐谱提取失败", str(e)[:120])
     finally:
         try:
             src.unlink(missing_ok=True)
@@ -2664,6 +2708,16 @@ def _ensure_backend() -> None:
         time.sleep(2.0)
 
 
+def _task_label(job: dict, fallback: str = "任务") -> str:
+    """通知标题用的任务名：优先用户起的名字，其次源文件名/音色名，最后才用风格词。"""
+    for key in ("task_name", "src_name", "voice_name", "model"):
+        v = str(job.get(key) or "").strip()
+        if v:
+            return v[:60]
+    style = str(job.get("style") or "").split(",")[0].strip()
+    return (style or str(job.get("id") or fallback))[:60]
+
+
 def _win_toast(title: str, body: str) -> None:
     """Windows 系统通知（浏览器最小化/后台也可见）。fire-and-forget，失败静默。"""
     try:
@@ -2741,19 +2795,117 @@ def _local_env_value(name: str, path: Path | None = None) -> str:
     return (m.group(1) if m else "").strip()
 
 
+_SETTINGS_JSON = ROOT / "runtime" / "data" / "settings.json"
+_SETTINGS_LOCK = threading.Lock()
+
+
+def _settings_read() -> dict:
+    try:
+        return json.loads(_SETTINGS_JSON.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _settings_write(updates: dict) -> dict:
+    with _SETTINGS_LOCK:
+        state = _settings_read()
+        state.update(updates)
+        _SETTINGS_JSON.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _SETTINGS_JSON.with_name(_SETTINGS_JSON.name + ".tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, _SETTINGS_JSON)
+        return state
+
+
 def _cpu_fallback_allowed() -> bool:
     """GPU 分配失败时，允不允许自动退回 CPU 整首重跑。
 
-    默认允许（N 卡机器上 CPU 只是慢 5-10 倍）。但核显机器上两者差 14 倍以上，而且
-    回退**不是续跑而是从头重算**——一首 4 分钟的歌会从 1~2 小时变成十小时以上，
-    用户明确不想这样。设 `YUE2_DISABLE_CPU_FALLBACK=1` 后，分配失败就直接报错，
-    由用户决定缩短歌词还是换机器。进程环境没这个变量时，再从 secrets/local_env.bat
-    读一次（见 _local_env_value 的说明）。
+    优先级：⑫ 设置页的显式选择 > 环境变量/local_env.bat > 默认允许。
+    核显上 CPU 慢 14 倍以上，而且回退**不是续跑而是从头重算**——用户明确不想这样时，
+    在设置里关掉后，分配失败直接报错并保留 AR 检查点。
     """
+    st = _settings_read()
+    if isinstance(st.get("cpu_fallback_allowed"), bool):
+        return st["cpu_fallback_allowed"]
     val = os.environ.get("YUE2_DISABLE_CPU_FALLBACK")
     if val is None or not str(val).strip():
         val = _local_env_value("YUE2_DISABLE_CPU_FALLBACK")
     return str(val).strip().lower() not in ("1", "true", "yes", "on")
+
+
+def _cpu_fallback_source() -> str:
+    if isinstance(_settings_read().get("cpu_fallback_allowed"), bool):
+        return "setting"
+    val = os.environ.get("YUE2_DISABLE_CPU_FALLBACK")
+    if val is None or not str(val).strip():
+        val = _local_env_value("YUE2_DISABLE_CPU_FALLBACK")
+    return "env" if str(val or "").strip() else "default"
+
+
+def _vulkan_heap_budget_gb() -> float:
+    """Vulkan 设备堆的可用预算（GiB）的保守口径。
+
+    实测本机 Vulkan 堆 size 7.90GiB / budget 7.26GiB，但 `vulkaninfo` 在网关子进程里
+    会挂住（20 秒超时），不能放在每次任务开跑前。这里用保守常数 7.0，允许用环境变量
+    `YUE2_VULKAN_BUDGET_GB` 覆盖；目的只是提前拦住明显放不下的长歌，不追求精确。
+    """
+    try:
+        v = float(os.environ.get("YUE2_VULKAN_BUDGET_GB", ""))
+        if 2 <= v <= 64:
+            return v
+    except (TypeError, ValueError):
+        pass
+    return 7.0
+
+
+def _estimate_frames(payload: dict) -> int:
+    """从歌词估语义帧数；有 AR 检查点时用检查点里的真实 token 数。"""
+    try:
+        if hasattr(main, "_pick_payload") and hasattr(main, "_load_checkpoint"):
+            opts, _ = main._pick_payload(payload)
+            ckpt = main._load_checkpoint(opts)
+            if ckpt and ckpt.get("tokens"):
+                return len(ckpt["tokens"])
+    except Exception:  # noqa: BLE001
+        pass
+    lyrics = str(payload.get("lyrics") or "")
+    chars = len(re.sub(r"\s+", "", lyrics))
+    if chars < 20:
+        return 0
+    # 实测 642 字（去空白后约 470 字）→ 5556 帧，约 11.8 帧/字；取 12 留余量。
+    # 宁可早提示也别等一小时；有 AR 检查点时用真实 token 数，不受这个比例影响。
+    return max(1000, int(chars * 12.0))
+
+
+def _preflight_memory_estimate(payload: dict) -> dict:
+    """开跑前的显存峰值估算。返回 {ok, message, frames, peak_gb, budget_gb}。
+
+    只对 Vulkan 做硬拦截：Vulkan 是共享内存，VAE 的全曲输出缓冲最容易在这里超预算。
+    CUDA 的释放在引擎里更积极，且这里没有可靠的“可用显存”口径，避免误杀。
+    """
+    if backend_mode() != "vulkan":
+        return {"ok": True, "message": "", "frames": 0, "peak_gb": 0, "budget_gb": 0}
+    frames = _estimate_frames(payload)
+    if frames <= 0:
+        return {"ok": True, "message": "", "frames": 0, "peak_gb": 0, "budget_gb": 0}
+    vae_gb = frames * 0.0007          # 5556 帧 → 3.89GB
+    peak_gb = 2.95 + 0.55 + vae_gb    # AR/NAR/VAE 权重 + 图/上下文 + VAE 全曲输出
+    budget_gb = _vulkan_heap_budget_gb() or 7.2
+    ok = peak_gb <= budget_gb * 0.95
+    msg = ""
+    warning = ""
+    if not ok:
+        detail = (f"任务开始前预检：这首歌预计约 {frames} 帧，VAE 输出缓冲约 {vae_gb:.1f}GB，"
+                  f"加上权重/图合计约 {peak_gb:.1f}GB，超过本机 Vulkan 预算 {budget_gb:.1f}GB。")
+        if _cpu_fallback_allowed():
+            warning = (detail + "已允许回退 CPU，会先试 GPU；显存失败后切 CPU 整首重算（很慢），"
+                       "建议删减歌词段落。")
+            ok = True
+        else:
+            msg = (detail + "已提前停止，避免白等一小时。请删减歌词段落（VAE 缓冲随长度增长）"
+                   "或换 CUDA 机器；CPU 回退已关闭。")
+    return {"ok": ok, "message": msg, "warning": warning, "frames": frames,
+            "peak_gb": round(peak_gb, 2), "budget_gb": round(budget_gb, 2)}
 
 
 def _gen_run(job: dict, payload: dict) -> None:
@@ -2774,6 +2926,18 @@ def _gen_run(job: dict, payload: dict) -> None:
     engine_payload = dict(payload)
     engine_payload["lyrics"], _ = _ensure_song_ending(str(payload.get("lyrics") or ""))
     try:
+        # 开跑前先算一笔显存账：核显 Vulkan 上长歌的 VAE 全曲缓冲一旦超预算，
+        # 等到 VAE 阶段才失败会白等一小时。估计放不下就在这里直接停。
+        pre = _preflight_memory_estimate(engine_payload)
+        if pre.get("warning"):
+            job.update(note=pre["warning"][:400])
+            _output_write_meta(job)
+        if not pre["ok"]:
+            job.update(status="error", sec=0.0, error=pre["message"])
+            _output_write_meta(job)
+            _win_toast(f"{_task_label(job)} 失败",
+                       "预检：这首预计显存放不下，已提前停止（详情见任务卡错误）")
+            return
         # 后端自检：audiocpp 掉线（如上次异常崩溃）则自动拉起，避免整次生成直接失败
         _ensure_backend()
         # 提交内存预检：full/32步 重负载任务实测需 ~23GB commit（权重+AR/NAR 缓存），
@@ -2857,8 +3021,7 @@ def _gen_run(job: dict, payload: dict) -> None:
                            error=f"{str(detail)[:700]}（已禁用 CPU 回退：核显上 CPU 慢 14 倍以上，"
                                  f"且回退会从头重算）")
                 _output_write_meta(job)
-                _win_toast("✕ 生成失败：" + (job.get("style") or "").split(",")[0][:40],
-                           str(detail)[:120])
+                _win_toast(f"{_task_label(job)} 失败", str(detail)[:120])
                 return
             used_cpu_fallback = True
             job.update(
@@ -2875,11 +3038,11 @@ def _gen_run(job: dict, payload: dict) -> None:
             code, detail, content, headers = attempt()
 
         elapsed = round(time.time() - started, 1)
-        title = (job.get("style") or "").split(",")[0][:40] or rid
+        label = _task_label(job)
         if code != 200:
             job.update(status="error", error=str(detail), sec=elapsed)
             _output_write_meta(job)
-            _win_toast("✕ 生成失败：" + title, str(detail)[:120])
+            _win_toast(f"{label} 失败", str(detail)[:120])
         else:
             seed_actual = _seed_from_headers(headers, payload)
             wav = _output_wav_path(rid)
@@ -2895,7 +3058,7 @@ def _gen_run(job: dict, payload: dict) -> None:
             _output_write_lyrics(rid, job.get("lyrics", ""), job.get("task_name", ""))
             _lrc_build_async(rid)  # 后台对齐生成 .lrc（几秒到几十秒，不阻塞主流程）
             _win_toast(
-                "🎵 生成完成：" + title,
+                f"{label} 成功",
                 f"耗时 {int(elapsed // 60)} 分 {int(elapsed % 60)} 秒，已保存到 output/",
             )
 
@@ -6101,13 +6264,15 @@ def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
                               # 用户于是分不清"电音"是原曲带的还是这个音色加重的
                               "quality": meta.get("quality"),
                               "acc_pitch": acc_info or None}
-        _win_toast("🎵 换声完成：" + model, f"耗时 {meta['sec']} 秒，已保存到 output/")
+        _win_toast(f"{_task_label({'src_name': (_RVC_JOBS.get(rid) or {}).get('src_name'), 'model': model})} 成功",
+                   f"耗时 {meta['sec']} 秒，已保存到 output/")
     except Exception as e:
         with _RVC_LOCK:
             _RVC_JOBS[rid] = {**_RVC_JOBS.get(rid, job),
                               "status": "error", "error": str(e)[:500],
                               "sec": _elapsed()}
-        _win_toast("✕ 换声失败：" + model, str(e)[:120])
+        _win_toast(f"{_task_label({'src_name': (_RVC_JOBS.get(rid) or {}).get('src_name'), 'model': model})} 失败",
+                   str(e)[:120])
 
 
 # --------------------------------------------------------------------------- #
@@ -6621,12 +6786,14 @@ def _sep_worker(rid: str, src: Path, strip_harmony: bool) -> None:
                                     "本次只有含和声人声与伴奏两份产物")
             print(f"[separate] {rid} {meta['harmony_note']}", flush=True)
         _sep_update(rid, **meta)
-        _win_toast("🎤 人声分离完成", f"{rid}，已保存到 output/")
+        _sep_label = (_SEP_JOBS.get(rid) or _output_read_meta(rid) or {}).get("src_name") or rid
+        _win_toast(f"{_sep_label} 成功", "人声/伴奏分离完成，已保存到 output/")
     except Exception as e:
         err = str(e)[:500] or repr(e)
         _sep_update(rid, status="error", error=err, step="分离失败",
                     sec=round(time.time() - (started or time.time()), 1))
-        _win_toast("✕ 人声分离失败", err[:120])
+        _sep_label = (_SEP_JOBS.get(rid) or _output_read_meta(rid) or {}).get("src_name") or rid
+        _win_toast(f"{_sep_label} 失败", err[:120])
     finally:
         try:
             if work.is_dir():
@@ -8406,7 +8573,7 @@ def _rvc_train_worker(rid: str, name: str, epochs: int,
             "lyrics": f"训练 {epochs} 轮 · {job.get('samples_used', '?')} 个样本",
             "cot": "train", "abc": "", "params": {},
         })
-        _win_toast("🎵 音色制作完成：" + name, f"模型 {exported.name} 已可使用，耗时 {round((time.time()-started)/60)} 分钟")
+        _win_toast(f"{name} 成功", f"模型 {exported.name} 已可使用，耗时 {round((time.time()-started)/60)} 分钟")
     except _RvcTrainPaused:
         # 用户主动暂停：不标 error、不发失败 toast，静默停在 paused 状态（GPU 在 finally 释放）
         job.update(status="paused", step=job.get("step", "训练中"),
@@ -8425,7 +8592,7 @@ def _rvc_train_worker(rid: str, name: str, epochs: int,
             "style": f"音色制作 · {name}", "lyrics": f"训练 {epochs} 轮",
             "cot": "train", "abc": "", "params": {},
         })
-        _win_toast("✕ 音色制作失败：" + name, str(e)[:120])
+        _win_toast(f"{name} 失败", str(e)[:120])
     finally:
         if gpu_held:
             _GPU_SEM.release()   # 与上方 acquire() 配对；未持有绝不释放
