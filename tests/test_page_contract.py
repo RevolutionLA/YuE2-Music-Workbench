@@ -34,11 +34,12 @@ PAGES = {
     "history": "⑪ 任务管理",
     "settings": "⑫ 设置",
     "about": "⑬ 关于",
+    "lrc": "⑭ 歌词时间轴",
 }
 # v1.x 的旧页签名必须还能路由（历史链接与 dsh 侧栏可能仍带着用）
 LEGACY = {"compose": "sing", "rvc": "convert", "rvcTrain": "train", "voice": "voices"}
 
-TAB_NUMBERS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫", "⑬"]
+TAB_NUMBERS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫", "⑬", "⑭"]
 
 
 def read(path):
@@ -67,10 +68,10 @@ class PageContract(unittest.TestCase):
         加序号的目的是让页签正文里那些"去 ② 填歌词""见 ⑪ 任务管理"能一眼对上，
         所以序号必须是"页签自己的号"——这里逐个页签核一遍，防止手改漏掉一个。
         """
-        found = re.findall(r'class="tno">([①-⑬])</span>', self.html)
+        found = re.findall(r'class="tno">([①-⑭])</span>', self.html)
         self.assertEqual(sorted(found), sorted(TAB_NUMBERS), "页签序号不是一份完整编号")
         # 序号后紧跟的页签名必须是该页的名字（名字包在 <span class="tlabel"> 里）
-        seq = re.findall(r'class="tno">([①-⑬])</span><span class="tlabel">(.*?)</span>', self.html, re.S)
+        seq = re.findall(r'class="tno">([①-⑭])</span><span class="tlabel">(.*?)</span>', self.html, re.S)
         self.assertEqual(len(seq), len(PAGES), "页签序号与页签数量对不上")
         labels = {n: re.sub(r"<[^>]+>", "", t).strip() for n, t in seq}
         for tab, label in PAGES.items():
@@ -220,9 +221,9 @@ class PageContract(unittest.TestCase):
         side = self.html[self.html.index('<div class="side-foot">'): self.html.index("</aside>")]
         for moved in ("modelVerifyRow", "modeRow"):
             self.assertNotIn('id="%s"' % moved, side, "%s 应该已经搬进 ⑫ 设置页" % moved)
-        for kept in ("health", "themeBtn"):
-            self.assertIn('id="%s"' % kept, side, "侧栏底部必须常驻 %s" % kept)
-        for node in ('id="modelVerifyRow"', 'id="modeRow"', 'id="accentSwatches"'):
+        self.assertIn('id="health"', side, "侧栏底部必须常驻 health")
+        self.assertNotIn('id="themeBtn"', side, "明暗模式已搬到 ⑫ 设置页")
+        for node in ('id="modelVerifyRow"', 'id="modeRow"', 'id="accentSwatches"', 'id="themeBtn"'):
             self.assertIn(node, self.html, "⑫ 设置页缺 %s" % node)
 
     def test_moved_controls_kept_single_instance(self):
@@ -285,7 +286,7 @@ class PageContract(unittest.TestCase):
     def test_new_pages_have_landmark_ids(self):
         for node in ('id="styleCopy"', 'id="sepFile"', 'id="sepGo"', 'id="sepResults"',
                      'id="sysInfo"', 'id="abcDrop"', 'id="abcCopy"', 'id="scorePick"',
-                     'id="batchFold"', 'id="lyricFromAudio"', 'id="seDownload"'):
+                     'id="batchFold"', 'id="lyricFromAudio"', 'id="seDownload"', 'id="lrcGo"'):
             self.assertIn(node, self.html, "缺 %s：页面骨架控件不完整" % node)
 
     def test_tag_balance_inside_main(self):

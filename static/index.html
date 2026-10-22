@@ -1199,12 +1199,15 @@
      单行 + ellipsis 是关键：整段 CUDA 报错有 3~4 行，放出来行高照样崩。 */
   .hist-item .h-col:first-child { position: relative; }
   .hist-item .h-errline {
-    position: absolute; left: 0; right: 0; top: calc(100% + 2px); z-index: 25;
-    max-width: 100%; line-height: 1.35;
+    position: absolute; left: 0; right: 0; top: calc(100% + 2px);
+    max-width: 100%; white-space: normal; overflow-wrap: anywhere; word-break: break-word;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden; line-height: 1.35;
   }
   .hist-item .h-errline[data-open="1"] {
-    right: auto; width: max-content; max-width: 520px;
-    white-space: normal; padding: 7px 10px; border-radius: var(--r-sm);
+    position: absolute; left: 0; top: calc(100% + 2px); z-index: 25;
+    right: auto; width: max-content; max-width: min(520px, calc(100vw - 48px));
+    display: block; white-space: normal; padding: 7px 10px; border-radius: var(--r-sm);
     background: var(--panel); border: 1px solid var(--err);
     box-shadow: 0 6px 20px rgba(0,0,0,.16);
   }
@@ -1553,6 +1556,24 @@
   main .foot-row { color: var(--muted); background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--r-md); min-height: 34px; }
   main .foot-row .fr-label, main .foot-row .fr-value { color: var(--text); }
   main .foot-row .mode-pill { color: var(--text); background: var(--panel-2); border-color: var(--line); }
+  /* iOS 风格开关：CPU 回退这种"开/关"设置用胶囊滑块比复选框直观 */
+  .ios-switch { position: relative; display: inline-flex; width: 44px; height: 26px; flex: none; margin-left: auto; }
+  .ios-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .ios-switch .ios-slider {
+    position: absolute; inset: 0; cursor: pointer; border-radius: var(--r-full);
+    background: var(--line-strong); transition: background .18s ease;
+  }
+  .ios-switch .ios-slider::before {
+    content: ""; position: absolute; left: 3px; top: 3px; width: 20px; height: 20px;
+    border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.28);
+    transition: transform .18s ease;
+  }
+  .ios-switch input:checked + .ios-slider { background: var(--acc); }
+  .ios-switch input:checked + .ios-slider::before { transform: translateX(18px); }
+  .ios-switch input:focus-visible + .ios-slider { outline: 2px solid var(--acc); outline-offset: 2px; }
+  .lrc-preview { white-space: pre-wrap; overflow: auto; max-height: 340px; margin-top: 10px;
+    padding: 10px; border: 1px solid var(--line); border-radius: var(--r-sm);
+    background: var(--panel-2); font: var(--fs-xs) var(--mono); }
   main .foot-row:hover { color: var(--acc-text); }
 
   /* ⑫ 系统信息键值表 */
@@ -1603,6 +1624,8 @@
     box-shadow: 0 8px 24px rgba(0,0,0,.14), 0 2px 6px rgba(0,0,0,.08);
   }
   .h-more.open { display: flex; }
+  /* 靠近列表底部时向上展开，避免菜单被滚动容器/视口裁掉 */
+  .h-more.up { top: auto; bottom: calc(100% - 4px); }
   /* ★ 展开菜单的行必须抬到兄弟行之上：.hist-item:hover 的 transform 会在 hover 时
      给每行创建独立堆叠上下文，.h-more 的 z-index:30 只在行内生效——后面的行
      按 DOM 顺序盖在菜单上（用户报的"更多菜单被其他任务遮挡"）。
@@ -1655,6 +1678,7 @@
     <button class="tab" data-tab="history"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.3 2.3"/></svg><span class="tno">⑪</span><span class="tlabel">任务管理</span><span class="badge" id="histCount">0</span></button>
     <button class="tab" data-tab="settings"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.5"/><path d="M8 1.6v1.8M8 12.6v1.8M1.6 8h1.8M12.6 8h1.8M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3"/></svg><span class="tno">⑫</span><span class="tlabel">设置</span></button>
     <button class="tab" data-tab="about"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 11.2V8M8 5.2v.2"/></svg><span class="tno">⑬</span><span class="tlabel">关于</span></button>
+    <button class="tab" data-tab="lrc"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10M3 8h7M3 12.5h9"/><circle cx="12.5" cy="8" r="1.2" fill="currentColor" stroke="none"/></svg><span class="tno">⑭</span><span class="tlabel">歌词时间轴</span></button>
   </nav>
   <div class="side-foot">
     <div class="foot-row loading" id="health">
@@ -1662,19 +1686,7 @@
       <span class="fr-label" id="healthText">正在连接…</span>
       <span class="dot"></span>
     </div>
-    <!-- 外观开关（唯一一处切明暗的地方）。
-         ★ 这里曾经被读成"第二个设置"：一个太阳/月亮图标 + 「深色」+ 「点击切换」
-         三样东西挤在一行里，图标像设置齿轮、「深色」像分组标题、「点击切换」像副标题，
-         合起来就长得像个设置项，与导航里的 ⑫ 设置打架。
-         现在把它做成**状态明确的开关**：图标只表示"当前是哪种模式"，
-         文案直接给出"当前值 → 点一下会变成什么"，右侧用小胶囊呈现**可切换到的目标**，
-         一眼就是"开关"而不是"入口"。 -->
-    <button class="foot-row" id="themeBtn" title="切换明暗模式" aria-live="polite">
-      <svg class="ico-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1.5v1.8M8 12.7v1.8M1.5 8h1.8M12.7 8h1.8M3.4 3.4l1.3 1.3M11.3 11.3l1.3 1.3M12.6 3.4l-1.3 1.3M4.7 11.3l-1.3 1.3"/></svg>
-      <svg class="ico-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M13.5 9.7A5.8 5.8 0 0 1 6.3 2.5a5.8 5.8 0 1 0 7.2 7.2z"/></svg>
-      <span class="fr-label" id="themeLabel">浅色</span>
-      <span class="mode-pill" id="themePill" title="点一下切到另一种模式">切到深色</span>
-    </button>
+
   </div>
 </aside>
 
@@ -1929,7 +1941,6 @@ We will sing beyond the night</textarea>
             <button class="ghost" id="queue" title="不立即生成，加入队列由后台依次执行">加入队列</button>
             <button class="ghost" id="exportLyricsTxt" title="把左边歌词导出为 TXT；不需要生成音频，也不占 GPU/VAE">⬇ 歌词 TXT</button>
             <button class="danger" id="stopGen" style="display:none">终止任务</button>
-            <button class="ghost" id="randSeed">随机种子</button>
           </div>
           <div class="progress" id="progress"><div id="progressBar"></div></div>
           <div class="status" id="status">填写风格和歌词后点击生成。本机完整歌曲约需 4-8 分钟。</div>
@@ -1985,7 +1996,7 @@ We will sing beyond the night</textarea>
               <option value="off">off · 直接生成</option>
             </select>
           </div>
-          <div><label for="seed">Seed（-1 随机）</label><input id="seed" type="number" value="-1" /></div>
+          <div><label for="seed">Seed（-1 随机）</label><div style="display:flex;gap:6px;align-items:center;"><input id="seed" type="number" value="-1" style="flex:1;min-width:0;" /><button class="ghost btn-sm" id="randSeed" title="生成一个随机种子" style="flex:none;">🎲</button></div></div>
           <div><label for="steps">NAR Steps</label><input id="steps" type="number" value="32" min="1" /></div>
           <div><label for="cfg">CFG Scale</label><input id="cfg" type="number" step="0.01" value="1.0" min="0" max="20" /></div>
         </div>
@@ -2734,6 +2745,15 @@ We will sing beyond the night</textarea>
         </div>
         <div class="lint" id="loraStatus"></div>
 
+        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5.5 6.5h5M5.5 9.5h3"/></svg>AI 写词（DeepSeek）</div>
+        <div class="hint-xs" id="deepseekKeyState">未配置</div>
+        <div style="display:flex;gap:6px;margin-top:6px;align-items:center;">
+          <input id="deepseekKey" type="password" placeholder="sk-...（留空不修改）" autocomplete="off" style="flex:1;min-width:0;" />
+          <button class="ghost" id="deepseekKeySave">保存</button>
+          <button class="ghost" id="deepseekKeyClear">清除</button>
+        </div>
+        <div class="lint" id="deepseekKeyStatus"></div>
+
         <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5.5 6.5h5M5.5 9.5h3"/></svg>引擎模式</div>
         <div class="foot-row" id="modeRow" style="display:none;">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5.5 6.5h5M5.5 9.5h3"/></svg>
@@ -2741,10 +2761,13 @@ We will sing beyond the night</textarea>
           <button id="modeBtn" class="mode-pill" title="切换引擎模式">切GPU</button>
         </div>
         <div class="hint-xs" style="margin-top:6px;">CUDA 模式下若显存不足，生成前会自动降级到 CPU（慢 5-10 倍但能出结果）；生成与换声/训练共用 GPU，串行执行。</div>
-        <label class="foot-row" style="cursor:pointer;margin-top:12px;gap:8px;">
-          <input type="checkbox" id="cpuFallbackToggle" style="width:auto;flex:none;" />
+        <div class="foot-row" style="margin-top:12px;gap:10px;">
           <span class="fr-label">GPU 分配失败时自动降级到 CPU</span>
-        </label>
+          <label class="ios-switch" title="开：GPU 失败后自动切 CPU（整首重算，很慢）；关：直接报错并保留检查点">
+            <input type="checkbox" id="cpuFallbackToggle" aria-label="GPU 分配失败时自动降级到 CPU" />
+            <span class="ios-slider"></span>
+          </label>
+        </div>
         <div class="hint-xs" id="cpuFallbackHint">关闭后，GPU 分配失败会直接报错并保留 AR 检查点；不会把整首歌重算到 CPU。核显上开启可能慢十几倍。</div>
         <div class="lint" id="cpuFallbackStatus"></div>
 
@@ -2767,7 +2790,15 @@ We will sing beyond the night</textarea>
                  style="width:34px;height:26px;padding:0;border:1px solid var(--line);border-radius:var(--r-xs);background:none;cursor:pointer;" />
           <span class="hint-xs">自定义（点左边色块取色；上面 8 个预设已经调好对比度）</span>
         </div>
-        <div class="hint-xs" style="margin-top:6px;">主题色写进 localStorage，刷新后保持。明暗模式是左侧栏底部那个常驻开关，不属于本页设置。</div>
+        <div class="hint-xs" style="margin-top:6px;">主题色写进 localStorage，刷新后保持。</div>
+        <div class="sec" style="margin-top:18px;">明暗模式</div>
+<button class="foot-row" id="themeBtn" title="切换明暗模式" aria-live="polite">
+      <svg class="ico-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1.5v1.8M8 12.7v1.8M1.5 8h1.8M12.7 8h1.8M3.4 3.4l1.3 1.3M11.3 11.3l1.3 1.3M12.6 3.4l-1.3 1.3M4.7 11.3l-1.3 1.3"/></svg>
+      <svg class="ico-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M13.5 9.7A5.8 5.8 0 0 1 6.3 2.5a5.8 5.8 0 1 0 7.2 7.2z"/></svg>
+      <span class="fr-label" id="themeLabel">浅色</span>
+      <span class="mode-pill" id="themePill" title="点一下切到另一种模式">切到深色</span>
+    </button>
+        <div class="hint-xs" style="margin-top:6px;">图标表示当前模式；点右侧胶囊切换。设置写进 localStorage，刷新后保持。</div>
         <div class="status" id="settingsStatus" style="margin-top:10px;"></div>
 
         <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 3h12v10H2zM5 6h6M5 9h4"/></svg>本机可用功能</div>
@@ -2834,6 +2865,45 @@ We will sing beyond the night</textarea>
         </div>
       </div>
 
+    </div>
+  </section>
+
+  <!-- ============ ⑭ 歌词时间轴（独立任务，不依赖 VAE） ============ -->
+  <section class="panel-tab" id="tab-lrc" style="display:none;">
+    <div class="page-head">
+      <h1 class="page-title">歌词时间轴</h1>
+      <p class="page-sub">上传歌曲音频 + 粘贴歌词，生成带时间轴的 LRC 与逐字 eLRC。独立任务，不依赖 VAE，也不占用生成队列。</p>
+    </div>
+    <div class="grid compose">
+      <div class="pane pane-in">
+        <div class="pane-head"><b>输入</b><span class="hint-xs">音频 + 歌词</span></div>
+        <div class="pane-body">
+          <label for="lrcAudio">歌曲音频（wav / flac / ogg；mp3 取决于本机解码器）</label>
+          <input id="lrcAudio" type="file" accept=".wav,.flac,.ogg,.mp3,.m4a,audio/*" />
+          <label for="lrcName" style="margin-top:10px;">任务名（可选）</label>
+          <input id="lrcName" placeholder="例如：等你回来" maxlength="100" />
+          <label for="lrcLyrics" style="margin-top:10px;">歌词（保留 [Verse] / [Chorus] 段标；段标行不参与对齐）</label>
+          <textarea id="lrcLyrics" rows="14" placeholder="[Verse 1]&#10;城门外 风沙 起了又黄&#10;..."></textarea>
+          <div class="actions" style="margin-top:10px;">
+            <button class="primary" id="lrcGo">生成歌词时间轴</button>
+            <button class="ghost" id="lrcRefresh">↻ 刷新任务列表</button>
+          </div>
+          <div class="status" id="lrcStatus">选择音频并粘贴歌词后开始；对齐在后台执行，刷新页面不会丢任务。</div>
+        </div>
+      </div>
+      <div class="pane pane-out">
+        <div class="pane-head"><b>产物</b><span class="hint-xs">LRC / eLRC</span></div>
+        <div class="pane-body">
+          <div class="actions" id="lrcOutputs" style="display:none;">
+            <button class="primary" id="lrcDownload">⬇ LRC 歌词</button>
+            <button class="ghost" id="lrcElrcDownload">⬇ 逐字 eLRC</button>
+          </div>
+          <div class="hint-xs" id="lrcMethod"></div>
+          <pre id="lrcPreview" class="lrc-preview" style="display:none;"></pre>
+          <div class="sec" style="margin-top:18px;">最近任务</div>
+          <div id="lrcList" class="hint-xs">—</div>
+        </div>
+      </div>
     </div>
   </section>
 </main>
@@ -3503,9 +3573,11 @@ function switchTab(name) {
     if (typeof loadLoras === "function") loadLoras(true);
     if (typeof refreshCpuFallbackSetting === "function") refreshCpuFallbackSetting();
     if (typeof loadCapabilities === "function") loadCapabilities();
+    if (typeof refreshDeepseekKey === "function") refreshDeepseekKey();
   }
   // ⑬ 关于：进页面刷新系统信息（独立页，只放只读信息）
   if (name === "about" && typeof loadSysInfo === "function") loadSysInfo();
+  if (name === "lrc" && typeof loadLrcList === "function") loadLrcList();
   // 换页＝换一屏内容，必须回到顶部。以前进 ① 会直接停在页面最下面：
   // 底部那条粘底产出条撑长了文档，加上浏览器刷新时的滚动恢复，落点就跑到底了。
   // 不归零的话用户打开就看见"下半页"，而页面的标题和左右两栏的关系全在上方，第一眼看不懂。
@@ -5145,6 +5217,136 @@ async function loadCapabilities() {
   }
 }
 $("capabilityRefresh").onclick = loadCapabilities;
+
+async function refreshDeepseekKey() {
+  try {
+    const j = await (await fetch("/api/settings")).json();
+    const set = !!j.deepseek_api_key_set;
+    $("deepseekKeyState").textContent = set
+      ? "已配置。输入新 Key 可覆盖；留空不会改动。"
+      : "未配置；填入 DeepSeek Key 后 AI 写词/AI 工作台才可用。";
+    $("deepseekKeyState").style.color = set ? "var(--ok)" : "var(--muted)";
+  } catch (e) { $("deepseekKeyStatus").textContent = "读取失败：" + friendlyErr(e); }
+}
+$("deepseekKeySave").onclick = async () => {
+  const el = $("deepseekKey");
+  const key = (el.value || "").trim();
+  if (!key) { toast("请先填入 Key", "err"); return; }
+  $("deepseekKeySave").disabled = true;
+  try {
+    const r = await jfetch("/api/settings", { method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ deepseek_api_key: key }) });
+    const j = await r.json();
+    el.value = "";
+    $("deepseekKeyStatus").textContent = j.message || "已保存";
+    toast(j.message || "DeepSeek Key 已保存", "ok");
+    refreshDeepseekKey();
+    loadCapabilities();
+  } catch (e) { toast("保存失败：" + friendlyErr(e), "err"); }
+  finally { $("deepseekKeySave").disabled = false; }
+};
+$("deepseekKeyClear").onclick = async () => {
+  if (!confirm("清除已保存的 DeepSeek Key？")) return;
+  try {
+    const r = await jfetch("/api/settings", { method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ deepseek_api_key_clear: true }) });
+    const j = await r.json();
+    $("deepseekKeyStatus").textContent = j.message || "已清除";
+    toast(j.message || "DeepSeek Key 已清除", "ok");
+    refreshDeepseekKey();
+    loadCapabilities();
+  } catch (e) { toast("清除失败：" + friendlyErr(e), "err"); }
+};
+
+// ================= ⑭ 歌词时间轴（独立任务） =================
+let lrcJobId = null, lrcPollTimer = null, lrcLast = null;
+function lrcSay(msg, kind) {
+  const el = $("lrcStatus");
+  el.className = "status" + (kind === "ok" ? " ok" : kind === "err" ? " err" : "");
+  el.textContent = msg;
+}
+function lrcShow(st) {
+  lrcLast = st;
+  lrcJobId = st.id || lrcJobId;
+  $("lrcOutputs").style.display = st.status === "done" ? "" : "none";
+  $("lrcElrcDownload").style.display = st.has_elrc ? "" : "none";
+  $("lrcMethod").textContent = st.status === "done"
+    ? "对齐方式：" + (st.method || "align") + (st.diagnostics && st.diagnostics.method ? " · " + st.diagnostics.method : "")
+    : "";
+  const pv = $("lrcPreview");
+  if (st.status === "done" && st.lrc) {
+    pv.style.display = ""; pv.textContent = st.lrc.slice(0, 12000);
+  } else { pv.style.display = "none"; pv.textContent = ""; }
+  if (st.status === "done") lrcSay("完成 · " + (st.lrc_lines || 0) + " 行" + (st.has_elrc ? " · 含逐字 eLRC" : ""), "ok");
+  else if (st.status === "error") lrcSay("失败：" + (st.error || "未知错误"), "err");
+  else lrcSay((st.step || "对齐中") + "… 后台任务，刷新页面不会丢", "");
+}
+async function lrcStatus(id) {
+  const r = await fetch("/api/lrc/status/" + encodeURIComponent(id));
+  if (!r.ok) throw new Error("任务不存在或已被清理");
+  const st = await r.json();
+  lrcShow(st);
+  if (st.status === "running") {
+    clearTimeout(lrcPollTimer);
+    lrcPollTimer = setTimeout(() => lrcStatus(id).catch((e) => lrcSay("查询失败：" + friendlyErr(e), "err")), 2000);
+  }
+}
+async function loadLrcList() {
+  const box = $("lrcList");
+  try {
+    const j = await (await fetch("/api/lrc/list")).json();
+    const items = j.items || [];
+    if (!items.length) { box.textContent = "还没有独立歌词时间轴任务。"; return; }
+    box.innerHTML = "";
+    items.forEach((it) => {
+      const b = document.createElement("button");
+      b.className = "ghost btn-sm";
+      b.style.margin = "0 6px 6px 0";
+      b.textContent = (it.name || it.id) + " · " + (it.status === "done" ? "完成" : it.status === "error" ? "失败" : "进行中");
+      b.onclick = () => lrcStatus(it.id).catch((e) => lrcSay("读取失败：" + friendlyErr(e), "err"));
+      box.appendChild(b);
+    });
+  } catch (e) { box.textContent = "任务列表读取失败：" + friendlyErr(e); }
+}
+$("lrcGo").onclick = async () => {
+  const f = $("lrcAudio").files && $("lrcAudio").files[0];
+  const lyrics = ($("lrcLyrics").value || "").trim();
+  if (!f) { toast("先选择歌曲音频", "err"); return; }
+  if (!lyrics) { toast("先粘贴歌词", "err"); return; }
+  const btn = $("lrcGo"); btn.disabled = true;
+  lrcSay("上传并排队…", "");
+  try {
+    const fd = new FormData();
+    fd.append("file", f);
+    fd.append("lyrics", lyrics);
+    fd.append("task_name", ($("lrcName").value || "").trim());
+    const r = await fetch("/api/lrc/start", { method: "POST", body: fd });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.detail || "提交失败");
+    lrcJobId = j.id;
+    lrcSay("已提交，开始对齐…", "");
+    await lrcStatus(j.id);
+    loadLrcList();
+  } catch (e) { lrcSay("提交失败：" + friendlyErr(e), "err"); }
+  finally { btn.disabled = false; }
+};
+async function lrcDownload(fmt) {
+  if (!lrcJobId) return;
+  try {
+    const r = await fetch("/api/lrc/download/" + encodeURIComponent(lrcJobId) + "?fmt=" + fmt);
+    if (!r.ok) throw new Error("文件不存在");
+    const blob = await r.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = dlName((lrcLast && lrcLast.name) || "歌词", fmt);
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    toast("已开始下载 " + (fmt === "elrc" ? "逐字 eLRC" : "LRC"), "ok");
+  } catch (e) { toast("下载失败：" + friendlyErr(e), "err"); }
+}
+$("lrcDownload").onclick = () => lrcDownload("lrc");
+$("lrcElrcDownload").onclick = () => lrcDownload("elrc");
+$("lrcRefresh").onclick = loadLrcList;
 async function loadModels() {
   try {
     const r = await fetch("/api/models/list");
@@ -5467,7 +5669,7 @@ function stickyNotify(title, body, isOk) {
 }
 
 function applyFinishedJob(job) {
-  const name = job.task_name || (job.style || "").split(",")[0] || job.id;
+  const name = job.task_name || job.batch_name || job.name || job.id || (job.style || "").split(",")[0] || "未命名任务";
   if (job.status === "done") {
     $("progressBar").style.width = "100%";
     $("status").className = "status ok";
@@ -6385,6 +6587,15 @@ async function renderHistory(fetchLimit) {
         // 「更多」与「下载产物」互斥：同时展开会两个面板叠在一起
         if (moreMenu) moreMenu.classList.toggle("open", !open);
         if (dlMenu) dlMenu.classList.toggle("open", open);
+        // 靠近列表底部时向上弹，否则菜单会被视口/滚动容器裁掉
+        if (moreMenu && moreMenu.classList.contains("open")) {
+          const r = moreBtn.getBoundingClientRect();
+          const spaceBelow = window.innerHeight - r.bottom;
+          const need = Math.min(360, moreMenu.scrollHeight || 240);
+          const flip = spaceBelow < need + 20;
+          moreMenu.classList.toggle("up", flip);
+          if (dlMenu) dlMenu.classList.toggle("up", flip);
+        }
       };
       // 直接下载该条 WAV；换声任务默认下载完整歌曲（产物下拉可选其他部分）
       const dl = d.querySelector("[data-dl]");

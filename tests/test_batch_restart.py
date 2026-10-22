@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -50,8 +51,13 @@ class BatchRestartBase(unittest.TestCase):
         self._saved_ensure = app._batch_ensure_worker
         self._saved_settings_json = app._SETTINGS_JSON
         self._saved_local_env = app._local_env_value
+        self._saved_deepseek = app._DEEPSEEK_KEY_FILE
+        self._saved_lrc_dir = app.LRC_STANDALONE_DIR
+        self._saved_lrc_align = app.lrc_align_mod
         app._BATCH_STATE = self.tmp / "batch_state.json"
         app._SETTINGS_JSON = self.tmp / "settings.json"
+        app._DEEPSEEK_KEY_FILE = self.tmp / "deepseek_api_key.txt"
+        app.LRC_STANDALONE_DIR = self.tmp / "lrc_jobs"
         app._local_env_value = lambda name, path=None: ""
         self.ensure_calls = 0
 
@@ -66,6 +72,9 @@ class BatchRestartBase(unittest.TestCase):
         app._batch_ensure_worker = self._saved_ensure
         app._SETTINGS_JSON = self._saved_settings_json
         app._local_env_value = self._saved_local_env
+        app._DEEPSEEK_KEY_FILE = self._saved_deepseek
+        app.LRC_STANDALONE_DIR = self._saved_lrc_dir
+        app.lrc_align_mod = self._saved_lrc_align
         self._tmp.cleanup()
 
     def write(self, state: dict) -> None:
@@ -180,12 +189,89 @@ class SettingsAndPreflight(BatchRestartBase):
         finally:
             app.backend_mode, app._vulkan_heap_budget_gb, app._cpu_fallback_allowed = saved
 
+    def test_deepseek_key_file_is_gitignored(self):
+        ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("secrets/deepseek_api_key.txt", ignore,
+                      "DeepSeek Key 文件必须在 .gitignore 里，绝不能跟随提交")
+
     def test_capabilities_names_vae_free_features(self):
         j = self.client.get("/api/capabilities").json()
         labels = [f["label"] for f in j.get("features") or []]
         self.assertIn("歌词 TXT 导出", labels)
         self.assertIn("乐谱提取 / 转谱", labels)
         self.assertIn("歌曲生成（AR/NAR/VAE）", labels)
+
+
+class DeepseekSetting(BatchRestartBase):
+    def test_save_and_clear_never_returns_the_key(self):
+        r = self.client.post("/api/settings", json={"deepseek_api_key": "sk-test-123"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(app._DEEPSEEK_KEY_FILE.is_file())
+        j = self.client.get("/api/settings").json()
+        self.assertTrue(j["deepseek_api_key_set"])
+        self.assertNotIn("deepseek_api_key", j, "接口绝不能把 Key 回传给前端")
+        r = self.client.post("/api/settings", json={"deepseek_api_key_clear": True})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertFalse(app._DEEPSEEK_KEY_FILE.exists())
+        self.assertFalse(self.client.get("/api/settings").json()["deepseek_api_key_set"])
+
+
+class LrcStandalone(BatchRestartBase):
+    def setUp(self):
+        super().setUp()
+
+        class FakeAligner:
+            @staticmethod
+            def align(wav, lyrics, snap_window=1.2):
+                return {"lrc": "[00:00.00]hi\n[00:01.00]there\n",
+                        "elrc": "[00:00.00]hi(0,500)\n",
+                        "method": "fake-align", "diagnostics": {"lines": 2}}
+
+        app.lrc_align_mod = FakeAligner
+
+    def _wait(self, rid):
+        for _ in range(100):
+            st = self.client.get(f"/api/lrc/status/{rid}").json()
+            if st.get("status") in ("done", "error"):
+                return st
+            time.sleep(0.05)
+        self.fail("歌词对齐任务 5 秒内没有进入终态")
+
+    def test_upload_generates_lrc_and_elrc(self):
+        r = self.client.post(
+            "/api/lrc/start",
+            files={"file": ("song.wav", b"RIFF" + b"0" * 64, "audio/wav")},
+            data={"lyrics": "[Verse]\nhi\nthere", "task_name": "测试歌曲"},
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        rid = r.json()["id"]
+        st = self._wait(rid)
+        self.assertEqual(st["status"], "done", st)
+        self.assertIn("[00:00.00]hi", st["lrc"])
+        self.assertTrue(st["has_elrc"])
+        self.assertIn("hi(0,500)", st["elrc"])
+        lrc = self.client.get(f"/api/lrc/download/{rid}?fmt=lrc")
+        self.assertEqual(lrc.status_code, 200)
+        self.assertIn("[00:00.00]hi", lrc.text)
+        elrc = self.client.get(f"/api/lrc/download/{rid}?fmt=elrc")
+        self.assertEqual(elrc.status_code, 200)
+        self.assertIn("(0,500)", elrc.text)
+        ids = [x["id"] for x in self.client.get("/api/lrc/list").json()["items"]]
+        self.assertIn(rid, ids)
+
+    def test_rejects_empty_lyrics_and_bad_extension(self):
+        r = self.client.post(
+            "/api/lrc/start",
+            files={"file": ("song.wav", b"RIFF", "audio/wav")},
+            data={"lyrics": "  "},
+        )
+        self.assertEqual(r.status_code, 400)
+        r = self.client.post(
+            "/api/lrc/start",
+            files={"file": ("song.exe", b"MZ", "application/octet-stream")},
+            data={"lyrics": "hi"},
+        )
+        self.assertEqual(r.status_code, 400)
 
 
 class RetryWhileRunning(BatchRestartBase):

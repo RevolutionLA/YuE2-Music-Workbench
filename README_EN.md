@@ -41,7 +41,7 @@ _No cloud. No queue. No subscription. 100% offline._
 | 🩺 | **Watchdog self-healing** | Gateway + workbench stuck-detection and auto-restart, tolerant of token-auth 401 probes. Before killing anything it fires one 90 s deep probe: if the service answers, it's *slow*, not dead, and the failure counter just resets. Evidence: 09-26 watchdog log shows two kills (21:40, 21:50) that landed **while the user's own batch was computing** — on a 6 GB card saturated by llama-server, `/api/health` legitimately takes tens of seconds. Respawned gateway stdout/stderr now goes to `runtime/data/logs/gateway.{out,err}.log` instead of the bit bucket, so self-healing stops erasing the scene. |
 | 🖥 | **VRAM adaptive** | GPU when it fits, CPU fallback when it doesn't, automatic switch-back |
 
-## 🧭 The 13 pages of the workbench
+## 🧭 The 14 pages of the workbench
 
 v2.0 split the old single "Create" page — which had four jobs crammed into it — into one page per step,
 so "which step am I on" is self-evident. v10.9 added ⑫ Settings and ⑬ About. The sidebar has three groups:
@@ -60,6 +60,7 @@ so "which step am I on" is self-evident. v10.9 added ⑫ Settings and ⑬ About.
 | **System** | ⑨ Task manager | One view over all five task kinds (generate / convert / train / transcribe / separate) + queues |
 | | ⑫ Settings | Service & model verification, model-tier switch, engine mode, accent colour, maintenance (prefer editing files for config) |
 | | ⑬ About | System info (ports / paths / disk & VRAM / engine readiness, read-only) + credits, license and honest notes |
+| | ⑭ Lyric timeline | Upload a song + paste lyrics → LRC / word-level eLRC; an independent task that needs no VAE and does not occupy the generation queue |
 
 **② and ④ share one generation panel; ③ and ④ share one ABC editor** — switching pages just moves the
 same DOM node into the target page (`static/index.html: switchTab` / `moveInto`), so there is no second
@@ -277,6 +278,13 @@ lyrics/AR checkpoint and fails in about four seconds when it clearly cannot fit 
 engine starts, no hour-long wait). If CPU fallback is explicitly enabled, it becomes a warning and
 the job tries GPU first. The settings page also lists which VAE-free features are available, and
 lyrics can be downloaded as TXT from the lyrics box and every task card (no GPU/VAE needed).
+
+**⑭ Lyric timeline and settings cleanup** (v10.21.7): a new standalone page uploads a song + lyrics
+and returns LRC / word-level eLRC, with no VAE and no generation queue. ⑫ Settings can store a
+DeepSeek key in the untracked `secrets/deepseek_api_key.txt`; the light/dark switch moved from the
+sidebar into Settings; CPU fallback is now an iOS-style switch; long error text wraps inside the
+task row; a “⋯ More” menu near the bottom opens upward; notification titles prefer the song name
+(`task_name`/`batch_name`) instead of a task ID or the first Style word.
 </details>
 
 **No NVIDIA GPU?** Use Vulkan on the integrated GPU if there is one: measured **~14× faster than CPU** on this machine (5,610 s → 318 s for the same request; 15–27× on short clips; identical output length and level). `一键补齐运行件.bat` downloads the Vulkan build, probes `--list-devices --backend vulkan`, and only writes `backend: vulkan` when a device is found — otherwise it falls back to `cpu` (same binary contains both backends). The iGPU uses unified memory, so keep other heavy apps closed. Without any usable GPU it runs CPU-only automatically — expect hours per song (see the measured anchor above).

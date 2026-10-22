@@ -28,6 +28,7 @@ window.__ModuleLoader__.load({
       { id: "history",   name: "⑪ 任务管理",             glyph: "🕘", short: "任务" },
       { id: "settings",  name: "⑫ 设置",                 glyph: "⚙", short: "设置" },
       { id: "about",     name: "⑬ 关于",                 glyph: "ⓘ", short: "关于" },
+      { id: "lrc",       name: "⑭ 歌词时间轴",           glyph: "⏱", short: "时间轴" },
     ];
 
     // ------------------------------------------------------------------ //

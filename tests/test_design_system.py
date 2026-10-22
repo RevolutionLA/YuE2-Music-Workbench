@@ -120,8 +120,8 @@ class DesignSystem(unittest.TestCase):
         panels = re.findall(r'<section class="panel-tab"', self.src)
         self.assertEqual(len(heads), len(panels),
                          "有 %d 个面板但只有 %d 个页面标题块" % (len(panels), len(heads)))
-        self.assertEqual(len(heads), 13)
-        self.assertGreaterEqual(len(re.findall(r'<h1 class="page-title">', self.src)), 13)
+        self.assertEqual(len(heads), 14)
+        self.assertGreaterEqual(len(re.findall(r'<h1 class="page-title">', self.src)), 14)
 
     def test_primary_output_column_is_marked(self):
         """主产出列（pane-out）有铜色顶线，把"结果栏"与"原料栏"分开。"""

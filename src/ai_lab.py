@@ -2,7 +2,8 @@
 """AI 工作台：对话框 + tool-calling 循环（DeepSeek 兼容 API）。
 
 设计要点：
-- Key 只从环境变量 DEEPSEEK_API_KEY 读取，不落盘、不进日志
+- Key 优先读环境变量 DEEPSEEK_API_KEY；环境变量没有时读
+  secrets/deepseek_api_key.txt（设置页写入，文件不入库、不进日志/会话）
 - 会话持久化到 data/ai_sessions/<sid>.json（仅对话与投喂卡片，绝不含 Key）
 - tool-calling 循环最多 8 轮，工具由 TOOLS 注册表提供（见 tools 定义区）
 - 删除类工具返回 needs_confirm，由前端二次确认后带 confirm=True 重发
@@ -30,8 +31,17 @@ MAX_TOOL_ROUNDS = 8
 TIMEOUT = 180.0
 
 
+KEY_FILE = Path(__file__).resolve().parent.parent / "secrets" / "deepseek_api_key.txt"
+
+
 def ai_key() -> str:
-    return os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    env = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if env:
+        return env
+    try:
+        return KEY_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 
 def ai_ready() -> bool:

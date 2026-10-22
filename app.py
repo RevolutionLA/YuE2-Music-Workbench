@@ -779,7 +779,7 @@ def capabilities():
     add("人声/伴奏分离", sep_ok, "" if sep_ok else sep_why)
     rvc_ok = RVC_PY.is_file() and (RVC_DIR / "infer" / "cli.py").is_file()
     add("换声 / 音色制作", rvc_ok, "RVC runtime" if rvc_ok else "runtime/rvc 缺 infer/cli.py")
-    add("AI 写词", bool(os.environ.get("DEEPSEEK_API_KEY")), "需 DEEPSEEK_API_KEY")
+    add("AI 写词", _deepseek_key_set(), "需在 ⑫ 设置里填 DeepSeek Key" if not _deepseek_key_set() else "")
     gen_ok = AUDIOCPP_BIN.is_file() and SERVER_JSON.is_file()
     add("歌曲生成（AR/NAR/VAE）", gen_ok,
         "VAE 阶段受显存限制；长歌会在开跑前被预检拦下，不会白等"
@@ -790,20 +790,36 @@ def capabilities():
 @router.get("/settings")
 def settings_get():
     return {"cpu_fallback_allowed": _cpu_fallback_allowed(),
-            "cpu_fallback_source": _cpu_fallback_source()}
+            "cpu_fallback_source": _cpu_fallback_source(),
+            "deepseek_api_key_set": _deepseek_key_set()}
 
 
 @router.post("/settings")
 def settings_set(payload: dict):
-    if not isinstance(payload.get("cpu_fallback_allowed"), bool):
-        raise HTTPException(status_code=400,
-                            detail="cpu_fallback_allowed 必须是 true/false")
-    _settings_write({"cpu_fallback_allowed": payload["cpu_fallback_allowed"]})
-    allowed = payload["cpu_fallback_allowed"]
-    msg = ("已允许 GPU 分配失败时自动降级到 CPU：会整首重算，核显上可能慢十几倍。"
-           if allowed else
-           "已禁止自动降级 CPU：GPU 分配失败会直接报错，AR 检查点会保留，可稍后重试。")
-    return {"ok": True, "cpu_fallback_allowed": allowed, "message": msg}
+    messages: list[str] = []
+    if "cpu_fallback_allowed" in payload:
+        if not isinstance(payload.get("cpu_fallback_allowed"), bool):
+            raise HTTPException(status_code=400,
+                                detail="cpu_fallback_allowed 必须是 true/false")
+        _settings_write({"cpu_fallback_allowed": payload["cpu_fallback_allowed"]})
+        messages.append("已允许 GPU 分配失败时自动降级到 CPU：会整首重算，核显上可能慢十几倍。"
+                        if payload["cpu_fallback_allowed"] else
+                        "已禁止自动降级 CPU：GPU 分配失败会直接报错，AR 检查点会保留，可稍后重试。")
+    if "deepseek_api_key" in payload:
+        key = payload.get("deepseek_api_key")
+        if not isinstance(key, str) or len(key) > 500:
+            raise HTTPException(status_code=400, detail="deepseek_api_key 必须是字符串（≤500 字符）")
+        _deepseek_key_write(key)
+        messages.append("DeepSeek Key 已保存" if key.strip() else "DeepSeek Key 已清除")
+    if payload.get("deepseek_api_key_clear") is True:
+        _deepseek_key_write("")
+        messages.append("DeepSeek Key 已清除")
+    if not messages:
+        raise HTTPException(status_code=400, detail="没有可保存的设置")
+    return {"ok": True,
+            "cpu_fallback_allowed": _cpu_fallback_allowed(),
+            "deepseek_api_key_set": _deepseek_key_set(),
+            "message": "；".join(messages)}
 
 
 @router.get("/backend/mode")
@@ -2255,6 +2271,178 @@ def _lrc_build_async(rid: str) -> None:
     threading.Thread(target=_lrc_build_thread, args=(rid,), daemon=True).start()
 
 
+# --------------------------------------------------------------------------- #
+# 独立歌词时间轴任务：上传音频 + 歌词 → LRC / 逐字 eLRC，不依赖 VAE。
+# 与生成任务的 LRC 共用 src/lrc_align.py；任务状态和产物落在 runtime/data/lrc_jobs。
+# --------------------------------------------------------------------------- #
+LRC_STANDALONE_DIR = ROOT / "runtime" / "data" / "lrc_jobs"
+_LRC_STANDALONE_LOCK = threading.Lock()
+_LRC_AUDIO_EXTS = {".wav", ".flac", ".ogg", ".mp3", ".m4a"}
+_LRC_MAX_BYTES = 300 * 1024 * 1024
+
+
+def _lrc_sa_dir(rid: str) -> Path:
+    return LRC_STANDALONE_DIR / os.path.basename(str(rid or ""))
+
+
+def _lrc_sa_state_path(rid: str) -> Path:
+    return _lrc_sa_dir(rid) / "job.json"
+
+
+def _lrc_sa_read(rid: str) -> dict | None:
+    try:
+        return json.loads(_lrc_sa_state_path(rid).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _lrc_sa_write(rid: str, patch: dict) -> None:
+    d = _lrc_sa_dir(rid)
+    d.mkdir(parents=True, exist_ok=True)
+    state = _lrc_sa_read(rid) or {"id": os.path.basename(rid)}
+    state.update(patch)
+    tmp = _lrc_sa_state_path(rid).with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, _lrc_sa_state_path(rid))
+
+
+def _lrc_sa_worker(rid: str, src: Path, lyrics: str, name: str) -> None:
+    """一次只跑一个对齐任务：模型加载吃内存，和生成/换声并发没有好处。"""
+    with _LRC_STANDALONE_LOCK:
+        _lrc_sa_write(rid, {"status": "running", "step": "对齐中"})
+        try:
+            text, elrc, method, diag = "", "", "", {}
+            if lrc_align_mod is not None:
+                res = lrc_align_mod.align(src, lyrics)
+                text = str(res.get("lrc") or "")
+                elrc = str(res.get("elrc") or "")
+                method = str(res.get("method") or "align")
+                diag = res.get("diagnostics") or {}
+            if not text:
+                text = lrc_mod.generate_lrc(src, lyrics, name)
+                method = "legacy"
+            if not text.strip():
+                raise RuntimeError("对齐引擎没有产出歌词文件")
+            d = _lrc_sa_dir(rid)
+            (d / "lyrics.lrc").write_text(text, encoding="utf-8")
+            if elrc.strip():
+                (d / "lyrics.elrc").write_text(elrc, encoding="utf-8")
+            _lrc_sa_write(rid, {"status": "done", "step": "完成", "method": method,
+                                "diagnostics": diag, "lrc_lines": len(text.splitlines()),
+                                "has_elrc": bool(elrc.strip()),
+                                "sec": round(time.time() - float((_lrc_sa_read(rid) or {}).get("_started") or time.time()), 1)})
+        except Exception as e:  # noqa: BLE001
+            _lrc_sa_write(rid, {"status": "error", "step": "失败", "error": str(e)[:500]})
+
+
+@router.post("/lrc/start")
+async def lrc_start(file: UploadFile = File(...), lyrics: str = Form(""),
+                    task_name: str = Form("")):
+    text = str(lyrics or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="歌词不能为空")
+    _limit_text("歌词", text, _MAX_LYRICS)
+    if lrc_align_mod is None and lrc_mod is None:
+        raise HTTPException(status_code=400, detail="本机缺少歌词对齐引擎")
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in _LRC_AUDIO_EXTS:
+        raise HTTPException(status_code=400,
+                            detail="音频格式只支持 " + "、".join(sorted(_LRC_AUDIO_EXTS)))
+    rid = _new_id()
+    d = _lrc_sa_dir(rid)
+    d.mkdir(parents=True, exist_ok=True)
+    src = d / ("src" + suffix)
+    size = 0
+    try:
+        with src.open("wb") as fh:
+            while True:
+                chunk = await file.read(1 << 20)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > _LRC_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail="音频超过 300MB 上限")
+                fh.write(chunk)
+    except HTTPException:
+        shutil.rmtree(d, ignore_errors=True)
+        raise
+    except Exception as e:  # noqa: BLE001
+        shutil.rmtree(d, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=f"音频保存失败：{e}") from e
+    name_ = (str(task_name or "").strip() or Path(file.filename or "歌词").stem)[:100]
+    _lrc_sa_write(rid, {"id": rid, "status": "running", "step": "排队对齐",
+                        "name": name_, "file": file.filename or src.name,
+                        "bytes": size, "ts": datetime.now().isoformat(timespec="seconds"),
+                        "_started": time.time()})
+    threading.Thread(target=_lrc_sa_worker, args=(rid, src, text, name_), daemon=True).start()
+    return {"ok": True, "id": rid, "status": "running"}
+
+
+@router.get("/lrc/list")
+def lrc_list(limit: int = 20):
+    limit = max(1, min(int(limit or 20), 100))
+    items = []
+    if LRC_STANDALONE_DIR.is_dir():
+        for p in LRC_STANDALONE_DIR.iterdir():
+            if p.is_dir():
+                st = _lrc_sa_read(p.name)
+                if st:
+                    st.pop("_started", None)
+                    items.append(st)
+    items.sort(key=lambda x: str(x.get("ts") or ""), reverse=True)
+    return {"items": items[:limit]}
+
+
+def _lrc_sa_artifact(rid: str, fmt: str) -> Path | None:
+    d = _lrc_sa_dir(rid)
+    name = "lyrics.elrc" if fmt == "elrc" else "lyrics.lrc"
+    fp = d / name
+    return fp if fp.is_file() else None
+
+
+@router.get("/lrc/status/{rid}")
+def lrc_status(rid: str):
+    rid = os.path.basename(rid)
+    st = _lrc_sa_read(rid)
+    if not st:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    st = dict(st)
+    st.pop("_started", None)
+    fp = _lrc_sa_artifact(rid, "lrc")
+    if fp and fp.is_file():
+        st["lrc"] = fp.read_text(encoding="utf-8", errors="replace")
+    ep = _lrc_sa_artifact(rid, "elrc")
+    st["has_elrc"] = bool(ep)
+    if ep and ep.is_file():
+        st["elrc"] = ep.read_text(encoding="utf-8", errors="replace")
+    return st
+
+
+@router.get("/lrc/download/{rid}")
+def lrc_download(rid: str, fmt: str = "lrc"):
+    rid = os.path.basename(rid)
+    fmt = "elrc" if (fmt or "").lower() == "elrc" else "lrc"
+    fp = _lrc_sa_artifact(rid, fmt)
+    if not fp:
+        raise HTTPException(status_code=404, detail=f"{fmt} 文件不存在")
+    st = _lrc_sa_read(rid) or {}
+    base = re.sub(r'[\\/:*?"<>|]+', "_", str(st.get("name") or rid))[:80]
+    return FileResponse(str(fp), media_type="text/plain; charset=utf-8",
+                        filename=f"{base}.{fmt}")
+
+
+@router.delete("/lrc/{rid}")
+def lrc_delete(rid: str):
+    rid = os.path.basename(rid)
+    st = _lrc_sa_read(rid)
+    if not st:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if st.get("status") == "running":
+        raise HTTPException(status_code=409, detail="任务进行中，不能删除")
+    shutil.rmtree(_lrc_sa_dir(rid), ignore_errors=True)
+    return {"ok": True}
+
+
 def _lyrics_clean(text: str) -> str:
     """清洗歌词为可投稿的纯文本：去掉 YuE2 特有指令标记，保留结构段落标记。
 
@@ -2720,7 +2908,7 @@ def _task_label(job: dict, fallback: str = "任务") -> str:
     不再拿 Style 首词兜底：用户明确抱怨过“English 失败”这种标题，那不是任务名。
     没有名字时用任务 ID（仍可定位），绝不把曲风第一段当人名。
     """
-    for key in ("task_name", "src_name", "voice_name", "model"):
+    for key in ("task_name", "name", "src_name", "voice_name", "model", "batch_name"):
         v = str(job.get(key) or "").strip()
         if v:
             return v[:60]
@@ -2805,7 +2993,33 @@ def _local_env_value(name: str, path: Path | None = None) -> str:
 
 
 _SETTINGS_JSON = ROOT / "runtime" / "data" / "settings.json"
+_DEEPSEEK_KEY_FILE = ROOT / "secrets" / "deepseek_api_key.txt"
 _SETTINGS_LOCK = threading.Lock()
+
+
+def _deepseek_key_set() -> bool:
+    if os.environ.get("DEEPSEEK_API_KEY", "").strip():
+        return True
+    try:
+        return bool(_DEEPSEEK_KEY_FILE.read_text(encoding="utf-8").strip())
+    except OSError:
+        return False
+
+
+def _deepseek_key_write(key: str) -> None:
+    key = str(key or "").strip()
+    if key:
+        _DEEPSEEK_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _DEEPSEEK_KEY_FILE.write_text(key, encoding="utf-8")
+        try:
+            os.chmod(_DEEPSEEK_KEY_FILE, 0o600)
+        except OSError:
+            pass
+    else:
+        try:
+            _DEEPSEEK_KEY_FILE.unlink()
+        except OSError:
+            pass
 
 
 def _settings_read() -> dict:
