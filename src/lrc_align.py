@@ -63,6 +63,7 @@ _STRUCT_RE = re.compile(
 _PARAM_RE = re.compile(r"^\s*--")
 # fa-zh 词表覆盖：汉字 + 常用 ASCII 字母数字（英文歌词按单词会被拆字，故英文走 CTC 路径）
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_LRC_TIME_RE = re.compile(r"^\s*\[\d{2}:\d{2}\.\d{2,3}\]\s*")  # 匹配 [mm:ss.xx] 或 [mm:ss.xxx]
 
 
 # --------------------------------------------------------------------------- #
@@ -72,11 +73,18 @@ def _is_struct(line: str) -> bool:
     return bool(_STRUCT_RE.match(line)) or (_PARAM_RE.match(line) is not None)
 
 
+def _strip_lrc_tags(line: str) -> str:
+    """去除行首的 LRC 时间戳标签（如 [00:13.93]），保留纯文本。"""
+    return _LRC_TIME_RE.sub("", line).strip()
+
+
 def parse_lyrics(lyrics: str) -> tuple[list[str], list[int]]:
     """拆成 (行文本列表, 每行的对齐单位数)。结构行返回 0，不参与对齐。
 
     中文/中英混排行按「中文字数」对齐；纯英文/其它行按「单词数」对齐
     （供 CTC 路径的权重与行级判定使用）。
+    
+    会自动去除输入中已有的 LRC 时间戳标签，避免重复添加。
     """
     lines: list[str] = []
     counts: list[int] = []
@@ -87,6 +95,10 @@ def parse_lyrics(lyrics: str) -> tuple[list[str], list[int]]:
         if _is_struct(s):
             lines.append(s)
             counts.append(0)
+            continue
+        # 去除已有的 LRC 时间戳
+        s = _strip_lrc_tags(s)
+        if not s:  # 去除时间戳后为空则跳过
             continue
         n_cjk = len(_CJK_RE.findall(s))
         n = n_cjk if n_cjk > 0 else len(_word_split(s))
@@ -458,11 +470,14 @@ def _fmt(sec: float) -> str:
     return f"{int(sec // 60):02d}:{sec % 60:05.2f}"
 
 
-def align(wav_path: Path, lyrics: str, snap_window: float = 1.2) -> dict:
+def align(wav_path: Path, lyrics: str, snap_window: float = 0.0) -> dict:
     """把已知歌词强制对齐到音频，返回 LRC / eLRC / 诊断信息。
 
     选路：cjk_ratio >= 0.3 → fa-zh（中文字级）；否则 → CTC（英文词级）；
     两者皆不可用时回退 VAD 加权分布。全程无 ASR 介入。
+    
+    注意：snap_window 默认为 0.0（关闭 VAD 吸附），因为 fa-zh 在歌声上的
+    系统性漂移较大（可达数秒），VAD 吸附反而会引入额外误差。
     """
     lines, counts = parse_lyrics(lyrics)
     sing = [i for i, c in enumerate(counts) if c > 0]

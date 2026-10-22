@@ -1572,6 +1572,23 @@
   .ios-switch input:checked + .ios-slider { background: var(--acc); }
   .ios-switch input:checked + .ios-slider::before { transform: translateX(18px); }
   .ios-switch input:focus-visible + .ios-slider { outline: 2px solid var(--acc); outline-offset: 2px; }
+
+  /* VAE 窗口切换开关样式 */
+  .toggle { position: relative; display: inline-flex; align-items: center; cursor: pointer; user-select: none; }
+  .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .toggle-slider {
+    position: relative; width: 44px; height: 24px; background: var(--line-strong);
+    border-radius: 12px; transition: background 0.2s ease;
+  }
+  .toggle-slider::before {
+    content: ""; position: absolute; left: 3px; top: 3px; width: 18px; height: 18px;
+    background: #fff; border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,.3);
+    transition: transform 0.2s ease;
+  }
+  .toggle input:checked + .toggle-slider { background: var(--acc); }
+  .toggle input:checked + .toggle-slider::before { transform: translateX(20px); }
+  .toggle input:focus-visible + .toggle-slider { outline: 2px solid var(--acc); outline-offset: 2px; }
+
   .lrc-preview { white-space: pre-wrap; overflow: auto; max-height: 340px; margin-top: 10px;
     padding: 10px; border: 1px solid var(--line); border-radius: var(--r-sm);
     background: var(--panel-2); font: var(--fs-xs) var(--mono); }
@@ -2802,6 +2819,17 @@ We will sing beyond the night</textarea>
       <span class="mode-pill" id="themePill" title="点一下切到另一种模式">切到深色</span>
     </button>
         <div class="hint-xs" style="margin-top:6px;">图标表示当前模式；点右侧胶囊切换。设置写进 localStorage，刷新后保持。</div>
+
+        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7h6M5 9h4"/></svg>VAE 显存优化</div>
+        <div class="hint-xs">VAE 解码窗口大小决定显存占用与切片数量。512 窗口适合 16GB 内存机器，能稳定跑完长歌；1024 窗口速度略快但需要更多显存。</div>
+        <div class="flex" style="align-items:center;gap:12px;margin-top:10px;">
+          <label class="toggle" title="开启后使用 512 帧窗口（推荐），关闭后使用官方 1024 帧窗口">
+            <input type="checkbox" id="vaeWindowToggle" />
+            <span class="toggle-slider"></span>
+          </label>
+          <span class="hint-xs" id="vaeWindowLabel">加载中…</span>
+        </div>
+        <div class="hint-xs" style="margin-top:6px;color:var(--warn);">⚠️ 切换后会立即重启音频引擎，正在生成的任务会中断。</div>
         <div class="status" id="settingsStatus" style="margin-top:10px;"></div>
 
         <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 3h12v10H2zM5 6h6M5 9h4"/></svg>本机可用功能</div>
@@ -3575,6 +3603,7 @@ function switchTab(name) {
     // LoRA 清单只在进 ⑫ 时读：cpp/lora 是目录扫描，放启动路径上只会让首屏多等一次 IO
     if (typeof loadLoras === "function") loadLoras(true);
     if (typeof refreshCpuFallbackSetting === "function") refreshCpuFallbackSetting();
+    if (typeof refreshVaeWindowSetting === "function") refreshVaeWindowSetting();
     if (typeof loadCapabilities === "function") loadCapabilities();
     if (typeof refreshDeepseekKey === "function") refreshDeepseekKey();
   }
@@ -5201,6 +5230,44 @@ $("cpuFallbackToggle").onchange = async () => {
   } catch (e) {
     el.checked = !on;
     toast("设置失败：" + friendlyErr(e), "err");
+  } finally { el.disabled = false; }
+};
+
+// VAE 窗口大小切换
+async function refreshVaeWindowSetting() {
+  try {
+    const j = await (await fetch("/api/vae/window")).json();
+    const is512 = j.frames === 512;
+    $("vaeWindowToggle").checked = is512;
+    $("vaeWindowLabel").textContent = is512
+      ? "当前：512 帧窗口（推荐，显存占用约 1.95GB）"
+      : `当前：${j.frames || 1024} 帧窗口（官方默认，显存占用约 3.89GB）`;
+  } catch (e) {
+    $("vaeWindowLabel").textContent = "读取失败：" + friendlyErr(e);
+  }
+}
+$("vaeWindowToggle").onchange = async () => {
+  const el = $("vaeWindowToggle");
+  const targetFrames = el.checked ? 512 : 1024;
+  if (!confirm(`切换到 ${targetFrames} 帧窗口？这会立即重启音频引擎，正在生成的任务会中断。`)) {
+    el.checked = !el.checked;
+    return;
+  }
+  el.disabled = true;
+  try {
+    const r = await jfetch("/api/vae/window", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ frames: targetFrames }),
+    });
+    const j = await r.json();
+    toast(j.message || "VAE 窗口已切换，引擎正在重启…", "ok");
+    $("vaeWindowLabel").textContent = targetFrames === 512
+      ? "当前：512 帧窗口（推荐，显存占用约 1.95GB）"
+      : `当前：${targetFrames} 帧窗口（官方默认，显存占用约 3.89GB）`;
+    setTimeout(refreshHealth, 5000);
+  } catch (e) {
+    el.checked = !el.checked;
+    toast("切换失败：" + friendlyErr(e), "err");
   } finally { el.disabled = false; }
 };
 

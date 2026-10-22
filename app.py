@@ -2905,7 +2905,7 @@ def _ensure_backend() -> None:
 def _task_label(job: dict, fallback: str = "任务") -> str:
     """通知标题用的任务名：优先用户起的名字，其次源文件名/音色名。
 
-    不再拿 Style 首词兜底：用户明确抱怨过“English 失败”这种标题，那不是任务名。
+    不再拿 Style 首词兜底：用户明确抱怨过"English 失败"这种标题，那不是任务名。
     没有名字时用任务 ID（仍可定位），绝不把曲风第一段当人名。
     """
     for key in ("task_name", "name", "src_name", "voice_name", "model", "batch_name"):
@@ -2995,6 +2995,17 @@ def _local_env_value(name: str, path: Path | None = None) -> str:
 _SETTINGS_JSON = ROOT / "runtime" / "data" / "settings.json"
 _DEEPSEEK_KEY_FILE = ROOT / "secrets" / "deepseek_api_key.txt"
 _SETTINGS_LOCK = threading.Lock()
+
+# VAE 窗口配置路径（用于预检显存估算）
+_VAE_CONFIG_PATHS = [p for p in (ROOT / "cpp" / "model").glob("*/sidecars/yue2-vae-config.json")]
+
+
+def _read_vae_config(path: Path) -> dict:
+    """读取 VAE sidecar 配置。"""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
 def _deepseek_key_set() -> bool:
@@ -3104,29 +3115,51 @@ def _preflight_memory_estimate(payload: dict) -> dict:
     """开跑前的显存峰值估算。返回 {ok, message, frames, peak_gb, budget_gb}。
 
     只对 Vulkan 做硬拦截：Vulkan 是共享内存，VAE 的全曲输出缓冲最容易在这里超预算。
-    CUDA 的释放在引擎里更积极，且这里没有可靠的“可用显存”口径，避免误杀。
+    CUDA 的释放在引擎里更积极，且这里没有可靠的"可用显存"口径，避免误杀。
+    
+    VAE 显存估算基于实际的 decode_core_frames 配置：
+      - 1024 窗口：每帧约 0.0007GB（5556 帧 → 3.89GB）
+      - 512 窗口：固定约 1.95GB（分块解码，不随帧数线性增长）
     """
     if backend_mode() != "vulkan":
         return {"ok": True, "message": "", "frames": 0, "peak_gb": 0, "budget_gb": 0}
     frames = _estimate_frames(payload)
     if frames <= 0:
         return {"ok": True, "message": "", "frames": 0, "peak_gb": 0, "budget_gb": 0}
-    vae_gb = frames * 0.0007          # 5556 帧 → 3.89GB
-    peak_gb = 2.95 + 0.55 + vae_gb    # AR/NAR/VAE 权重 + 图/上下文 + VAE 全曲输出
+    
+    # 读取实际 VAE 窗口配置
+    vae_window = 1024  # 默认值
+    if _VAE_CONFIG_PATHS:
+        try:
+            cfg = _read_vae_config(_VAE_CONFIG_PATHS[0])
+            vae_window = cfg.get("decode_core_frames", 1024)
+        except Exception:
+            pass
+    
+    # 根据窗口大小计算 VAE 显存
+    if vae_window <= 512:
+        # 512 窗口：固定开销，分块解码
+        vae_gb = 1.95
+    else:
+        # 1024 窗口：按帧数线性估算
+        vae_gb = frames * 0.0007
+    
+    peak_gb = 2.95 + 0.55 + vae_gb    # AR/NAR/VAE 权重 + 图/上下文 + VAE
     budget_gb = _vulkan_heap_budget_gb() or 7.2
     ok = peak_gb <= budget_gb * 0.95
     msg = ""
     warning = ""
     if not ok:
-        detail = (f"任务开始前预检：这首歌预计约 {frames} 帧，VAE 输出缓冲约 {vae_gb:.1f}GB，"
-                  f"加上权重/图合计约 {peak_gb:.1f}GB，超过本机 Vulkan 预算 {budget_gb:.1f}GB。")
+        detail = (f"任务开始前预检：这首歌预计约 {frames} 帧，VAE 窗口 {vae_window} 帧，"
+                  f"VAE 缓冲约 {vae_gb:.1f}GB，加上权重/图合计约 {peak_gb:.1f}GB，"
+                  f"超过本机 Vulkan 预算 {budget_gb:.1f}GB。")
         if _cpu_fallback_allowed():
             warning = (detail + "已允许回退 CPU，会先试 GPU；显存失败后切 CPU 整首重算（很慢），"
-                       "建议删减歌词段落。")
+                       "建议切换为 512 窗口或删减歌词段落。")
             ok = True
         else:
-            msg = (detail + "已提前停止，避免白等一小时。请删减歌词段落（VAE 缓冲随长度增长）"
-                   "或换 CUDA 机器；CPU 回退已关闭。")
+            msg = (detail + "已提前停止，避免白等一小时。请切换到 512 窗口（设置页）或删减歌词；"
+                   "CPU 回退已关闭。")
     return {"ok": ok, "message": msg, "warning": warning, "frames": frames,
             "peak_gb": round(peak_gb, 2), "budget_gb": round(budget_gb, 2)}
 
@@ -3682,7 +3715,7 @@ async def generate_start(payload: dict):
 
 @router.get("/generate/current")
 def generate_current():
-    """前端刷新后靠这个接口恢复“生成中”状态；也返回最近一条结果。"""
+    """前端刷新后靠这个接口恢复"生成中"状态；也返回最近一条结果。"""
     job = _gen_get_job()
     if job is None:
         # 服务重启过：扫描 output/ 里遗留的 running 状态，标记为中断。
@@ -7520,7 +7553,7 @@ def rvc_train_preview(rid: str, payload: dict = Body(default={})):
     # weights/<name>.pth 已经导出，结构直接可用不必再转换；但它只有在本轮训练
     # 收尾后才该盖过检查点（同名音色的旧成品不能冒充这次训练的结果）
     # 同一个音色的成品与检查点常在同一秒落盘；NTFS/网络盘的时间戳分辨率会让
-    # 刚写出的成品比检查点“旧”零点几秒，进而误判成“旧成品不能冒充本轮”。
+    # 刚写出的成品比检查点"旧"零点几秒，进而误判成"旧成品不能冒充本轮"。
     # 2 秒容差只吸收这种同批落盘的误差；真正上一轮的成品会旧几分钟以上。
     use_final = final is not None and (not ckpts
                                        or final.stat().st_mtime >= ckpts[0].stat().st_mtime - 2.0)

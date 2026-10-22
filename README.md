@@ -460,6 +460,12 @@ VAE 解码中」。引擎没有进度回调，网关从引擎日志的 TRACE/TIM
   探到设备才把后端写成 `vulkan`，探不到就退回 `cpu`（同一个包里两个后端都有）。
   注意核显走**统一内存**，跑歌时别同时开大程序；`cpp/audiocpp_server-cpu.exe` 是 CPU 版备份，
   把 `cpp/server.json` 和 `runtime/data/engine_state.json` 的 `backend` 都改回 `cpu` 即切回。
+* **VAE 报 3.89GB 分配失败（核显 Vulkan 专属）**：这是 VAE 的**固定解码窗口**
+  （sidecar 的 `decode_core_frames=1024` + halo 16）申请的整段缓冲，**不随歌曲变短而变小**。
+  在 16GB 核显上运行 `py312\python.exe scripts\set_vae_window.py --frames 512`，脚本会先备份
+  sidecar，再改成半窗口；重启引擎/工作台后生效。本机实测 4373 帧的歌用 512 窗口完整跑通：
+  27 分钟、174.9 秒 WAV、VAE 分 9 个 tile（约 38 秒）。窗口越小显存越低，但重新拼接次数更多，
+  接缝风险更高，改完请完整试听；`--restore` 可恢复官方 1024。
 * **只有 CPU 时**，16GB 内存 + 现代多核也能出歌，但等待时间以**小时、乃至天**计。
   实测锚点（纯 CPU、q4_k_m）：66.7 秒的歌 `cot=off + 1 步` 跑了 93.5 分钟（RTF≈84）；
   拆到每阶段是 AR≈0.87 秒/token、NAR≈0.79 秒/帧/步、VAE≈0.47 秒/帧，NAR 随

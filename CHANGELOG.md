@@ -9,6 +9,24 @@
 版本的唯一真源是 git 的**附注标签**（`git tag -l -n`），本文件是给人看的说明；
 宣传文案里要写的版本号从本文件顶部条目取，不在别处另记一份数字（`app.py:_version_from_changelog()` 读本文件首条）。
 
+## [v10.21.9] - 2026-10-22
+
+### 核显 VAE 低显存模式（实测跑通）
+- 根因：Yue2 VAE 的解码窗口由 sidecar 的 `decode_core_frames`（官方 1024）+ halo 16 决定；
+  16GB 核显上整段会申请约 3.89GB，直接 `OutOfDeviceMemory`。**它与歌曲长短无关**——4373 帧
+  和 5556 帧都申请同一个 3.89GB，所以“把歌缩短”并不能解决。
+- 把 `decode_core_frames` 降到 512 后：完整 4373 帧歌曲（8 步）在 Vulkan 上 **27 分钟完成**，
+  产出 174.9 秒 / 33.6MB WAV；VAE 分 9 个 tile、约 38 秒，未再出现 3.89GB 分配失败。
+- 新增 `scripts/set_vae_window.py --frames 512`：修改前自动备份为 `*.bak-vae-window`，
+  `--restore` 可恢复官方 1024；窗口越小显存越低、接缝风险越高，改完请完整试听。
+- 当前本机 sidecar 已是 512；备份保留了原始 1024。
+
+### 可观测性
+- `app.py:_restart_audiocpp` 现在给引擎加 `--log` 并把 stdout/stderr 落到
+  `runtime/data/logs/audiocpp_server.log`；以前 app.py 拉起的引擎一条日志都不写，
+  任务页的 AR/NAR/VAE 阶段解析和排障都是瞎子。
+- 679 条测试全绿。
+
 ## [v10.21.8] - 2026-10-22
 
 ### 修复（用户实测）
