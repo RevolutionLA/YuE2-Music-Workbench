@@ -262,6 +262,13 @@ interrupting the current song. The queue bar shows **↻ 重启失败任务 (N)*
 of the current queue at once. Batch items persist their seed on first dispatch, so retries reuse the
 same seed — otherwise the checkpoint hash (style/lyrics/cot/seed/steps) would never match. Verified
 2026-10-22 03:25: a 5,556-token checkpoint from 01:18 skipped AR and went straight to NAR+VAE.
+
+**Stage progress** (v10.21.5): the running task shows **AR / NAR step N of M (approx.) / VAE**.
+The engine has no progress callback, so the gateway reads its TRACE/TIMING log lines; NAR does not
+log each step, so the step number is estimated from frame count and step count and labelled
+“approx.” **NAR cannot be reused today**: a VAE failure only preserves the AR checkpoint, so a retry
+re-runs NAR. Avoiding that needs an engine acoustic-latent export or `stop_after=nar`, which the
+current engine does not provide.
 </details>
 
 **No NVIDIA GPU?** Use Vulkan on the integrated GPU if there is one: measured **~14× faster than CPU** on this machine (5,610 s → 318 s for the same request; 15–27× on short clips; identical output length and level). `一键补齐运行件.bat` downloads the Vulkan build, probes `--list-devices --backend vulkan`, and only writes `backend: vulkan` when a device is found — otherwise it falls back to `cpu` (same binary contains both backends). The iGPU uses unified memory, so keep other heavy apps closed. Without any usable GPU it runs CPU-only automatically — expect hours per song (see the measured anchor above).

@@ -5358,7 +5358,9 @@ function renderJobProgress(job) {
   const total = estimateTotalSec(job);
   const ratio = Math.min(1, elapsed / total);
   // 前段稍快、尾段放缓的缓动曲线，视觉上更接近真实节奏
-  const pct = Math.min(97, 4 + 93 * Math.pow(ratio, 0.9));
+  let pct = Math.min(97, 4 + 93 * Math.pow(ratio, 0.9));
+  const prog = job.progress;
+  if (prog && typeof prog.pct === "number") pct = Math.max(2, Math.min(99, prog.pct));
   $("progressBar").style.width = pct.toFixed(1) + "%";
   // 实测波动 P10~P90 = 0.84~2.13×估计值 → 显示 0.9×~1.8× 区间；超过 2× 才提示异常
   const etaLo = Math.max(0, total * 0.9 - elapsed);
@@ -5370,6 +5372,7 @@ function renderJobProgress(job) {
   $("status").innerHTML = pre + (overtime
     ? "仍在生成（耗时超过常见区间，受显存挤占影响属正常）… "
     : (job.cpu_fallback ? "CPU 模式生成中（较慢，请耐心等待）… " : "服务端生成中（刷新页面不会丢失任务）… "))
+    + (prog && prog.label ? " · " + escapeHtml(prog.label) : "")
     + "<span class='timer'>" + Math.floor(elapsed/60) + "分" + Math.round(elapsed%60) + "秒</span>"
     + (etaStr ? " · 预计还需 " + etaStr : "")
     + " · " + idTag(job.id);
@@ -6027,6 +6030,7 @@ async function fetchExtraTasks() {
         isQueue: true,
         qid: it.qid || "",
         queue_pos: posMap[it.id] || 0,
+        progress: it.progress || null,
       });
     });
     // 队列执行中保持轮询刷新（离开任务管理页即停）
@@ -6048,6 +6052,7 @@ async function fetchExtraTasks() {
         task_name: j.task_name || j.name || (j.model || "").replace(/\.pth$/i, "") || "未命名",
         style: j.style || "", lyrics: j.lyrics || "", cot: j.cot || "full", abc: j.abc || "",
         params: j.params || {}, sec: j.sec, bytes: j.bytes,
+        progress: j.progress || null,
       });
     });
   } catch {}
@@ -6079,6 +6084,7 @@ async function renderHistory(fetchLimit) {
       if (!q) return;
       h.isQueue = true;
       if (q.queue_pos) h.queue_pos = q.queue_pos;
+      if (q.progress) h.progress = q.progress;
       if (q.status === "pending" || q.status === "running") {
         h.status = q.status;
         h.error = "";
@@ -6145,9 +6151,11 @@ async function renderHistory(fetchLimit) {
       const isTrain = h.kind === "train";
       const isRvc = h.kind === "rvc";
       const stMap = { done: "✓ 成功", error: "✕ 失败", cancelled: "⏹ 已终止", pending: "⏳ 排队中" };
-      const stTxt = h.status === "done" ? stMap.done
+      const progTxt = h.status === "running" && h.progress && h.progress.label
+        ? " · " + h.progress.label : "";
+      const stTxt = (h.status === "done" ? stMap.done
         : (h.status === "pending" && Number(h.queue_pos) > 1) ? `⏳ 排队中（第 ${h.queue_pos} 位）`
-        : stMap[h.status] || "⏳ 进行中";
+        : stMap[h.status] || "⏳ 进行中") + progTxt;
       // 状态色走主题令牌，不走硬编码色值：#2c8a4b/#c33/var(--acc) 在面板上分别只有
       // 3.3/4.0/3.4:1（12px 要 4.5），而 --ok/--err/--acc-text 是量过的 4.6-5.5:1。
       const stColor = h.status === "done" ? "var(--ok)" : (h.status === "error" || h.status === "cancelled") ? "var(--err)" : "var(--acc-text)";

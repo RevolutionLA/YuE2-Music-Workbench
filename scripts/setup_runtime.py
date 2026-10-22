@@ -338,11 +338,24 @@ def ensure_server_json(backend: str, quant: str) -> bool:
     entry = cfg["models"][0]
     entry["path"] = f"model/{QUANT_DIRS[quant]}/{gguf}"
     entry.setdefault("session_options", {})["yue2.model_gguf"] = gguf
+    if backend == "vulkan":
+        # 核显走共享内存，峰值比独显更紧：阶段之间不释放 AR/NAR 权重时，VAE 的
+        # 全曲输出缓冲会和它们叠在一起。mem_saver 用"重新加载"换峰值，Vulkan 默认开；
+        # CUDA 保持默认（缓存换速度），用户可自己加。
+        entry["session_options"]["mem_saver"] = True
     if dst.is_file():
         # 不覆盖，但 engine_state 必须照**磁盘上那份** server.json 写，不能照本次请求写：
         # 否则两边后端不一致，重启时各说各话（评审 B16）。
         try:
-            backend = str(json.loads(dst.read_text(encoding="utf-8")).get("backend") or backend)
+            cur = json.loads(dst.read_text(encoding="utf-8"))
+            backend = str(cur.get("backend") or backend)
+            if backend == "vulkan":
+                # 老部署也补上 mem_saver：只加这一个开关，不动模型路径/线程/后端。
+                so = (cur.get("models") or [{}])[0].setdefault("session_options", {})
+                if not so.get("mem_saver"):
+                    so["mem_saver"] = True
+                    dst.write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8")
+                    log("  [OK] 已为 Vulkan 补上 session_options.mem_saver（阶段间释放权重）")
         except Exception:  # noqa: BLE001
             pass
         log(f"  已存在 {dst} —— 不覆盖（engine_state 按它的 backend={backend} 对齐）")

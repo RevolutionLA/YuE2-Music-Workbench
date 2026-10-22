@@ -1499,6 +1499,11 @@ def history_active():
             m = _output_read_meta(p.stem)
             if m and m.get("status") in ("running", "pending"):
                 m["kind"] = m.get("kind") or "generate"
+                if m.get("status") == "running" and m["kind"] == "generate":
+                    seed = (m.get("params") or {}).get("seed")
+                    prog = _engine_progress(seed=seed if isinstance(seed, int) else None)
+                    if prog:
+                        m["progress"] = prog
                 items.append(m)
     # 换声任务（含排队中：串行队列里后面的条目要在任务管理页看得见）
     with _RVC_LOCK:
@@ -1596,7 +1601,7 @@ def _unified_task(m: dict, kind: str) -> dict:
     # 3.6 秒的 toast 里，⑪ 与队列卡都查不到，事后无从追查"当时为什么换了档"。
     for k in ("sec", "queue_pos", "assets", "file", "model", "name_cn",
               "epoch", "epochs_total", "src_name", "bytes", "strip_harmony",
-              "cot_note"):
+              "cot_note", "progress"):
         if m.get(k) not in (None, "", {}, []):
             out[k] = m[k]
     return out
@@ -2443,6 +2448,124 @@ def _is_vram_error(msg: str) -> bool:
     ))
 
 
+# --------------------------------------------------------------------------- #
+# 生成阶段进度：引擎没有进度回调，只能从它自己的日志里读阶段。
+# 日志里的 TRACE/TIMING 行带 ts=YYYYMMDD-HHMMSS，足够判断 AR/NAR/VAE 和 NAR 的起点；
+# NAR 的每一步引擎不写日志，所以步数是按"帧数 × 步数 × 每帧步毫秒"估算的，UI 要标"约"。
+# --------------------------------------------------------------------------- #
+_PROGRESS_CACHE: dict = {"key": None, "at": 0.0, "value": None}
+
+
+def _engine_log_path() -> Path | None:
+    logs = ROOT / "runtime" / "data" / "logs"
+    if not logs.is_dir():
+        return None
+    files = list(logs.glob("audiocpp_server*.log")) + list(logs.glob("engine_*.log"))
+    files = [p for p in files if p.is_file()]
+    return max(files, key=lambda p: p.stat().st_mtime) if files else None
+
+
+def _engine_last_request(path: Path, max_bytes: int = 2_000_000) -> tuple[str, dict] | None:
+    """返回 (最后一条 yue2.request 之后的日志文本, 请求参数)。"""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            f.seek(max(0, size - max_bytes))
+            raw = f.read()
+    except OSError:
+        return None
+    text = raw.decode("utf-8", errors="replace")
+    at = text.rfind("yue2.request seed=")
+    if at < 0:
+        return None
+    line_start = text.rfind("\n", 0, at) + 1
+    text = text[line_start:]
+    m = re.search(r"\[TRACE ts=(\d{8}-\d{6})\][^\n]*yue2\.request seed=(\d+)", text)
+    if not m:
+        return None
+    line = text[m.start():text.find("\n", m.start())]
+    def _opt(key):
+        mm = re.search(rf"\b{key}=([^\s]+)", line)
+        return mm.group(1) if mm else None
+    def _int(key, default=0):
+        try:
+            return int(_opt(key))
+        except (TypeError, ValueError):
+            return default
+    return text, {
+        "ts": m.group(1),
+        "seed": int(m.group(2)),
+        "steps": _int("num_inference_steps", 8) or 8,
+        "frames": _int("semantic_prefix_frames", 0),
+        "stop_after": _opt("stop_after") or "",
+    }
+
+
+def _engine_progress(log_path: Path | None = None, seed=None) -> dict | None:
+    path = Path(log_path) if log_path else _engine_log_path()
+    if not path or not path.is_file():
+        return None
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    key = (str(path), st.st_mtime_ns, st.st_size, seed)
+    now = time.time()
+    if _PROGRESS_CACHE["key"] == key and now - _PROGRESS_CACHE["at"] < 2.0:
+        return _PROGRESS_CACHE["value"]
+
+    parsed = _engine_last_request(path)
+    result = None
+    if parsed:
+        text, req = parsed
+        if seed is None or int(seed) == req["seed"]:
+            body = text[text.find("yue2.request seed="):]
+            vae_at = max(body.rfind("framework.oobleck_audio_vae"), body.rfind("yue2.vae"))
+            nar_at = body.rfind("yue2.nar.")
+            ar_at = body.rfind("yue2.ar.")
+            vae_m = list(re.finditer(r"\[(?:TIMING|TRACE) ts=(\d{8}-\d{6})\][^\n]*"
+                                     r"(?:framework\.oobleck_audio_vae|yue2\.vae)", body))
+            nar_m = list(re.finditer(r"\[(?:TIMING|TRACE) ts=(\d{8}-\d{6})\][^\n]*yue2\.nar\.", body))
+            ar_m = list(re.finditer(r"\[(?:TIMING|TRACE) ts=(\d{8}-\d{6})\][^\n]*yue2\.ar\.", body))
+
+            def _age(ts: str) -> float:
+                try:
+                    return max(0.0, time.time() - datetime.strptime(ts, "%Y%m%d-%H%M%S").timestamp())
+                except ValueError:
+                    return 0.0
+
+            if vae_m and vae_at >= nar_at:
+                result = {"stage": "vae", "label": "VAE 解码中（显存峰值阶段）",
+                          "pct": 95, "elapsed_sec": round(_age(vae_m[-1].group(1)))}
+            elif nar_at >= ar_at:
+                frames = req["frames"]
+                fm = re.search(r"yue2\.nar\.synthesize\.codec_tokens (\d+)", body)
+                if fm:
+                    frames = int(fm.group(1))
+                steps = max(1, int(req["steps"]))
+                if re.search(r"yue2\.nar\.synthesize\.total_ms", body):
+                    result = {"stage": "nar_done", "label": "NAR 完成，准备 VAE",
+                              "pct": 92, "frames": frames, "steps": steps}
+                else:
+                    start = nar_m[0].group(1) if nar_m else req["ts"]
+                    elapsed = _age(start)
+                    # Vulkan 实测约 60~68ms/(帧·步)；没有帧数时按 3 分钟歌估。
+                    per_step = max(1.0, (frames or 3600) * 0.065)
+                    step = min(steps, max(1, int(elapsed / per_step) + 1))
+                    result = {"stage": "nar", "label": f"NAR 第 {step}/{steps} 步（约）",
+                              "step": step, "steps": steps, "frames": frames,
+                              "elapsed_sec": round(elapsed),
+                              "pct": round(25 + 65 * step / steps)}
+            elif ar_at >= 0:
+                result = {"stage": "ar", "label": "AR 作曲中（生成旋律骨架）",
+                          "pct": 8, "elapsed_sec": round(_age(req["ts"]))}
+            else:
+                result = {"stage": "queued", "label": "等待引擎进入阶段", "pct": 5}
+
+    _PROGRESS_CACHE["key"], _PROGRESS_CACHE["at"], _PROGRESS_CACHE["value"] = key, now, result
+    return result
+
+
 def _gen_run_once(payload: dict) -> tuple[int, str, bytes, dict]:
     """调用一次 /api/music/generate，返回 (status_code, detail, content, headers)。
 
@@ -3197,7 +3320,8 @@ def generate_current():
             metas.sort(key=lambda m: m.get("ts", ""), reverse=True)
             latest = metas[0] if metas else None
         return {"job": None, "latest": latest}
-    return {"job": job}
+    prog = _engine_progress(seed=(job.get("params") or {}).get("seed"))
+    return {"job": {**job, "progress": prog} if prog else job}
 
 
 @router.get("/generate/list")
@@ -3689,6 +3813,15 @@ def batch_status():
             changed = True
         if changed:
             _batch_store(state)
+    # 当前这条附上引擎阶段（AR/NAR 第几步/VAE）：只在这个内存快照上加，不写回队列文件。
+    if state.get("current"):
+        cur_it = next((it for it in state.get("items") or []
+                       if it.get("id") == state.get("current")), None)
+        if cur_it is not None:
+            seed = (cur_it.get("payload") or {}).get("seed")
+            prog = _engine_progress(seed=seed if isinstance(seed, int) and seed >= 0 else None)
+            if prog:
+                cur_it["progress"] = prog
     done = sum(1 for it in state["items"] if it["status"] == "done")
     err = sum(1 for it in state["items"] if it["status"] == "error")
     # 「当前队列」= 最后一次提交的那一批（按 qid 分组）。历史已完成条目仍留在 items 里，

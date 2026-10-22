@@ -9,6 +9,24 @@
 版本的唯一真源是 git 的**附注标签**（`git tag -l -n`），本文件是给人看的说明；
 宣传文案里要写的版本号从本文件顶部条目取，不在别处另记一份数字（`app.py:_version_from_changelog()` 读本文件首条）。
 
+## [v10.21.5] - 2026-10-22
+
+### 新增
+- 任务页与生成进度条显示当前阶段：**AR 作曲中 / NAR 第 N/M 步（约）/ VAE 解码中**。
+  引擎没有进度回调，网关从引擎日志的 TRACE/TIMING 行解析；NAR 每一步引擎不写日志，
+  步数按「帧数 × 步数 × 每帧步毫秒」估算，界面明确标「约」。
+- Vulkan 安装时 `scripts/setup_runtime.py` 自动写 `session_options.mem_saver=true`，
+  在 AR/NAR/VAE 阶段之间释放暂存权重/图，降低峰值（用重新加载时间换内存）。
+
+### 实测补充
+- 5556 帧长歌在 `mem_saver` 下：NAR 图（364MB）成功分配；VAE 的 1040 帧分块解码
+  本身成功（8.4 秒），但随后 **3.89GB 全曲输出缓冲**仍分配失败——`mem_saver` 降的是
+  NAR 峰值，缩不小 VAE 的全曲输出缓冲。
+- NAR 输出没有 artifact：`stop_after` 只支持 abc/semantic/audio，VAE 失败后只能复用
+  AR 检查点，NAR 仍要重跑。要“复用 NAR 直接进 VAE”，需要引擎新增 acoustic latent
+  导出或 `stop_after=nar`（当前版本没有）。
+- 663 条测试全绿。
+
 ## [v10.21.4] - 2026-10-22
 
 来源：用户发现队列第一首在 CPU 上跑了近 4 小时，明确要求这台机器不要再回退 CPU。
