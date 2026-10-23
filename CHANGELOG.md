@@ -9,6 +9,27 @@
 版本的唯一真源是 git 的**附注标签**（`git tag -l -n`），本文件是给人看的说明；
 宣传文案里要写的版本号从本文件顶部条目取，不在别处另记一份数字（`app.py:_version_from_changelog()` 读本文件首条）。
 
+## [v10.23.0] - 2026-10-23
+
+### 修复：设置页「VAE 显存优化」开关点下去 404
+- 根因：`static/index.html` 从早期版本起就在调 `/api/vae/window`，但后端从未注册过这对路由，
+  点下去浏览器控制台是 404、页面弹「切换失败：Not Found」。`tests/test_vae_window.py`
+  只覆盖 `scripts/set_vae_window.py` 的命令行行为，不覆盖 API，所以这个缺口一直没被发现。
+- `app.py` 新增 `GET/POST /api/vae/window`：
+  - GET 报引擎预检同口径的 `decode_core_frames`（`cpp/model/*/sidecars/yue2-vae-config.json`），
+    并附各模型目录明细，避免"开关显示 512、其实那份是 1024"；
+  - POST 只收 512/1024（UI 两档），补丁语义与 `set_vae_window.py` 一致：改前留
+    `*.bak-vae-window` 备份、同值 no-op 不重复备份、临时文件 + `os.replace` 原子写；
+    确实发生了改动才调 `_restart_audiocpp()` 重启引擎，同值不重启。
+- 新增 `tests/test_vae_window_api.py`（11 条）：读值 / 切换 / 备份 / 同值不重启 /
+  非法值 400 / 无 sidecar 404 / 路由真的注册了 / 前后端调用契约。
+
+### 修复：dsh 工作台开箱即坏（缺依赖声明）
+- `dsh-plugin/启动AI工作台.bat` 运行 `node node_modules\@deepseek-ai\dsh\lib\bin.js web`，
+  但 `dsh-plugin/package.json` 没有声明 `@deepseek-ai/dsh`——全新克隆后 `npm install`
+  不会装上它，⑥ 歌词曲风 AI 工作台起不来。补上 `"@deepseek-ai/dsh": "^0.2.1-rc.2"`
+  （2026-10-23 实测可正常运行 web 面板并加载 yue2-lab-plugin）。
+
 ## [v10.21.9] - 2026-10-22
 
 ### 核显 VAE 低显存模式（实测跑通）

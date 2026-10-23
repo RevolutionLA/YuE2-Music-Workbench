@@ -880,6 +880,109 @@ def backend_mode_set(payload: dict):
 
 
 # --------------------------------------------------------------------------- #
+# VAE 解码窗口切换（设置页"VAE 显存优化"开关：GET/POST /api/vae/window）
+#
+# 2026-10-23 修复：这个开关从上线起就是坏的——页面一直在调 /api/vae/window，
+# 后端却没注册过这对路由，点下去就是 404「切换失败：Not Found」（上游 master
+# 同样缺这条路由，不是本地同步漏的）。
+#
+# 语义与 scripts/set_vae_window.py 一致（改哪、怎么备份、同值怎么办），但不
+# import 那个 CLI 模块：网关是常驻进程，没必要在请求路径上加载 argparse 脚本；
+# 两边约定由 tests/test_vae_window.py（脚本）和 tests/test_vae_window_api.py
+# （本路由）双保险。改的是模型 sidecar 的 decode_core_frames，引擎在加载模型
+# 时读它，所以必须重启引擎才生效——与 backend/mode、models/switch 同一个重启
+# 函数 _restart_audiocpp。
+# --------------------------------------------------------------------------- #
+_VAE_WINDOW_SUFFIX = ".bak-vae-window"      # 与 set_vae_window.py 的备份后缀一致
+_VAE_WINDOW_CHOICES = (512, 1024)           # UI 两档；脚本层的完整区间是 16~4096 的 8 倍数
+
+
+def _vae_window_configs() -> list[Path]:
+    """所有模型目录的 VAE sidecar 配置（现取不缓存：用户可能刚下完新模型）。"""
+    return sorted((ROOT / "cpp" / "model").glob("*/sidecars/yue2-vae-config.json"))
+
+
+def _vae_window_of(path: Path) -> int:
+    """一份 sidecar 当前的 decode_core_frames；读不出来按官方默认 1024 计。"""
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        return int(cfg.get("decode_core_frames") or 1024)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 1024
+
+
+def _vae_window_patch(path: Path, frames: int) -> tuple[int, int]:
+    """把一份 sidecar 改成目标窗口，返回 (old, new)。
+
+    与 set_vae_window.py.patch_file 同约定：同值直接返回、不动文件；只有第一次
+    改动前留 .bak-vae-window 备份；先写临时文件再 os.replace，避免半份配置。
+    """
+    data = json.loads(path.read_text(encoding="utf-8"))
+    old = int(data.get("decode_core_frames") or 0)
+    if old == frames:
+        return old, old
+    bak = path.with_name(path.name + _VAE_WINDOW_SUFFIX)
+    if not bak.exists():
+        shutil.copy2(path, bak)
+    data["decode_core_frames"] = frames
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    return old, frames
+
+
+@router.get("/vae/window")
+def vae_window_get():
+    """设置页开关的当前状态：引擎实际会读到的窗口值 + 各模型目录明细。"""
+    configs = _vae_window_configs()
+    if not configs:
+        raise HTTPException(
+            status_code=404,
+            detail="没找到 VAE sidecar 配置（cpp/model/*/sidecars/yue2-vae-config.json）；"
+                   "请先运行「一键补齐运行件.bat」把模型下载完",
+        )
+    per = [{"path": p.relative_to(ROOT).as_posix(), "frames": _vae_window_of(p)}
+           for p in configs]
+    # 引擎一次只加载一个模型，预检估算读的也是 configs[0]；开关就报这一个值。
+    # 多模型目录若不一致，明细一并给出，避免"开关显示 512、其实那份是 1024"。
+    return {"frames": per[0]["frames"], "choices": list(_VAE_WINDOW_CHOICES),
+            "configs": per}
+
+
+@router.post("/vae/window")
+def vae_window_set(payload: dict):
+    """切换 VAE 解码窗口并重启引擎。frames 只接受 512 / 1024（UI 两档）。"""
+    try:
+        frames = int(payload.get("frames"))
+    except (TypeError, ValueError):
+        frames = -1
+    if frames not in _VAE_WINDOW_CHOICES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"frames 只支持 {list(_VAE_WINDOW_CHOICES)}"
+                   "（512=低显存约 1.95GB，1024=官方默认约 3.89GB）",
+        )
+    configs = _vae_window_configs()
+    if not configs:
+        raise HTTPException(status_code=404, detail="没找到 VAE sidecar 配置，无法切换窗口")
+    changed: list[tuple[str, int, int]] = []
+    for p in configs:
+        old, new = _vae_window_patch(p, frames)
+        if new != old:
+            changed.append((p.relative_to(ROOT).as_posix(), old, new))
+    if not changed:
+        return {"ok": True, "frames": frames, "restarted": False,
+                "message": f"VAE 窗口已是 {frames} 帧，无需切换（引擎未重启）"}
+    _restart_audiocpp(str(SERVER_JSON))
+    where = "、".join(f"{name}（{old} → {new}）" for name, old, new in changed)
+    note = ("；512 窗口显存约 1.95GB、长歌更稳，但切片变多接缝略明显，请完整试听一首"
+            if frames == 512 else
+            "；1024 为官方默认、速度略快，但 16GB 内存机器跑长歌可能 OutOfDeviceMemory")
+    return {"ok": True, "frames": frames, "restarted": True,
+            "message": f"已切换 VAE 窗口：{where}；引擎正在重启，约半分钟后生效{note}"}
+
+
+# --------------------------------------------------------------------------- #
 # 系统信息（v2.0 §四-⑩ / §六 P1：GET /api/system/info）
 #
 # 设置页只读展示用：版本、三个端口、目录、磁盘、显存、两个引擎的就绪状态。

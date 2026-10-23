@@ -30,5 +30,8 @@
   ],
   "peerDependencies": {
     "@deepseek-ai/cordis": "*"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh": "^0.2.1-rc.2"
   }
 }
