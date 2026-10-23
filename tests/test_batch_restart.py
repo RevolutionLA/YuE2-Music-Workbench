@@ -170,24 +170,42 @@ class SettingsAndPreflight(BatchRestartBase):
         self.assertEqual(self.client.post("/api/settings",
                                           json={"cpu_fallback_allowed": "yes"}).status_code, 400)
 
-    def test_preflight_blocks_song_that_cannot_fit(self):
-        saved = app.backend_mode, app._vulkan_heap_budget_gb, app._cpu_fallback_allowed
+    def test_preflight_blocks_long_song_only_with_big_vae_window(self):
+        """预检要跟着**实际 VAE 窗口**走。
+
+        512 窗口是分块解码：缓冲固定约 1.95GB，不再随帧数线性涨，长歌能过；
+        1024 窗口（官方默认）按帧数涨，600 字约 7200 帧必超本机预算。
+        2026-10-23 之前的写法把两件事混成一条（一律按 1024 估），
+        于是在 512 窗口下把本来跑得动的歌提前拦掉了。
+        """
+        saved = (app.backend_mode, app._vulkan_heap_budget_gb, app._cpu_fallback_allowed,
+                 app._read_vae_config, app._VAE_CONFIG_PATHS)
         app.backend_mode = lambda: "vulkan"
         app._vulkan_heap_budget_gb = lambda: 7.26
-        app._cpu_fallback_allowed = lambda: False
+        app._VAE_CONFIG_PATHS = [Path("stub/yue2-vae-config.json")]
         try:
+            # 512 窗口：长歌放行
+            app._read_vae_config = lambda p: {"decode_core_frames": 512}
+            app._cpu_fallback_allowed = lambda: False
+            long_song = app._preflight_memory_estimate({"lyrics": "字" * 600})
+            self.assertTrue(long_song["ok"], long_song)
+
+            # 1024 窗口：长歌拦下，短歌放行
+            app._read_vae_config = lambda p: {"decode_core_frames": 1024}
             long_song = app._preflight_memory_estimate({"lyrics": "字" * 600})
             self.assertFalse(long_song["ok"], long_song)
             self.assertIn("超过本机 Vulkan 预算", long_song["message"])
             short_song = app._preflight_memory_estimate({"lyrics": "字" * 150})
             self.assertTrue(short_song["ok"], short_song)
+
             # 开了 CPU 回退时不能硬拦：改为允许并给 warning（用户显式选择了慢路径）
             app._cpu_fallback_allowed = lambda: True
             slow = app._preflight_memory_estimate({"lyrics": "字" * 600})
             self.assertTrue(slow["ok"], slow)
             self.assertTrue(slow["warning"])
         finally:
-            app.backend_mode, app._vulkan_heap_budget_gb, app._cpu_fallback_allowed = saved
+            (app.backend_mode, app._vulkan_heap_budget_gb, app._cpu_fallback_allowed,
+             app._read_vae_config, app._VAE_CONFIG_PATHS) = saved
 
     def test_deepseek_key_file_is_gitignored(self):
         ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")

@@ -520,7 +520,8 @@ class TestVramPrecheckGuard(Sandbox):
         self._s = (app._ensure_backend, app._vram_ok_for_gpu, app._audiocpp_cuda_ready,
                    app._restart_audiocpp, app._wait_backend_ready, app._gen_run_once,
                    app._commit_free_mb, app.backend_mode, app._win_toast,
-                   app._output_write_meta, app._output_write_lyrics, app._lrc_build_async)
+                   app._output_write_meta, app._output_write_lyrics, app._lrc_build_async,
+                   app._audiocpp_alive, app._mem_available_mb)
         app._ensure_backend = lambda: None
         app._commit_free_mb = lambda: 40000
         app._wait_backend_ready = lambda *a, **k: True
@@ -529,6 +530,10 @@ class TestVramPrecheckGuard(Sandbox):
         app._output_write_meta = lambda m: None
         app._output_write_lyrics = lambda *a, **k: None
         app._lrc_build_async = lambda rid: None
+        # 这两条只考"显存预检要不要降级"，与开跑前的干净引擎重启无关：
+        # 固定成"引擎活着 + 物理内存充足"，断言才不会随宿主机状态漂移。
+        app._audiocpp_alive = lambda: True
+        app._mem_available_mb = lambda: 8000
         # 预检一律说"空闲只有 245MB"：两条用例的差别只在引擎自己是否已经跑在 GPU 上
         app._vram_ok_for_gpu = lambda: (False, 245)
         self.restarts: list[object] = []
@@ -538,8 +543,8 @@ class TestVramPrecheckGuard(Sandbox):
         (app._ensure_backend, app._vram_ok_for_gpu, app._audiocpp_cuda_ready,
          app._restart_audiocpp, app._wait_backend_ready, app._gen_run_once,
          app._commit_free_mb, app.backend_mode, app._win_toast,
-         app._output_write_meta, app._output_write_lyrics,
-         app._lrc_build_async) = self._s
+         app._output_write_meta, app._output_write_lyrics, app._lrc_build_async,
+         app._audiocpp_alive, app._mem_available_mb) = self._s
         super().tearDown()
 
     def _run(self, engine_ready: bool) -> dict:
@@ -561,7 +566,8 @@ class TestVramPrecheckGuard(Sandbox):
         job = self._run(engine_ready=True)
         self.assertIsNone(job.get("cpu_fallback"),
                           "引擎已在 GPU 载好权重，不许因「空闲显存不足」把整首歌降级")
-        self.assertEqual(self.restarts, [], "不该为了降级去重启引擎")
+        # 开跑前为清驻留而重启（backend=None）是预期行为；这里禁的是"降级到 CPU"那种重启
+        self.assertNotIn("cpu", self.restarts, "不该为了降级去重启引擎到 CPU")
         self.assertEqual(job["status"], "done")
 
     def test_genuinely_short_vram_still_falls_back(self):

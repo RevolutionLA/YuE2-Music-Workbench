@@ -595,12 +595,20 @@ def _hide_engine_windows_once() -> None:
     threading.Thread(target=_hide, daemon=True).start()
 
 
+_ENGINE_STARTED_AT = 0.0   # 本网关最后一次拉起引擎的时刻（排障用）
+# 引擎是否"脏"（跑过任务、进程里还压着权重/图缓冲/未归还的分配）。
+# 初值 True：网关重启后不知道上一任留下的引擎是什么状态，第一首也清一次。
+# 用途见 _gen_run 开跑前的判断——连续快速失败的任务不会因为"刚重启过"就跳过清理。
+_ENGINE_DIRTY = True
+
+
 def _restart_audiocpp(server_json_path: str, backend: str | None = None) -> None:
     """杀掉当前 audio.cpp 服务进程，并按新配置重启。
 
     cwd 必须是 cpp\\ ：后端以工作目录为基准解析模型相对路径。
     backend 参数可临时覆盖本次启动的后端（cpu/cuda），不改变持久化模式。
     """
+    global _ENGINE_STARTED_AT, _ENGINE_DIRTY
     if os.name == "nt":
         subprocess.run(
             ["taskkill", "/IM", "audiocpp_server.exe", "/F"],
@@ -610,6 +618,10 @@ def _restart_audiocpp(server_json_path: str, backend: str | None = None) -> None
     else:
         subprocess.run(["pkill", "-f", "audiocpp_server"], capture_output=True)
     time.sleep(1.0)
+    if _audiocpp_alive():
+        # taskkill 没杀掉（权限/僵尸端口）时，新进程抢不到 :8080，_wait_backend_ready
+        # 会以为"引擎已就绪"其实是旧进程在应答——那这一首还是跑在脏引擎上。
+        logger.warning("旧引擎进程在 taskkill 后仍应答 /health，本次重启可能没有生效")
     exe = str(AUDIOCPP_BIN)
     args = [exe, "--config", server_json_path]
     # 显式传后端：以前 cuda 时干脆不传、靠 server.json 里的 backend——那份配置可能写着
@@ -629,6 +641,8 @@ def _restart_audiocpp(server_json_path: str, backend: str | None = None) -> None
         subprocess.Popen(args, cwd=workdir, creationflags=creationflags)
     else:
         subprocess.Popen(args, cwd=workdir)
+    _ENGINE_STARTED_AT = time.time()
+    _ENGINE_DIRTY = False
     _hide_engine_windows_once()  # 引擎若被外部机制带出控制台窗口，立即压下
 
 
@@ -2887,6 +2901,36 @@ def _commit_free_mb() -> int | None:
         return None
 
 
+def _mem_available_mb() -> int | None:
+    """可用**物理**内存（MB）。查不到返回 None。
+
+    核显（uma:1）的"显存"就是物理内存：Vulkan 分配失败时看到的
+    ErrorOutOfDeviceMemory，真实原因是物理内存被占满，而不是 7.26GiB 堆预算用尽。
+    2026-10-23 00:03 实测：可用物理内存 1009MB 时，NAR 图连 1.5MB 都分不出来。
+    """
+    try:
+        import ctypes
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        m = MEMORYSTATUSEX(); m.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+        return int(m.ullAvailPhys // (1024 * 1024))
+    except Exception:
+        return None
+
+
+# 长歌的引擎常驻开销（实测 Q4_K_M）：AR 权重 1579MB + AR 生成头 203MB + NAR 权重 963MB
+# = 2745MB；加上 AR/NAR 图与 6000 帧的 NAR 图（378MB）约 3.4-3.7GB。
+# 低到这个线以下就先重启引擎，把缓存的 AR/NAR/VAE 权重吐出来再开跑。
+_MEM_MIN_FREE_MB = 5000
+# 重启引擎后还低于这个数，就别开跑：一定死在 NAR 图分配，白等十几分钟 AR。
+_MEM_HARD_FLOOR_MB = 3200
+
+
 def _ensure_backend() -> None:
     """生成/换声前自检：后端掉线则自动拉起，避免整次生成直接失败。"""
     if _audiocpp_alive():
@@ -3196,6 +3240,48 @@ def _gen_run(job: dict, payload: dict) -> None:
             return
         # 后端自检：audiocpp 掉线（如上次异常崩溃）则自动拉起，避免整次生成直接失败
         _ensure_backend()
+        # 每首歌都从干净引擎开始。audiocpp 是常驻进程（一个进程串行跑所有歌），
+        # 跑过一首之后进程的常驻内存会明显变大：2026-10-23 00:03 实测同一进程空闲时
+        # 工作集 7.0GB、系统可用物理内存只剩 869MB，下一次分配连 1.5MB 都失败。
+        # 16GB 核显的"显存"就是物理内存，所以每首开跑前重启一次把这份驻留清掉；
+        # 代价 1-3 秒（权重按需加载），相比 20-40 分钟的生成可忽略。
+        # AR 检查点在 runtime/data/gen_checkpoints/*.json（磁盘），重启不会丢。
+        # _GPU_SEM 保证这一刻没有别的生成/换声/训练在跑。
+        avail = _mem_available_mb()
+        if _audiocpp_alive() and _ENGINE_DIRTY:
+            if avail is not None and avail < _MEM_MIN_FREE_MB:
+                # 内存已经紧张：写进任务卡。接在预检警告后面，不覆盖它。
+                prev = str(job.get("note") or "").strip()
+                msg = f"可用内存仅 {avail / 1024:.1f}GB，已重启引擎释放驻留后开跑"
+                job.update(note=f"{prev}；{msg}" if prev else msg)
+                _output_write_meta(job)
+            logger.info("开跑前重启引擎（可用物理内存 %sMB，距上次重启 %.0fs）",
+                        avail, time.time() - _ENGINE_STARTED_AT)
+            _restart_audiocpp(str(SERVER_JSON))
+            if not _wait_backend_ready(120.0):
+                if _stop_requested():
+                    return
+                raise RuntimeError(
+                    "音频引擎重启后 120 秒内没有恢复响应，本次未提交。"
+                    "AR 检查点不受影响，稍后重试会接着跑。")
+            avail = _mem_available_mb()
+        if avail is not None and avail < _MEM_HARD_FLOOR_MB:
+            raise RuntimeError(
+                f"系统可用物理内存只剩 {avail}MB（长歌的 AR/NAR 权重+图需要约 3.7GB，"
+                f"重启引擎后仍不够）。请关闭浏览器等占内存的程序后重试。")
+        if avail is not None:
+            # 把开跑时的可用内存留进任务 meta：下次再判断"到底是内存不够还是别的原因"
+            # 时，不必再从进程表反推（2026-10-23 那批失败就缺这个数）。
+            job.update(mem_avail_mb=avail)
+            frames = int(pre.get("frames") or 0)
+            if frames >= 5500 and avail < 6000:
+                # 不硬拦：同样大小的歌在内存宽裕时确实跑成过（10-23 16:47，6069 帧）。
+                # 但 NAR 阶段还要额外 1.5-2GB（前缀缓存 + NAR 图），先提醒比白等一小时好。
+                prev = str(job.get("note") or "").strip()
+                msg = (f"可用内存仅 {avail / 1024:.1f}GB：{frames} 帧的长歌在 NAR 阶段还要"
+                       f"约 1.5-2GB，存在分配失败风险；关掉占内存的程序更稳")
+                job.update(note=f"{prev}；{msg}" if prev else msg)
+                _output_write_meta(job)
         # 提交内存预检：full/32步 重负载任务实测需 ~23GB commit（权重+AR/NAR 缓存），
         # 不足时 audiocpp 会在推理中段 abort（0xc0000409）白白等几分钟，这里提前拦截
         cf = _commit_free_mb()
@@ -3234,6 +3320,8 @@ def _gen_run(job: dict, payload: dict) -> None:
                 _wait_backend_ready()
 
         def attempt() -> tuple[int, str, bytes, dict]:
+            global _ENGINE_DIRTY
+            _ENGINE_DIRTY = True   # 一提交，引擎就带上这首的驻留；下一首开跑前要清
             try:
                 return _gen_run_once(engine_payload)
             except Exception as e:
@@ -3273,9 +3361,14 @@ def _gen_run(job: dict, payload: dict) -> None:
                 and backend_mode() in ("cuda", "vulkan") and _is_vram_error(detail)):
             if not _cpu_fallback_allowed():
                 # 不偷偷重算：把引擎的原话交给用户，任务直接失败（评审 B18 的用户侧开关）
+                # 核显上这条错的真实原因是物理内存被占满，光说"已禁用 CPU 回退"没法排障，
+                # 把当前可用内存和"重提会跳过 AR"一起写进去。
+                mem = _mem_available_mb()
+                mem_hint = f"当前可用物理内存约 {mem / 1024:.1f}GB。" if mem is not None else ""
                 job.update(status="error", sec=round(time.time() - started, 1),
-                           error=f"{str(detail)[:700]}（已禁用 CPU 回退：核显上 CPU 慢 14 倍以上，"
-                                 f"且回退会从头重算）")
+                           error=f"{str(detail)[:700]}（{mem_hint}已禁用 CPU 回退：核显上 CPU 慢 14 倍"
+                                 f"以上，且回退会从头重算。关掉浏览器等占内存的程序后重新提交，"
+                                 f"有 AR 检查点会跳过 AR 不重算）")
                 _output_write_meta(job)
                 _win_toast(f"{_task_label(job)} 失败", str(detail)[:120])
                 return
