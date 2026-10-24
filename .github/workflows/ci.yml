@@ -1,0 +1,63 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # 硬门禁：语法/致命错误。这一层不依赖任何运行件（GPU、cpp/、runtime/、py312/ 都不需要）。
+  lint:
+    name: lint + byte-compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install ruff
+        run: python -m pip install --upgrade pip ruff
+      # 硬门禁只判语法级错误（E9）。F821 这类在这里会假红：项目大量使用
+      # "np.ndarray" 字符串注解 + 函数内局部 import numpy，ruff 会把注解里的 np 当未定义。
+      - name: ruff（语法级，判红）
+        run: ruff check . --select E9 --output-format=github --exclude .ruff_cache
+      # 其余 pyflakes 类问题只报告，逐步收敛。
+      - name: ruff（F 类，仅报告）
+        run: ruff check . --select F --output-format=concise --exclude .ruff_cache --exit-zero
+      - name: byte-compile
+        run: python -m compileall -q app.py main.py scripts tests
+
+  # 软门禁（首次接入）：回归用例在干净 runner 上依赖环境探测跳过，但 import 链一旦
+  # 缺件仍可能整体报错。先把结果收集起来，稳定 0 红后再删掉 continue-on-error 转硬门禁。
+  tests:
+    name: regression tests (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install core deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest fastapi==0.115.12 starlette==0.46.2 uvicorn httpx==0.28.1 \
+            python-multipart pydantic numpy soundfile aiofiles
+      - name: pytest
+        run: python -m pytest tests -q
+
+  # 需求文件必须可解析（防止 pin 写错导致用户装不上）
+  requirements:
+    name: requirements parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: pip install --dry-run
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --dry-run --ignore-installed --no-deps -r requirements.txt
+          python -m pip install --dry-run --ignore-installed --no-deps -r requirements-transcribe.txt
