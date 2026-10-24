@@ -3,15 +3,15 @@ rem [encoding] THIS FILE IS GBK (OEM cp936) ON PURPOSE. cmd.exe parses a batch f
 rem [encoding] console's OEM codepage; a UTF-8 batch under cp936 splits lines mid-character
 rem [encoding] and some commands silently stop running. Do NOT re-save as UTF-8 and do NOT
 rem [encoding] add a mid-file code-page switch. See .gitattributes.
-title ÒôÀÖ¹¤×÷Ì¨ - ²¹ÆëÔËÐÐ¼þ
+title éŸ³ä¹å·¥ä½œå° - è¡¥é½è¿è¡Œä»¶
 cd /d %~dp0
-rem Python µÄÊä³ö±ØÐë¸ú×Å±¾¿ØÖÆÌ¨µÄ OEM ÂëÒ³×ß£¬Óöµ½±à²»³öµÄ×Ö·ûÖ»½µ¼¶²»±À¡£
-rem ÒÔÇ°ÕâÌõ¿¿ chcp 65001 ¶µ×Å£»ÏÖÔÚÅú´¦Àí±¾ÉíÊÇ GBK£¨¼û .gitattributes£©£¬²»ÄÜÔÙÖÐÍ¾»»ÂëÒ³£¬
-rem ËùÒÔ¶Áµ±Ç°ÂëÒ³Æ´ PYTHONIOENCODING¡£Êµ²â²»¼ÓÕâÐÐÊ± print(emoji) »á UnicodeEncodeError£¬
-rem °ÑÏÂÔØ½Å±¾ÅÐ³ÉÊ§°Ü£¬Æô¶¯½Å±¾Ëæ¼´ÒÔÎªÄ£ÐÍÈ±Ê§¡¢ÓÖÏëÈ¥ÖØÏÂ 2.9GB¡£
+rem Python çš„è¾“å‡ºå¿…é¡»è·Ÿç€æœ¬æŽ§åˆ¶å°çš„ OEM ç é¡µèµ°ï¼Œé‡åˆ°ç¼–ä¸å‡ºçš„å­—ç¬¦åªé™çº§ä¸å´©ã€‚
+rem ä»¥å‰è¿™æ¡é  chcp 65001 å…œç€ï¼›çŽ°åœ¨æ‰¹å¤„ç†æœ¬èº«æ˜¯ GBKï¼ˆè§ .gitattributesï¼‰ï¼Œä¸èƒ½å†ä¸­é€”æ¢ç é¡µï¼Œ
+rem æ‰€ä»¥è¯»å½“å‰ç é¡µæ‹¼ PYTHONIOENCODINGã€‚å®žæµ‹ä¸åŠ è¿™è¡Œæ—¶ print(emoji) ä¼š UnicodeEncodeErrorï¼Œ
+rem æŠŠä¸‹è½½è„šæœ¬åˆ¤æˆå¤±è´¥ï¼Œå¯åŠ¨è„šæœ¬éšå³ä»¥ä¸ºæ¨¡åž‹ç¼ºå¤±ã€åˆæƒ³åŽ»é‡ä¸‹ 2.9GBã€‚
 for /f "tokens=2 delims=:" %%p in ('chcp') do set "OEMCP=%%p"
 set "OEMCP=%OEMCP: =%"
-rem Ö»ÈÏ´¿Êý×Ö£º»ûÐÎÖµ»áÈÃ Python ³õÊ¼»¯Ö±½Ó Fatal£¨ÆÀÉó T7£©
+rem åªè®¤çº¯æ•°å­—ï¼šç•¸å½¢å€¼ä¼šè®© Python åˆå§‹åŒ–ç›´æŽ¥ Fatalï¼ˆè¯„å®¡ T7ï¼‰
 echo %OEMCP%|findstr /r "^[0-9][0-9]*$" >nul || set "OEMCP=936"
 set "PYTHONIOENCODING=cp%OEMCP%:backslashreplace"
 set "PY="
@@ -19,17 +19,17 @@ if exist "py312\python.exe" set "PY=py312\python.exe"
 if not defined PY where python >nul 2>&1 && set "PY=python"
 if not defined PY where py >nul 2>&1 && set "PY=py -3"
 if not defined PY (
-  echo [x] ÕâÌ¨»úÆ÷ÉÏÕÒ²»µ½ÈÎºÎ Python¡£
-  echo     ×°Ò»¸ö¾ÍÄÜ¼ÌÐø£ºwinget install astral-sh.uv   £¨»òÈ¥ python.org ×° 3.12£©
-  echo     ×°ºÃºóÖØÐÂË«»÷±¾½Å±¾£¬ÒÑ¾­Íê³ÉµÄ²½Öè»á×Ô¶¯Ìø¹ý¡£
+  echo [x] è¿™å°æœºå™¨ä¸Šæ‰¾ä¸åˆ°ä»»ä½• Pythonã€‚
+  echo     è£…ä¸€ä¸ªå°±èƒ½ç»§ç»­ï¼šwinget install astral-sh.uv   ï¼ˆæˆ–åŽ» python.org è£… 3.12ï¼‰
+  echo     è£…å¥½åŽé‡æ–°åŒå‡»æœ¬è„šæœ¬ï¼Œå·²ç»å®Œæˆçš„æ­¥éª¤ä¼šè‡ªåŠ¨è·³è¿‡ã€‚
   pause
   exit /b 1
 )
-echo [i] ÓÃ %PY% Æô¶¯²¹ÆëÁ÷³Ì¡£×¢Òâ£ºÒÀÀµ»á×°½ø²Ö¿â¸ùµÄ py312\£¬²»ÊÇ¶¯Õâ¸ö½âÊÍÆ÷¡£
+echo [i] ç”¨ %PY% å¯åŠ¨è¡¥é½æµç¨‹ã€‚æ³¨æ„ï¼šä¾èµ–ä¼šè£…è¿›ä»“åº“æ ¹çš„ py312\ï¼Œä¸æ˜¯åŠ¨è¿™ä¸ªè§£é‡Šå™¨ã€‚
 %PY% scripts\setup_runtime.py %*
 if errorlevel 1 (
   echo.
-  echo [x] ÉÏÃæ×îºóÒ»Ìõ´ø x µÄ¾ÍÊÇÔ­Òò¡£ÐÞºÃºóÖØÅÜ±¾½Å±¾¼´¿É£¬Á÷³ÌÊÇÃÝµÈµÄ¡£
+  echo [x] ä¸Šé¢æœ€åŽä¸€æ¡å¸¦ x çš„å°±æ˜¯åŽŸå› ã€‚ä¿®å¥½åŽé‡è·‘æœ¬è„šæœ¬å³å¯ï¼Œæµç¨‹æ˜¯å¹‚ç­‰çš„ã€‚
   pause
 )
 exit /b %ERRORLEVEL%

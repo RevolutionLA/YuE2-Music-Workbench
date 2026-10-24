@@ -9,6 +9,41 @@
 版本的唯一真源是 git 的**附注标签**（`git tag -l -n`），本文件是给人看的说明；
 宣传文案里要写的版本号从本文件顶部条目取，不在别处另记一份数字（`app.py:_version_from_changelog()` 读本文件首条）。
 
+## [v10.24.1] - 2026-10-24
+
+### 修复：双击「启动音乐工作台.bat」毫无反应（窗口一闪而过，什么都不启动）
+- **现象**：双击根目录的启动脚本，窗口闪一下就没了，网关/dsh/引擎一个都没起。
+  服务其实没坏 —— 手动访问 `http://127.0.0.1:7863/` 一切正常。
+- **根因（环境变了，不是代码写错）**：本机开启了 Windows 的「Beta: 使用 Unicode UTF-8
+  提供全球语言支持」，`HKLM\...\Nls\CodePage` 的 `OEMCP` 与 `ACP` 都是 **65001**。
+  cmd.exe 用**控制台 OEM 码页**解析批处理，而当时所有 `.bat` 按旧约定存的是 **GBK** 字节 →
+  cmd 按 UTF-8 去解 GBK → 中文文件名变成「锟斤拷」→
+  `call "%~dp0scripts\启动音乐工作台.bat"` 直接报
+  `'...' is not recognized as an internal or external command` → 脚本在这一行就退出了，
+  后面的网关/看门狗/dsh 全没执行。实测复现：
+  ```
+  cmd /c 启动音乐工作台.bat no-open
+  # '...\scripts\<garbage>.bat' is not recognized as an internal or external command
+  # exit=1
+  ```
+- **修法（双保险，65001 与 936 都能跑）**：
+  1. 逻辑脚本改用 **ASCII 文件名**：`scripts/start_lab.bat`、`start_dsh.bat`、`stop_lab.bat`
+     —— **路径不参与码页解码，这才是根因修复**；
+  2. 原来的中文名脚本保留成一层**纯 ASCII 兼容壳**（`call "%~dp0start_lab.bat" %*`），
+     旧快捷方式、`register_protocol` 注册的 `yue2workbench://` 协议、文档里的路径都不失效；
+  3. 所有 `.bat` 转 **UTF-8（无 BOM）+ CRLF**，两个入口只 `call` ASCII 目标；
+  4. `watchdog.py` 的 `DSH_BAT` 也改指 `scripts/start_dsh.bat`。
+- **验证**：先停掉网关/dsh/引擎/看门狗，再 `cmd /c "启动音乐工作台.bat no-open"` 冷启动 →
+  三端口全部拉起（7863 / 3081 / 8080），`/api/health` 回 `gateway=ok`、引擎 `cuda`，
+  首页 200（654KB），看门狗与 dsh 日志正常，`_dsh_err.log` 0 字节。
+- **规矩改了**：`.gitattributes` 与 README「编码规矩」从「`.bat` 存 GBK」改为
+  「UTF-8 + 调用目标必须 ASCII」，并写明为什么（这次的实测链）。
+  `tests/test_script_encoding.py` 同步重写：新增「`call` 目标必须是纯 ASCII」
+  「兼容壳只能有那两行」「入口必须 call ASCII 逻辑脚本」三条，把这次的根因直接钉死。
+
+### 顺带
+- `tests/test_ai_native.py` 改为读 `scripts/start_lab.bat`（UTF-8）。
+
 ## [v10.24.0] - 2026-10-24
 
 > 整改 GitHub issue #4（评审 v10.23.0 的 8 条）。每条都先在**扁平布局**

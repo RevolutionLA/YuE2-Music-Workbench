@@ -36,7 +36,9 @@ except Exception:  # ports.py 缺失也不许看门狗起不来
 
 PY = ROOT / "py312" / "python.exe"
 APP = ROOT / "app.py"
-DSH_BAT = ROOT / "scripts" / "启动dsh工作台.bat"
+# ASCII 文件名：这台机器 OEMCP=65001，中文名虽由 Python (Unicode) 传进来不会错，
+# 但统一走 ASCII 逻辑脚本可以少一层壳，也避免有人在 cmd 里手抄这条路径时踩码页坑。
+DSH_BAT = ROOT / "scripts" / "start_dsh.bat"
 
 GW_PORT = port_of("gateway")
 DSH_PORT = port_of("dsh")

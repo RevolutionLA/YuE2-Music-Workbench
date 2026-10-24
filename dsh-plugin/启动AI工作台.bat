@@ -1,7 +1,7 @@
 @echo off
-REM Æô¶¯ÄÚÇ¶ DeepSeek Harness AI ¹¤×÷Ì¨£¨¶ÀÁ¢ DSH_HOME£¬¶Ë¿Ú 3081£¬²»Óë±¾µØ DSH µÄ 3080 ³åÍ»£©
+REM å¯åŠ¨å†…åµŒ DeepSeek Harness AI å·¥ä½œå°ï¼ˆç‹¬ç«‹ DSH_HOMEï¼Œç«¯å£ 3081ï¼Œä¸ä¸æœ¬åœ° DSH çš„ 3080 å†²çªï¼‰
 cd /d %~dp0
 set "DSH_HOME=%~dp0_dsh_home"
-rem ÃÜÔ¿´Ó±¾µØÎ´Èë¿âÎÄ¼ş¶ÁÈ¡£¨¼û²Ö¿â¸ù secrets/local_env.example.bat£©
+rem å¯†é’¥ä»æœ¬åœ°æœªå…¥åº“æ–‡ä»¶è¯»å–ï¼ˆè§ä»“åº“æ ¹ secrets/local_env.example.batï¼‰
 if exist "%~dp0..\secrets\local_env.bat" call "%~dp0..\secrets\local_env.bat"
 node node_modules\@deepseek-ai\dsh\lib\bin.js web --port 3081

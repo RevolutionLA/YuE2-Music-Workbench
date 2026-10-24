@@ -1,40 +1,11 @@
 @echo off
-rem [encoding] THIS FILE IS GBK (OEM cp936) ON PURPOSE. cmd.exe parses a batch file with the
-rem [encoding] console's OEM codepage; a UTF-8 batch under cp936 splits lines mid-character
-rem [encoding] and some commands silently stop running (not just a display issue). Do NOT
-rem [encoding] re-save as UTF-8 and do NOT add a mid-file code-page switch.
-title ÒôÀÖ¹¤×÷Ì¨ - Í£Ö¹
-cd /d %~dp0..
-rem ±¾½Å±¾Î»ÓÚ scripts\£¬ËùÓÐÏà¶ÔÂ·¾¶¾ùÒÔ²Ö¿â¸ùÎª»ù×¼
-
-rem ---- ¶Ë¿Ú£ºÎ¨Ò»ÕæÔ´ ports.json£¨ÓëÆô¶¯½Å±¾Í¬Ô´£©----
-set "GATEWAY_PORT=7863"
-set "DSH_PORT=3081"
-for /f "usebackq tokens=*" %%p in (`powershell -NoProfile -Command "try{$j=Get-Content '%cd%\ports.json' -Raw | ConvertFrom-Json; '{0} {1}' -f $(if($j.gateway){$j.gateway}else{'7863'}),$(if($j.dsh){$j.dsh}else{'3081'})}catch{'7863 3081'}" 2^>nul`) do (
-  for /f "tokens=1,2" %%a in ("%%p") do (set "GATEWAY_PORT=%%a" & set "DSH_PORT=%%b")
-)
-
-echo Í£Ö¹ ÒôÀÖ¹¤×÷Ì¨£¨ÕýÔÚ½øÐÐµÄÉú³ÉÈÎÎñ½«±»ÖÐ¶Ï£©...
-
-rem ÏÈÍ£¿´ÃÅ¹·£¬·ñÔòËü»áÁ¢¿Ì°ÑÍø¹ØÖØÐÂÀ­ÆðÀ´
-if exist "runtime\_watchdog.pid" (
-  for /f %%p in (runtime\_watchdog.pid) do taskkill /PID %%p /F >nul 2>&1
-  del /q "runtime\_watchdog.pid" >nul 2>&1
-)
-taskkill /IM pythonw.exe /F >nul 2>&1
-
-rem ¸Éµô MCP ¹¤¾ß½ø³Ì£¨dsh µ÷ÓÃ AI ¹¤¾ßÊ±À­Æð£¬½Å±¾ÔÚ src\mcp_server.py£©¡£
-rem °´ÃüÁîÐÐÆ¥Åä¶ø·Ç½ø³ÌÃû£¬±ÜÃâÎóÉ± py312 ÏÂÆäËü python ½ø³Ì¡£
-powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*mcp_server.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
-
-rem ¶Ë¿ÚÆ¥Åä´øÎ²Ëæ¿Õ¸ñ£¬±ÜÃâ :7863 ÎóÃüÖÐ :17863
-rem ¾ÖÓòÍø¿ª·Åºó²»ÄÜÔÙÎÞÄÔ°´¶Ë¿ÚÉ±¼àÌý£ºnetsh portproxy µÄ¼àÌý¿Ú£¨Èç
-rem 192.168.1.6:3081£©ÊôÓÚ svchost ÀïµÄ IP Helper£¨iphlpsvc£©£¬°´¶Ë¿ÚÉ±»á°ÑÕâ¸ö
-rem ÏµÍ³·þÎñËÞÖ÷Ò»Æð¸Éµô£¬×ª·¢¹æÔò»¹ÔÚµ«²»ÔÙ¼àÌý£¬Ö¢×´ÊÇ"¾ÖÓòÍøÍ»È»´ò²»¿ª¡¢
-rem ±¾»ú 3081 Ò»ÇÐÕý³£"¡£ËùÒÔÖ»É±°óÔÚ»Ø»·/Í¨ÅäµØÖ·ÉÏµÄ¼àÌý½ø³Ì£¨ÄÇ²ÅÊÇÍø¹ØÓë dsh£©¡£
-powershell -NoProfile -Command "foreach($pt in @($env:DSH_PORT,$env:GATEWAY_PORT)){Get-NetTCPConnection -State Listen -LocalPort $pt -ErrorAction SilentlyContinue | Where-Object { $_.LocalAddress -in '127.0.0.1','0.0.0.0','::','::0' } | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }}"
-taskkill /IM audiocpp_server.exe /F >nul 2>&1
-
-echo È«²¿ÒÑÍ£Ö¹£¨Íø¹Ø :%GATEWAY_PORT% / ¹¤×÷Ì¨ :%DSH_PORT% / ÍÆÀíÒýÇæ :8080£©¡£
-ping -n 3 127.0.0.1 >nul
-exit /b 0
+rem ================================================================
+rem å…¼å®¹å£³ï¼šçœŸæ­£çš„é€»è¾‘åœ¨åŒç›®å½•çš„ stop_lab.batï¼ˆASCII æ–‡ä»¶åï¼‰ã€‚
+rem ä¸ºä»€ä¹ˆè¦æœ‰è¿™ä¸€å±‚ï¼šæœ¬ä»“åº“çš„ .bat æ›¾æŒ‰ GBK ä¿å­˜ï¼Œè€Œ Windows çš„
+rem ã€ŒBeta: ä½¿ç”¨ Unicode UTF-8 æä¾›å…¨çƒè¯­è¨€æ”¯æŒã€ä¼šæŠŠ OEM ç é¡µè®¾æˆ 65001ã€‚
+rem é‚£æ—¶ cmd æŒ‰ UTF-8 è§£æž GBK å­—èŠ‚ -> ä¸­æ–‡æ–‡ä»¶åå…¨å˜ä¹±ç  -> call ç›´æŽ¥å¤±è´¥ï¼Œ
+rem åŒå‡»è„šæœ¬çª—å£ä¸€é—ªè€Œè¿‡ã€ä»€ä¹ˆéƒ½ä¸å¯åŠ¨ï¼ˆ2026-10-24 æœ¬æœºå®žæµ‹ï¼‰ã€‚
+rem çŽ°åœ¨é€»è¾‘è„šæœ¬ä¸€å¾‹ ASCII æ–‡ä»¶å + UTF-8 å†…å®¹ï¼š65001 ä¸‹ä¸­æ–‡æ­£å¸¸ï¼Œ
+rem 936 ä¸‹ä¹Ÿç…§æ ·è·‘å¾—åŠ¨ï¼ˆåªæ˜¯æ–‡æ¡ˆä¼šèŠ±ï¼‰ã€‚åˆ«æŠŠè¿™é‡Œæ”¹å›žä¸­æ–‡æ–‡ä»¶åã€‚
+rem ================================================================
+call "%~dp0stop_lab.bat" %*

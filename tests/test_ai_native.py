@@ -31,10 +31,11 @@ def client():
     return TestClient(app)
 
 INDEX = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-# 启动脚本按项目规矩存成 GBK（OEM cp936）：cmd.exe 用控制台自身的码页解析批处理，
-# UTF-8 的 .bat 在 936 控制台下会把一行中文切成半截、命令少跑几条。
-# 规矩与挡回归的用例见 tests/test_script_encoding.py 与 .gitattributes。
-LAUNCH_BAT = (ROOT / "scripts" / "启动音乐工作台.bat").read_bytes().decode("gbk")
+# 启动逻辑在 scripts/start_lab.bat（ASCII 名，码页无关）；`scripts\启动音乐工作台.bat`
+# 现在只是一个 call 它的兼容壳。内容按 UTF-8 存 —— 本机 OEMCP=65001 那次的教训见
+# tests/test_script_encoding.py 与 .gitattributes（中文文件名在 65001 下会变乱码，
+# 所以逻辑脚本必须是 ASCII 名，且入口只 call ASCII 目标）。
+LAUNCH_BAT = (ROOT / "scripts" / "start_lab.bat").read_text(encoding="utf-8")
 
 
 class TestChatRunsInsideGateway(unittest.TestCase):

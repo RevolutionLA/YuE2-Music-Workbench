@@ -1,12 +1,19 @@
-# 批处理脚本必须是 GBK（OEM cp936）字节，且不能被换行规范化碰。
-# 原因：cmd.exe 用控制台自身的 OEM 码页解析 .bat。UTF-8 的 .bat 在 936 控制台下会把
-# 一行中文按多字节切成半截，后果不是"显示难看"而是命令少跑几条（实测 echo 的后半段
-# 被当成独立命令执行，报「'xxx' 不是内部或外部命令」）。在文件里加 chcp 65001 也救不了：
-# cmd 早已按 936 打开了这个文件，中途换码页只会让字节偏移更错位。
-# 所以：这些 .bat 在仓库里就是 GBK 字节，别改回 UTF-8，也别在中间插 chcp。
-# 英文 Windows（单字节码页）读 GBK 只会字符难看，行结构不会错，因此是可接受的下限。
-# text eol=crlf：仓库内存 LF、检出时给 CRLF（cmd 要 CRLF），但不碰内容字节——
-# 这些文件是 GBK，git 的换行归一化只动行尾、不动编码，两者互不影响。
+# 批处理脚本：**UTF-8（无 BOM）+ CRLF，且它 call 的每个 .bat 文件名必须是纯 ASCII**。
+#
+# 这条规矩在 v10.24.1 改过一次，方向正好相反，原因是环境变了：
+# 原来的约定是「.bat 存 GBK」，前提是控制台 OEM 码页为 936。本机开了 Windows 的
+# 「Beta: 使用 Unicode UTF-8 提供全球语言支持」后 OEMCP=65001，cmd 改用 UTF-8 去解
+# GBK 字节 → 中文文件名变成「锟斤拷」→ `call "...\scripts\启动音乐工作台.bat"` 报
+# 「不是内部或外部命令」→ 双击启动脚本窗口一闪而过，网关/dsh/引擎一个都没起
+# （2026-10-24 实测，见 tests/test_script_encoding.py 的注释）。
+#
+# 现在的双重保险，让两个码页下都能跑：
+#   1) 内容 UTF-8（65001 下中文正常；936 下文案会花但命令结构不错）；
+#   2) 逻辑脚本一律 ASCII 文件名（scripts/start_lab.bat、start_dsh.bat、stop_lab.bat），
+#      中文名旧文件只保留成一层纯 ASCII 的兼容壳 `call "...\start_lab.bat" %*`。
+#      **路径不参与码页解码，这才是真正的根因修复。**
+# 禁止：改回 GBK、给 .bat 加 BOM（cmd 会把 BOM 当命令）、在文件中间插 chcp。
+# text eol=crlf：仓库内存 LF、检出给 CRLF（cmd 要 CRLF）。
 *.bat text eol=crlf
 *.cmd text eol=crlf
 

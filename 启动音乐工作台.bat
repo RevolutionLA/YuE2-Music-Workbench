@@ -1,15 +1,20 @@
 @echo off
-rem [encoding] THIS FILE IS GBK (OEM cp936) ON PURPOSE. cmd.exe parses a batch file with the
-rem [encoding] console's OEM codepage; a UTF-8 batch under cp936 splits lines mid-character
-rem [encoding] and some commands silently stop running (not just a display issue). Do NOT
-rem [encoding] re-save as UTF-8 and do NOT add a mid-file code-page switch.
-rem Ò»¼üÆô¶¯ÒôÀÖ¹¤×÷Ì¨£¨ÕıÊ½Âß¼­ÔÚ scripts\£¬´ËÎÄ¼ş½ö×ªµ÷£¬·½±ã´Ó¸ùÄ¿Â¼Ë«»÷£©
-echo ÔËĞĞÎ»ÖÃ: %~f0
+rem [encoding] THIS FILE IS UTF-8 (no BOM) ON PURPOSE, and every .bat it calls has an ASCII
+rem [encoding] name. cmd.exe decodes a batch file with the console OEM code page; this machine
+rem [encoding] runs the Windows "Beta: UTF-8 worldwide language support" option (OEMCP=65001),
+rem [encoding] so GBK bytes were parsed as UTF-8 -> Chinese file names became garbage ->
+rem [encoding] `call "...\scripts\<chinese>.bat"` died with "is not recognized" and the window
+rem [encoding] flashed shut (measured 2026-10-24: double-clicking did nothing at all).
+rem [encoding] UTF-8 content + ASCII call targets works under BOTH 65001 and 936.
+rem [encoding] Do NOT re-save as GBK, do NOT rename the targets back to Chinese, and do NOT
+rem [encoding] add a mid-file code-page switch.
+rem ä¸€é”®å¯åŠ¨éŸ³ä¹å·¥ä½œå°ï¼ˆæ­£å¼é€»è¾‘åœ¨ scripts\ï¼Œæ­¤æ–‡ä»¶ä»…è½¬è°ƒï¼Œæ–¹ä¾¿ä»æ ¹ç›®å½•åŒå‡»ï¼‰
+echo è¿è¡Œä½ç½®: %~f0
 if not exist "%~dp0py312\python.exe" (
-  echo [´íÎó] Î´ÕÒµ½ %~dp0py312\python.exe
-  echo ±¾½Å±¾ÒªÇó Python 3.12 »·¾³Ä¿Â¼ py312\ Óë±¾½Å±¾Í¬¼¶·ÅÖÃ£¨README¡¸Ê×´ÎÔËĞĞ×¼±¸¡¹ÁĞÃ÷ÁËÄÄ¼¸Ñù²»Èë¿â£©¡£
-  echo ÈôÄãÓÃµÄÊÇÍêÕû·Ö·¢°ü£¬ÇëÈ·ÈÏÕû¸öÄ¿Â¼£¨º¬ py312\£©Ò»Æğ¿½È«£¬Ö»Ìô .bat ¹ıÀ´ÊÇÆğ²»À´µÄ¡£
+  echo [é”™è¯¯] æœªæ‰¾åˆ° %~dp0py312\python.exe
+  echo æœ¬è„šæœ¬è¦æ±‚ Python 3.12 ç¯å¢ƒç›®å½• py312\ ä¸æœ¬è„šæœ¬åŒçº§æ”¾ç½®ï¼ˆREADMEã€Œé¦–æ¬¡è¿è¡Œå‡†å¤‡ã€åˆ—æ˜äº†å“ªå‡ æ ·ä¸å…¥åº“ï¼‰ã€‚
+  echo è‹¥ä½ ç”¨çš„æ˜¯å®Œæ•´åˆ†å‘åŒ…ï¼Œè¯·ç¡®è®¤æ•´ä¸ªç›®å½•ï¼ˆå« py312\ï¼‰ä¸€èµ·æ‹·å…¨ï¼ŒåªæŒ‘ .bat è¿‡æ¥æ˜¯èµ·ä¸æ¥çš„ã€‚
   pause
   exit /b 1
 )
-call "%~dp0scripts\Æô¶¯ÒôÀÖ¹¤×÷Ì¨.bat" %*
+call "%~dp0scripts\start_lab.bat" %*

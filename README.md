@@ -336,15 +336,22 @@ py312\python.exe scripts\download_models.py --q8     :: q8_0（约4GB，质量�
 
 ## 🧾 编码规矩（改脚本前先看，都是踩出来的）
 
-* **`.bat` 存成 GBK（OEM cp936），不许改回 UTF-8，也不许在文件中间 `chcp`。**
-  cmd.exe 用控制台自身的 OEM 码页解析批处理：UTF-8 的 `.bat` 在 936 控制台下会把一行中文
-  按多字节切成半截，后果不是"显示难看"而是**命令少跑几条**（实测 `echo` 的后半段被当成
-  独立命令执行，报「'xxx' 不是内部或外部命令」）。而在文件第 2 行加 `chcp 65001` 救不了——
-  cmd 早已按 936 打开了这个文件，中途换码页只会让字节偏移更错位（两条都已实测）。
-  GBK 文件在英文 Windows（单字节码页）上只会字符难看、行结构不会错，所以是安全的下限。
-  `.gitattributes` 里用 `*.bat text eol=crlf`：仓库内存 LF、检出时给 CRLF，换行归一化只动 CR/LF、不碰 GBK 字节（GBK 尾字节范围 0x40–0xFE 不含 0x0A/0x0D）。`.ps1` 同理 `text eol=crlf`；BOM 属于文件内容，git 属性保证不了，靠测试挡。
-* **`.bat` 里不能放 GBK 编不出的字符**（`✅🎵` 这类 emoji 直接写不进去）。要给用户打勾就
-  用 `[OK]`/`[x]`/`[!]` 这种 ASCII 记号。
+* **`.bat` 存成 UTF-8（无 BOM），并且它 `call` 的每个 `.bat` 文件名必须是纯 ASCII。**
+  cmd.exe 用**控制台自身的 OEM 码页**解析批处理，而这台机器开了 Windows 的
+  「Beta: 使用 Unicode UTF-8 提供全球语言支持」（`OEMCP=65001`）。脚本以前是 GBK 字节，
+  于是 cmd 按 UTF-8 去解 GBK：中文文件名变成「锟斤拷」，`call "...\scripts\启动音乐工作台.bat"`
+  直接报「不是内部或外部命令」，**双击启动脚本窗口一闪而过、网关/dsh/引擎一个都没起**
+  （2026-10-24 实测）。修法是双保险，两个码页下都能跑：
+  1. 内容 UTF-8 —— 65001 下中文正常，936 下文案会花但命令结构不错；
+  2. 逻辑脚本一律 ASCII 文件名（`scripts/start_lab.bat`、`start_dsh.bat`、`stop_lab.bat`），
+     中文名旧文件只剩一层纯 ASCII 的兼容壳 `call "%~dp0start_lab.bat" %*`。
+     **路径不参与码页解码**，这才是根因修复。
+  不许改回 GBK、不许给 `.bat` 加 BOM（cmd 会把 BOM 当命令）、不许在文件中间 `chcp`
+  （cmd 已按打开时的码页解完整行，中途切换只会让后续字节错位）。
+  `.gitattributes` 里用 `*.bat text eol=crlf`：仓库内存 LF、检出时给 CRLF。
+  `.ps1` 同理 `text eol=crlf`；BOM 属于文件内容，git 属性保证不了，靠测试挡。
+* **`.bat` 里尽量只放 ASCII 记号**（`[OK]`/`[x]`/`[!]`）：936 机器上中文文案会花，
+  纯 ASCII 至少能让看日志的人分清成功与失败。
 * **`.ps1` 必须是 UTF-8 with BOM。** Windows PowerShell 5.1 读无 BOM 的 UTF-8 会按 ANSI 解，
   而 `scripts/开放局域网.ps1` 里 `$RuleName = "YuE2 工作台 · 局域网 <端口>"` 是防火墙规则的
   匹配键——解错编码就会出现"规则加了却删不掉"。

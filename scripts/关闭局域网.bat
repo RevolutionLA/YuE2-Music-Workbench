@@ -1,42 +1,47 @@
 @echo off
-rem [encoding] THIS FILE IS GBK (OEM cp936) ON PURPOSE. cmd.exe parses a batch file with the
-rem [encoding] console's OEM codepage; a UTF-8 batch under cp936 splits lines mid-character
-rem [encoding] and some commands silently stop running (not just a display issue). Do NOT
-rem [encoding] re-save as UTF-8 and do NOT add a mid-file code-page switch.
+rem [encoding] THIS FILE IS UTF-8 (no BOM) ON PURPOSE, and every .bat it calls has an ASCII
+rem [encoding] name. cmd.exe decodes a batch file with the console OEM code page; this machine
+rem [encoding] runs the Windows "Beta: UTF-8 worldwide language support" option (OEMCP=65001),
+rem [encoding] so GBK bytes were parsed as UTF-8 -> Chinese file names became garbage ->
+rem [encoding] `call "...\scripts\<chinese>.bat"` died with "is not recognized" and the window
+rem [encoding] flashed shut (measured 2026-10-24: double-clicking did nothing at all).
+rem [encoding] UTF-8 content + ASCII call targets works under BOTH 65001 and 936.
+rem [encoding] Do NOT re-save as GBK, do NOT rename the targets back to Chinese, and do NOT
+rem [encoding] add a mid-file code-page switch.
 setlocal
 set "HERE=%~dp0"
 set "USER_ARGS=%*"
-title ÒôÀÖ¹¤×÷Ì¨ ¡¤ ÊÕ»Ø¾ÖÓòÍø
-rem Ë«»÷¼´¿É£ºÉ¾µô 3081 µÄ¶Ë¿Ú×ª·¢ºÍËüÄÇÌõ·À»ðÇ½¹æÔò£¬²¢°Ñ secrets\local_env.bat ÀïµÄ
-rem LAN Ãûµ¥ÈýÐÐ×¢ÊÍµô£¨¸ÄÇ°ÏÈ±¸·Ý local_env.bat.bak£©£¬Í¬Íø¶ÎÉè±¸¾ÍÔÙÒ²Á¬²»ÉÏ¡£
-rem ±¾»úÊ¹ÓÃ²»ÊÜÓ°Ïì£¨ÕÕ¾É http://127.0.0.1:3081£©¡£ÖØÐÂ¿ª·Å£ºË«»÷ ¿ª·Å¾ÖÓòÍø.bat¡£
-rem ´øÊ±¼ä´ÁµÄÃ÷Ï¸Ð´½ø runtime\data\logs\lan-open.log£¬ÆÁÄ»Ö»ÁôÒªµã¡£
-rem ¿ÉÑ¡²ÎÊý£º-KeepEnv Ö»²ð×ª·¢ºÍ·À»ðÇ½¡¢²»¶¯Ãûµ¥£»-Restart Ë³´øÖØÆô¹¤×÷Ì¨ÈÃÃûµ¥ÉúÐ§£»
-rem           -Preview Ö»¶ÁÔ¤ÑÝ"ÊÕ»Ø»á¶¯ÄÄÐ©¶«Î÷"£¨²»ÐèÒª¹ÜÀíÔ±£¬²»µ¯ UAC£©¡£
-rem ×¢Òâ£º%HERE% ±ØÐëÔÚÈÎºÎ shift Ö®Ç°È¡ºÃ£¨SHIFT »áÁ¬ %0 Ò»ÆðÅ²×ß£¬%~dp0 »á±ä¿Õ£©¡£
+title éŸ³ä¹å·¥ä½œå° Â· æ”¶å›žå±€åŸŸç½‘
+rem åŒå‡»å³å¯ï¼šåˆ æŽ‰ 3081 çš„ç«¯å£è½¬å‘å’Œå®ƒé‚£æ¡é˜²ç«å¢™è§„åˆ™ï¼Œå¹¶æŠŠ secrets\local_env.bat é‡Œçš„
+rem LAN åå•ä¸‰è¡Œæ³¨é‡ŠæŽ‰ï¼ˆæ”¹å‰å…ˆå¤‡ä»½ local_env.bat.bakï¼‰ï¼ŒåŒç½‘æ®µè®¾å¤‡å°±å†ä¹Ÿè¿žä¸ä¸Šã€‚
+rem æœ¬æœºä½¿ç”¨ä¸å—å½±å“ï¼ˆç…§æ—§ http://127.0.0.1:3081ï¼‰ã€‚é‡æ–°å¼€æ”¾ï¼šåŒå‡» å¼€æ”¾å±€åŸŸç½‘.batã€‚
+rem å¸¦æ—¶é—´æˆ³çš„æ˜Žç»†å†™è¿› runtime\data\logs\lan-open.logï¼Œå±å¹•åªç•™è¦ç‚¹ã€‚
+rem å¯é€‰å‚æ•°ï¼š-KeepEnv åªæ‹†è½¬å‘å’Œé˜²ç«å¢™ã€ä¸åŠ¨åå•ï¼›-Restart é¡ºå¸¦é‡å¯å·¥ä½œå°è®©åå•ç”Ÿæ•ˆï¼›
+rem           -Preview åªè¯»é¢„æ¼”"æ”¶å›žä¼šåŠ¨å“ªäº›ä¸œè¥¿"ï¼ˆä¸éœ€è¦ç®¡ç†å‘˜ï¼Œä¸å¼¹ UACï¼‰ã€‚
+rem æ³¨æ„ï¼š%HERE% å¿…é¡»åœ¨ä»»ä½• shift ä¹‹å‰å–å¥½ï¼ˆSHIFT ä¼šè¿ž %0 ä¸€èµ·æŒªèµ°ï¼Œ%~dp0 ä¼šå˜ç©ºï¼‰ã€‚
 cd /d "%HERE%.."
 net session >nul 2>&1
 if not errorlevel 1 goto run
 echo %USER_ARGS%|findstr /i /c:"-Preview" >nul && goto run
-echo ÕâÒ»²½Òª¸Ä¶Ë¿Ú×ª·¢ºÍ·À»ðÇ½£¬ÇëÔÚµ¯´°Àïµã¡¸ÊÇ¡¹£¬½á¹û»á´òÔÚÁíÒ»¸ö´°¿ÚÀï¡£
+echo è¿™ä¸€æ­¥è¦æ”¹ç«¯å£è½¬å‘å’Œé˜²ç«å¢™ï¼Œè¯·åœ¨å¼¹çª—é‡Œç‚¹ã€Œæ˜¯ã€ï¼Œç»“æžœä¼šæ‰“åœ¨å¦ä¸€ä¸ªçª—å£é‡Œã€‚
 powershell -NoProfile -ExecutionPolicy Bypass -Command "if ($env:USER_ARGS) { $a=$env:USER_ARGS.Split(' ',[System.StringSplitOptions]::RemoveEmptyEntries) } else { $a=@() }; Start-Process -FilePath ('%HERE%%~nx0') -Verb RunAs -ArgumentList $a"
 if errorlevel 1 (
-    echo ÊÚÈ¨±»È¡Ïû£¬Î´×öÈÎºÎ¸Ä¶¯¡£
+    echo æŽˆæƒè¢«å–æ¶ˆï¼Œæœªåšä»»ä½•æ”¹åŠ¨ã€‚
     echo.
     pause
 ) else (
-    rem ÌáÈ¨´°¿Ú²ÅÊÇ¸É»îµÄÄÇ¸ö£¬Õâ¸öÆô¶¯´°¿Ú 4 Ãëºó×Ô¼º¹Øµô£¬²»ÁôÒ»µØºÚ´°
+    rem ææƒçª—å£æ‰æ˜¯å¹²æ´»çš„é‚£ä¸ªï¼Œè¿™ä¸ªå¯åŠ¨çª—å£ 4 ç§’åŽè‡ªå·±å…³æŽ‰ï¼Œä¸ç•™ä¸€åœ°é»‘çª—
     timeout /t 4 /nobreak >nul
 )
 endlocal
 exit /b 0
 
 :run
-rem Ãûµ¥ÎÄ¼þÀïµÄÈýÐÐÓÉ½Å±¾×Ô¼º×¢ÊÍ£¬ÕâÀïÖ»°ÑËü¶Á½øÀ´×ö¿Ú¾¶ºË¶Ô
+rem åå•æ–‡ä»¶é‡Œçš„ä¸‰è¡Œç”±è„šæœ¬è‡ªå·±æ³¨é‡Šï¼Œè¿™é‡ŒåªæŠŠå®ƒè¯»è¿›æ¥åšå£å¾„æ ¸å¯¹
 if exist "%HERE%..\secrets\local_env.bat" call "%HERE%..\secrets\local_env.bat"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%HERE%¿ª·Å¾ÖÓòÍø.ps1" -Elevated -Revoke %USER_ARGS%
+powershell -NoProfile -ExecutionPolicy Bypass -File "%HERE%å¼€æ”¾å±€åŸŸç½‘.ps1" -Elevated -Revoke %USER_ARGS%
 echo.
-echo   °´ÈÎÒâ¼ü¹Ø±Õ±¾´°¿Ú
+echo   æŒ‰ä»»æ„é”®å…³é—­æœ¬çª—å£
 pause >nul
 endlocal
 exit /b 0

@@ -1,54 +1,11 @@
 @echo off
-rem [encoding] THIS FILE IS GBK (OEM cp936) ON PURPOSE. cmd.exe parses a batch file with the
-rem [encoding] console's OEM codepage; a UTF-8 batch under cp936 splits lines mid-character
-rem [encoding] and some commands silently stop running (not just a display issue). Do NOT
-rem [encoding] re-save as UTF-8 and do NOT add a mid-file code-page switch.
-rem ½öÆô¶¯ dsh ¹¤×÷Ì¨ UI£¨¶Ë¿ÚÄ¬ÈÏ 3081£¬¶Á ports.json£©¡£
-rem Ö÷Æô¶¯½Å±¾£¨Æô¶¯ÒôÀÖ¹¤×÷Ì¨.bat£©Óë¿´ÃÅ¹·£¨watchdog.py£©¹²ÓÃ±¾ÎÄ¼ş£¬
-rem ±ÜÃâÍ¬Ò»·İÆô¶¯²ÎÊıÔÚÁ½¸öµØ·½¸÷Ğ´Ò»±é¡¢¸ÄÒ»´¦Â©Ò»´¦¡£
-cd /d %~dp0..
-
-rem ---- ¶Ë¿Ú£ºÎ¨Ò»ÕæÔ´ ports.json ----
-set "DSH_PORT=3081"
-for /f "usebackq tokens=*" %%p in (`powershell -NoProfile -Command "try{$j=Get-Content '%cd%\ports.json' -Raw | ConvertFrom-Json; if($j.dsh){$j.dsh}else{'3081'}}catch{'3081'}" 2^>nul`) do set "DSH_PORT=%%p"
-
-rem ---- node ¶¨Î»£ºÓÅÏÈ PATH£¬ÍË»Ø³£¼û°²×°Î» ----
-set "NODE_EXE=node"
-where node >nul 2>&1
-if errorlevel 1 if exist "C:\Program Files\nodejs\node.exe" set "NODE_EXE=C:\Program Files\nodejs\node.exe"
-
-set "DSH_HOME=%cd%\dsh-plugin\_dsh_home"
-if not exist "%DSH_HOME%" mkdir "%DSH_HOME%"
-rem ²Ö¿â¸ù£ºdsh »á°Ñ²å¼ş¿½µ½ _dsh_home ÏÂÔÙ¼ÓÔØ£¬²å¼ş×Ô¼ºÍÆ²»³öÕæÊµÂ·¾¶£¬
-rem ÕâÀïÏÔÊ½×¢Èë£¬UI ¾²Ì¬ÍĞ¹Ü²ÅÄÜÕÒµ½ static/index.html
-rem ÃÜÔ¿´Ó±¾µØÎ´Èë¿âÎÄ¼ş¶ÁÈ¡£¨²Î¿¼ secrets\local_env.example.bat ´´½¨×Ô¼ºµÄ local_env.bat£©
-if exist "%cd%\secrets\local_env.bat" call "%cd%\secrets\local_env.bat"
-
-rem ÎŞ´°¿ÚÀ­Æğ node£¨ÓëÍø¹ØÍ¬¿î£©¡£À¶¾ü S5/S6£ºÔ­ÏÈÓÃ WMI Win32_Process.Create£¬
-rem WMI ÅÉÉú½ø³Ì¼Ì³ĞµÄÊÇ WMI ·şÎñµÄ»·¾³¶ø²»ÊÇ±¾ cmd µÄ»·¾³ ¡ª¡ª Êµ²â¶ÔÕÕÍ¬Ò»¶ÎÌ½Õë×Ó½ø³Ì½Å±¾£º
-rem WMI ¶Á²»µ½¸¸½ø³Ì±äÁ¿£¬Start-Process -WindowStyle Hidden ¶ÁµÃµ½¡£ËùÒÔÄÇ¶ÎÊ±¼äÀï
-rem ÉÏÃæ call local_env.bat Èû½øÀ´µÄ DEEPSEEK_API_KEY ¸ù±¾Ã»´«µ½ node£¬AI ¹¤×÷Ì¨ÄÃ²»µ½ÃÜÔ¿£¬
-rem ¶øÃÜÔ¿³öÏÖÔÚÃüÁîĞĞ×Ö·û´®ÓÖÊÇÁíÒ»»ØÊÂ£¨ÃüÁîĞĞÈ«¾Ö¿É¼û£¬¾ø²»ÄÜÓÃ %DEEPSEEK_API_KEY% Õ¹¿ª£©¡£
-rem ÏÖÔÚ£ºĞèÒªÔÚ node ²àÉúĞ§µÄ±äÁ¿Ò»ÂÉÓÃ set ·Å½ø±¾ cmd »·¾³£¬ÓÉ powershell¡únode Öğ²ã¼Ì³Ğ£»
-rem ÈÔÈ»²»Åö $env:£¨±¾»ú PowerShell µÄ Start-Process ±»×Ô¶¨Òå·â×°£¬¸Ä $env: »á°Ñ´úÀí±äÁ¿
-rem °´´óĞ¡Ğ´¸÷ÈûÒ»·İ½ø -Environment ¹şÏ£±í£¬¼üÖØ¸´Ö±½Ó±¨´í£©¡£
-set "DSH_NO_BROWSER=1"
-set "YUE2_ROOT=%cd%"
-rem À¶¾ü N-9£ºÄ¿Â¼/ÎÄ¼şÃûÒ»ÂÉ×ß»·¾³±äÁ¿£¬²»Æ´½ø PowerShell µÄµ¥ÒıºÅ×ÖÃæÁ¿¡£
-rem Æ´×ÖÃæÁ¿Ê±Â·¾¶ÀïÒ»¸öµ¥ÒıºÅ£¨C:\Users\O'Brien\...£©¾ÍÈÃÓÃ»§Ä¿Â¼ÏÂµÄÕûÌõÃüÁîÓï·¨±À£¬
-rem ¶ø catch{exit 1} °Ñ±¨´íÍÌ¹â£¬Ö÷½Å±¾¼ÌĞøÍùÏÂ×ßµ½"¹¤×÷Ì¨Î´¾ÍĞ÷"£¬¸ùÒòÓÀÔ¶¿´²»µ½¡£
-set "YUE2_DSH_DIR=%cd%\dsh-plugin"
-set "YUE2_DSH_OUT=%cd%\dsh-plugin\_dsh_web.log"
-set "YUE2_DSH_ERRLOG=%cd%\dsh-plugin\_dsh_err.log"
-set "YUE2_DSH_BIN=node_modules\@deepseek-ai\dsh\lib\bin.js"
-rem ---- ¾ÖÓòÍø¿ª·Å£º°Ñ YUE2_LAN_HOSTS ·­³É dsh µÄ /api ĞÅÈÎÕ¤À¸°×Ãûµ¥ ----
-rem dsh ³öÓÚ°²È«¾Ü¾ø --host 0.0.0.0£¨Ëü´øÄÜ¶ÁĞ´±¾»úÎÄ¼şµÄ agent ¹¤¾ß£©£¬ËùÒÔ±¾½ø³Ì
-rem ÕÕ¾ÉÖ»°ó 127.0.0.1£¬¶ÔÍâÓÉ netsh portproxy£¨¼û scripts\¿ª·Å¾ÖÓòÍø.bat£©°Ñ
-rem <±¾»ú LAN IP>:3081 ×ª½øÀ´¡£×ª·¢²»¸Ä Host Í·£¬ä¯ÀÀÆ÷·¢³öµÄ Host/Origin ÈÔÊÇ
-rem 192.168.1.6:3081£¬²»ÔÚ dsh »Ø»·ÅÉÉúÃûµ¥Àï¾Í»á±» /api Õ¤À¸ 403 µô¡ª¡ªÖ¢×´ÊÇ
-rem "Ò³ÃæÄÜ´ò¿ª¡¢°´Å¥È«¶¼Ã»·´Ó¦"¡£¹Ê·²¿ªÁË YUE2_LAN_HOSTS ¾ÍÖğ¸ö²¹³É --trusted-host
-rem £¨²»´ø¶Ë¿Ú = ¸ÃÖ÷»úÈÎÒâ¶Ë¿Ú£¬ÕıºÃ¸²¸Ç 3081 ÓëÄÚÇ¶´úÀíÓÃµÄ 7863£©¡£
-set "YUE2_DSH_TRUSTED="
-if defined YUE2_LAN_HOSTS set "YUE2_DSH_TRUSTED=--trusted-host %YUE2_LAN_HOSTS:,= %"
-powershell -NoProfile -Command "$Extra=@(); if($env:YUE2_DSH_TRUSTED){$Extra=$env:YUE2_DSH_TRUSTED -split '\s+' | Where-Object {$_}}; try{Start-Process -WindowStyle Hidden -FilePath $env:NODE_EXE -WorkingDirectory $env:YUE2_DSH_DIR -RedirectStandardOutput $env:YUE2_DSH_OUT -RedirectStandardError $env:YUE2_DSH_ERRLOG -ArgumentList (($env:YUE2_DSH_BIN,'web','--port',$env:DSH_PORT,'--no-open') + $Extra) -ErrorAction Stop | Out-Null}catch{exit 1}"
-exit /b 0
+rem ================================================================
+rem å…¼å®¹å£³ï¼šçœŸæ­£çš„é€»è¾‘åœ¨åŒç›®å½•çš„ start_dsh.batï¼ˆASCII æ–‡ä»¶åï¼‰ã€‚
+rem ä¸ºä»€ä¹ˆè¦æœ‰è¿™ä¸€å±‚ï¼šæœ¬ä»“åº“çš„ .bat æ›¾æŒ‰ GBK ä¿å­˜ï¼Œè€Œ Windows çš„
+rem ã€ŒBeta: ä½¿ç”¨ Unicode UTF-8 æä¾›å…¨çƒè¯­è¨€æ”¯æŒã€ä¼šæŠŠ OEM ç é¡µè®¾æˆ 65001ã€‚
+rem é‚£æ—¶ cmd æŒ‰ UTF-8 è§£æ GBK å­—èŠ‚ -> ä¸­æ–‡æ–‡ä»¶åå…¨å˜ä¹±ç  -> call ç›´æ¥å¤±è´¥ï¼Œ
+rem åŒå‡»è„šæœ¬çª—å£ä¸€é—ªè€Œè¿‡ã€ä»€ä¹ˆéƒ½ä¸å¯åŠ¨ï¼ˆ2026-10-24 æœ¬æœºå®æµ‹ï¼‰ã€‚
+rem ç°åœ¨é€»è¾‘è„šæœ¬ä¸€å¾‹ ASCII æ–‡ä»¶å + UTF-8 å†…å®¹ï¼š65001 ä¸‹ä¸­æ–‡æ­£å¸¸ï¼Œ
+rem 936 ä¸‹ä¹Ÿç…§æ ·è·‘å¾—åŠ¨ï¼ˆåªæ˜¯æ–‡æ¡ˆä¼šèŠ±ï¼‰ã€‚åˆ«æŠŠè¿™é‡Œæ”¹å›ä¸­æ–‡æ–‡ä»¶åã€‚
+rem ================================================================
+call "%~dp0start_dsh.bat" %*
