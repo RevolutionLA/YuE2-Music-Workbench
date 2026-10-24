@@ -29,6 +29,7 @@ for p in (str(ROOT), str(ROOT / "src"), str(Path(__file__).resolve().parent)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from _env import HAS_RVC_ENV, SKIP_RVC  # noqa: E402
 from test_review_fixes import LOCAL_BASE, Sandbox, app  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -192,6 +193,7 @@ class TestServerAudioPath(ServerSourceBase):
         self.assertTrue(app._server_audio_path(f"{s}|vocals").is_file())
 
 
+@unittest.skipUnless(HAS_RVC_ENV, SKIP_RVC)
 class TestConvertFromServerSource(ServerSourceBase):
     """POST /api/rvc/convert 的 source_id：与上传同一个落点、同一条流水线、同样入队。"""
 
@@ -338,6 +340,7 @@ class TestConvertFromServerSource(ServerSourceBase):
         self.assertNotIn("src_spec", r.json()["job"])
 
 
+@unittest.skipUnless(HAS_RVC_ENV, SKIP_RVC)
 class TestTrainFromServerSource(ServerSourceBase):
     """POST /rvc/train/check 与 /rvc/train 的 source_ids：素材真的进了 dataset，闸门照样管。"""
 

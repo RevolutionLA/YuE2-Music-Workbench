@@ -349,13 +349,26 @@ def ensure_server_json(backend: str, quant: str) -> bool:
         try:
             cur = json.loads(dst.read_text(encoding="utf-8"))
             backend = str(cur.get("backend") or backend)
+            patched: list[str] = []
             if backend == "vulkan":
                 # 老部署也补上 mem_saver：只加这一个开关，不动模型路径/线程/后端。
                 so = (cur.get("models") or [{}])[0].setdefault("session_options", {})
                 if not so.get("mem_saver"):
                     so["mem_saver"] = True
-                    dst.write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8")
-                    log("  [OK] 已为 Vulkan 补上 session_options.mem_saver（阶段间释放权重）")
+                    patched.append("session_options.mem_saver=true（阶段间释放权重）")
+            # issue #4-5：升级用户的旧 server.json 没有 busy_timeout_ms，引擎于是沿用自带的
+            # 5 分钟 busy 守卫——一首跑几小时的歌会在中途被 503 掐断，而日志里没有任何一条
+            # 指向配置。这里幂等补齐（先备份），不覆盖用户其余选择。
+            if "busy_timeout_ms" not in cur:
+                bak = dst.with_name(dst.name + ".bak-busy-timeout")
+                if not bak.exists():
+                    shutil.copy2(dst, bak)
+                cur["busy_timeout_ms"] = 0
+                patched.append(f"busy_timeout_ms=0（关掉引擎 5 分钟 busy 守卫；原文件备份为 {bak.name}）")
+            if patched:
+                dst.write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8")
+                for item in patched:
+                    log(f"  [OK] 已为老配置补上 {item}")
         except Exception:  # noqa: BLE001
             pass
         log(f"  已存在 {dst} —— 不覆盖（engine_state 按它的 backend={backend} 对齐）")

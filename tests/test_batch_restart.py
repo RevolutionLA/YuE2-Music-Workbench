@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import time
@@ -179,10 +180,12 @@ class SettingsAndPreflight(BatchRestartBase):
         于是在 512 窗口下把本来跑得动的歌提前拦掉了。
         """
         saved = (app.backend_mode, app._vulkan_heap_budget_gb, app._cpu_fallback_allowed,
-                 app._read_vae_config, app._VAE_CONFIG_PATHS)
+                 app._read_vae_config, app._active_vae_config)
         app.backend_mode = lambda: "vulkan"
         app._vulkan_heap_budget_gb = lambda: 7.26
-        app._VAE_CONFIG_PATHS = [Path("stub/yue2-vae-config.json")]
+        # 预检现在按"当前加载模型那份"取窗口（issue #4-1）；这里直接钉住那份的定位结果，
+        # 不必再伪造一个 _VAE_CONFIG_PATHS 列表（那个常量已随扁平布局兼容一起删掉）
+        app._active_vae_config = lambda: Path("stub/yue2-vae-config.json")
         try:
             # 512 窗口：长歌放行
             app._read_vae_config = lambda p: {"decode_core_frames": 512}
@@ -205,7 +208,7 @@ class SettingsAndPreflight(BatchRestartBase):
             self.assertTrue(slow["warning"])
         finally:
             (app.backend_mode, app._vulkan_heap_budget_gb, app._cpu_fallback_allowed,
-             app._read_vae_config, app._VAE_CONFIG_PATHS) = saved
+             app._read_vae_config, app._active_vae_config) = saved
 
     def test_deepseek_key_file_is_gitignored(self):
         ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
@@ -232,17 +235,73 @@ class SettingsAndPreflight(BatchRestartBase):
 
 
 class DeepseekSetting(BatchRestartBase):
+    """⑫ 的 DeepSeek Key：**来源必须可见**，而且"清除"不许骗人（issue #4-2）。
+
+    优先级是 环境变量 > secrets/deepseek_api_key.txt（与 `src/ai_lab.py:ai_key()` 同口径）。
+    env 在场时，本页的保存/清除都只动文件，运行期仍用 env 那把 —— 老代码不回来源，
+    用户点了「清除」、页面还亮着"已配置"，根本不知道自己在改哪一把。
+    """
+
+    def _without_env(self) -> None:
+        """临时摘掉 DEEPSEEK_API_KEY。
+
+        环境变量优先级最高，不摘掉就测不出文件路径这条分支——本机设了 env 时，
+        "清除后应变未配置"恒为假（这正是 issue 报的那条红的根因）。
+        """
+        saved = os.environ.pop("DEEPSEEK_API_KEY", None)
+        if saved is not None:
+            self.addCleanup(os.environ.__setitem__, "DEEPSEEK_API_KEY", saved)
+
     def test_save_and_clear_never_returns_the_key(self):
+        self._without_env()
         r = self.client.post("/api/settings", json={"deepseek_api_key": "sk-test-123"})
         self.assertEqual(r.status_code, 200, r.text)
         self.assertTrue(app._DEEPSEEK_KEY_FILE.is_file())
         j = self.client.get("/api/settings").json()
         self.assertTrue(j["deepseek_api_key_set"])
+        self.assertEqual(j["deepseek_key_source"], "file")
         self.assertNotIn("deepseek_api_key", j, "接口绝不能把 Key 回传给前端")
         r = self.client.post("/api/settings", json={"deepseek_api_key_clear": True})
         self.assertEqual(r.status_code, 200, r.text)
         self.assertFalse(app._DEEPSEEK_KEY_FILE.exists())
-        self.assertFalse(self.client.get("/api/settings").json()["deepseek_api_key_set"])
+        j = self.client.get("/api/settings").json()
+        self.assertFalse(j["deepseek_api_key_set"])
+        self.assertIsNone(j["deepseek_key_source"], "文件清了、env 也没有 → 就是未配置")
+
+    def test_env_key_is_reported_as_env_and_survives_clear(self):
+        """env 来源时清除只删文件，Key 仍在——回包必须把这件事说清，不能只报"已清除"。"""
+        os.environ["DEEPSEEK_API_KEY"] = "sk-from-env-abcdefghijklmnop"
+        self.addCleanup(os.environ.pop, "DEEPSEEK_API_KEY", None)
+        j = self.client.get("/api/settings").json()
+        self.assertTrue(j["deepseek_api_key_set"])
+        self.assertEqual(j["deepseek_key_source"], "env",
+                         "环境变量优先于文件，来源必须报 env 而不是 file")
+        # 先存一份文件，再清除：文件该删，但"已配置"仍是真（env 撑着）
+        self.client.post("/api/settings", json={"deepseek_api_key": "sk-file-1"})
+        r = self.client.post("/api/settings", json={"deepseek_api_key_clear": True})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn("环境变量", r.json()["message"],
+                      "env 覆盖时必须告诉用户：本页清除清不掉它")
+        self.assertIn("local_env.bat", r.json()["message"], "还要给出改 Key 的正确入口")
+        self.assertFalse(app._DEEPSEEK_KEY_FILE.exists(), "文件仍然要真的删掉")
+        j = self.client.get("/api/settings").json()
+        self.assertTrue(j["deepseek_api_key_set"], "env 还在，就还是已配置")
+        self.assertEqual(j["deepseek_key_source"], "env")
+
+    def test_saving_while_env_wins_warns_instead_of_pretending(self):
+        os.environ["DEEPSEEK_API_KEY"] = "sk-from-env-abcdefghijklmnop"
+        self.addCleanup(os.environ.pop, "DEEPSEEK_API_KEY", None)
+        r = self.client.post("/api/settings", json={"deepseek_api_key": "sk-file-2"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn("环境变量", r.json()["message"],
+                      "env 在场时保存的文件不会生效，别让用户以为换成功了")
+        self.assertEqual(r.json()["deepseek_key_source"], "env")
+
+    def test_nothing_configured_reports_null_source(self):
+        self._without_env()
+        j = self.client.get("/api/settings").json()
+        self.assertFalse(j["deepseek_api_key_set"])
+        self.assertIsNone(j["deepseek_key_source"])
 
 
 class LrcStandalone(BatchRestartBase):

@@ -294,9 +294,26 @@ class HealthShape(unittest.TestCase):
     探测窗口，于是"网关明明活着、脚本说未就绪"。现在模型名改从 server.json 现读。
     """
 
+    def expected_name(self):
+        """期望值现读 server.json。
+
+        原来这里写死 `yue2-3b-q4_k_m.gguf`——那锁的是"某一台机器当前用哪一档量化"，
+        换一台机器（或本机在 ⑫ 切到 q8）就假红。这条测试要锁的是**取数来源**：
+        名字必须来自 server.json，而不是去问引擎。所以期望值也从 server.json 取，
+        再用"必须以 .gguf 结尾"守住"取不到就退回 id"那种退化。
+        """
+        cfg = json.loads((ROOT / "cpp" / "server.json").read_text(encoding="utf-8"))
+        entry = (cfg.get("models") or [{}])[0]
+        so = entry.get("session_options") or {}
+        name = str(so.get("yue2.model_gguf") or "").strip()
+        if not name:
+            name = str(entry.get("path") or "").replace("\\", "/").rsplit("/", 1)[-1]
+        self.assertTrue(name.endswith(".gguf"), f"server.json 自己就该给出权重文件名：{name!r}")
+        return name
+
     def test_model_name_comes_from_server_json_not_from_the_engine(self):
         names = main._server_json_models()
-        self.assertEqual(names.get("yue2"), "yue2-3b-q4_k_m.gguf",
+        self.assertEqual(names.get("yue2"), self.expected_name(),
                          "页脚显示的必须是 server.json 真正指向的那一档权重")
 
     def _health(self, engine, listening):
@@ -316,7 +333,9 @@ class HealthShape(unittest.TestCase):
         self.assertEqual(j["gateway"], "degraded")
         self.assertEqual(j["audiocpp"]["status"], "down")
         self.assertIsNone(j["audiocpp"]["loaded"], "查不到就说查不到，不拿 False 冒充实测结论")
-        self.assertEqual(j["models"]["yue2"], "yue2-3b-q4_k_m.gguf")
+        # 引擎全死时页脚仍要报出配置里那一档权重（名字不靠引擎活着才拿得到）
+        self.assertEqual(j["models"]["yue2"], self.expected_name())
+        self.assertTrue(str(j["models"]["yue2"]).endswith(".gguf"))
 
     def test_busy_engine_is_not_mistaken_for_dead(self):
         """端口在监听、/health 超时 = 生成中被打满，报 busy，不能报 down（评审 T1）。"""

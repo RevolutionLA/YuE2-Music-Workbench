@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -151,38 +152,84 @@ class BackendDefaults(unittest.TestCase):
 
 
 class BackendProbe(unittest.TestCase):
-    """探测失败不能被永久缓存成"只有 cpu"（评审 T2）。"""
+    """探测失败不能被永久缓存成"只有 cpu"（评审 T2）；成功缓存也要能过期（issue #4-6）。"""
 
     def setUp(self) -> None:
-        self._saved = (app._ENGINE_BACKENDS_CACHE, app.subprocess.run)
+        self._saved = (app._ENGINE_BACKENDS_CACHE, app._ENGINE_BACKENDS_CACHE_AT,
+                       app.subprocess.run)
+        self.calls = 0
 
     def tearDown(self) -> None:
-        app._ENGINE_BACKENDS_CACHE, app.subprocess.run = self._saved
+        (app._ENGINE_BACKENDS_CACHE, app._ENGINE_BACKENDS_CACHE_AT,
+         app.subprocess.run) = self._saved
+
+    def _install(self, backends: str):
+        class _Ok:
+            returncode = 0
+            stdout = f"audio.cpp 0.9.2\nbackends: {backends}\n"
+
+        def fake(*a, **k):
+            self.calls += 1
+            return _Ok()
+
+        app.subprocess.run = fake
 
     def test_failure_is_not_cached(self):
         app._ENGINE_BACKENDS_CACHE = None
-
-        class _Boom:
-            returncode = 1
-            stdout = ""
 
         app.subprocess.run = lambda *a, **k: (_ for _ in ()).throw(OSError("boom"))
         self.assertEqual(app.engine_backends(), [])
         self.assertIsNone(app._ENGINE_BACKENDS_CACHE, "失败不许落缓存")
 
-        class _Ok:
-            returncode = 0
-            stdout = "audio.cpp 0.9.2\nbackends: cpu,vulkan\n"
-
-        app.subprocess.run = lambda *a, **k: _Ok()
+        self._install("cpu,vulkan")
         self.assertEqual(app.engine_backends(), ["cpu", "vulkan"])
+
+    def test_cache_expires_after_ttl(self):
+        """装好引擎后不必重启网关就能认出新后端。
+
+        老代码只有"写一次"、全仓没有第二处重置：首次在没有 cpp/*.exe 的机器上调用
+        得到 ['cpu']，随后 setup_runtime 装好引擎，resolve_backend("cuda") 仍回 cpu
+        并附一句"该构建只能用 CPU"，直到进程重启（issue #4-6）。
+        """
+        app._ENGINE_BACKENDS_CACHE = None
+        self._install("cpu")
+        self.assertEqual(app.engine_backends(), ["cpu"])
+        self.assertEqual(app.engine_backends(), ["cpu"])
+        self.assertEqual(self.calls, 1, "TTL 内应命中缓存，不要每次请求都起子进程")
+
+        # 把时间戳往前拨过 TTL，模拟"引擎刚装好、缓存已老"
+        app._ENGINE_BACKENDS_CACHE_AT -= app._ENGINE_BACKENDS_TTL + 1
+        self._install("cpu,cuda")
+        self.assertEqual(app.engine_backends(), ["cpu", "cuda"],
+                         "TTL 过期必须重新探测，否则永远停在旧结论")
+        self.assertEqual(self.calls, 2, "只该多探一次（过期那次）")
+
+    def test_invalidate_forces_a_fresh_probe(self):
+        app._ENGINE_BACKENDS_CACHE = ["cpu"]
+        app._ENGINE_BACKENDS_CACHE_AT = time.time()
+        app._invalidate_engine_backends()
+        self.assertIsNone(app._ENGINE_BACKENDS_CACHE)
+        self._install("cpu,cuda")
+        self.assertEqual(app.engine_backends(), ["cpu", "cuda"])
+
+    def test_restart_invalidates_before_probing(self):
+        """重启路径必须真调失效点，否则装好引擎还得重启网关才认（issue #4-6）。
+
+        不真跑 _restart_audiocpp（它会 taskkill 正在跑的引擎），只锁"调用存在且在
+        探测之前"——这条改坏时是"装完引擎仍按 cpu 起"，肉眼极难发现。
+        """
+        src = Path(app.__file__).read_text(encoding="utf-8", errors="replace")
+        i = src.index("def _restart_audiocpp")
+        head = src[i:i + 1200]
+        self.assertIn("_invalidate_engine_backends()", head,
+                      "重启前要丢掉后端能力缓存：引擎二进制可能刚被「一键补齐运行件」换过")
+        self.assertLess(head.index("_invalidate_engine_backends()"),
+                        head.index("engine_backends()"),
+                        "失效必须在探测之前，否则这次重启仍用旧结论")
 
     def test_unknown_backends_pass_the_request_through(self):
         app.engine_backends = lambda: []          # type: ignore[assignment]
-        try:
-            self.assertEqual(app.resolve_backend("cuda"), ("cuda", ""))
-        finally:
-            pass
+        self.assertEqual(app.resolve_backend("cuda"), ("cuda", ""))
 
 
 class CpuFallbackGate(unittest.TestCase):

@@ -30,6 +30,30 @@ C D E F | G A B c |
 """
 
 
+_NOTE_RE = __import__("re").compile(r"^([_=^]?)([A-Ga-g])([\',]*)$")
+
+
+def actual_pitches(abc: str) -> list[int]:
+    """解析一份 ABC 谱里正文音符的实际 MIDI 半音值（C4=0 基准）。
+    调号自动叠加——这是本次修复的核心：移调前后都用调号算实际音高，
+    否则 K:E 的 f（实为 F#）会被当成 F，移调后整条旋律偏半音。
+    变音记号只认前缀 ^_=（ABC 标准）——`bb` 是 B B 两个音，不是 Bb 一个音。"""
+    headers, body_lines = abc_edit.split_abc(abc)
+    key_raw = abc_edit._get_header(headers, "K") or "C"
+    tonic, is_minor, _ = abc_edit._parse_key(key_raw)
+    key_acc = abc_edit._key_accidentals(abc_edit._sig_of(tonic, is_minor))
+    out: list[int] = []
+    for tok in abc_edit._TOKEN.findall("\n".join(body_lines)):
+        m = _NOTE_RE.match(tok)
+        if not m:
+            continue
+        pre, letter, ticks = m.groups()
+        pc = abc_edit._actual_pc(letter.upper(), pre, key_acc)
+        octave = (1 if letter.islower() else 0) + ticks.count("'") - ticks.count(",")
+        out.append(octave * 12 + pc)  # C4(大写C无后缀)=0
+    return out
+
+
 class Transpose(unittest.TestCase):
     def test_up_two_semitones_moves_melody_and_key(self):
         r = abc_edit.transform(BASE, transpose=2)
@@ -37,11 +61,14 @@ class Transpose(unittest.TestCase):
         self.assertIn("D E", r["abc"])
 
     def test_down_two_semitones_writes_flats_not_sharps(self):
-        """降调里必须写 Bb 而不是 A#——音高一样，但谱面写法要对。"""
+        """降调里必须用 b、且能复用新调号的自动降号——音高一样，谱面写法要对。
+        K:C 的 B 在 K:Bb 下正好是调号自然音，写 B（不带显式记号）即演奏 Bb。"""
         r = abc_edit.transform(BASE, transpose=-2)
         self.assertIn("K: Bb", r["abc"])
-        self.assertIn("Bb,", r["abc"], "低音 Bb 应写成 Bb,")
         self.assertNotIn("A#", r["abc"], "降号调里不该出现升号写法")
+        # 用解析辅助断言实际音高，绑定语义而非谱面写法
+        pc = actual_pitches(r["abc"])
+        self.assertEqual(pc[:4], [-2, 0, 2, 3], "C D E F -2 半音 → Bb3 C4 D4 Eb4")
 
     def test_octave_down_keeps_pitch_classes(self):
         """移 -12 半音：音名不变，八度标记下移。"""
@@ -68,14 +95,11 @@ class ModalConversion(unittest.TestCase):
         r = abc_edit.transform("X:1\nM:4/4\nL:1/4\nK:C\nC D E F G A B c |\n",
                                mode="major_to_minor")
         self.assertIn("K: Cm", r["abc"], "同名小调调号应为 Cm")
-        line = r["abc"].split("K: Cm", 1)[1]
-        # C D Eb F G Ab Bb c —— 模块统一用「字母+降号」（Eb 而非 _E），
-        # 与真实五线谱写法一致；_E 那种前缀式只在明确需要时才会出现。
-        self.assertIn("Eb", line, "3 音级（E）应降半音写成 Eb")
-        self.assertIn("Ab", line, "6 音级（A）应降半音写成 Ab")
-        self.assertIn("Bb", line, "7 音级（B）应降半音写成 Bb")
-        self.assertTrue(line.strip().startswith("C"), "主音 C 不应移动")
-        self.assertNotIn("E ", line.replace("Eb", ""), "三音不该还是还原 E")
+        # 不强行断言显式降号写法（K:Cm 可复用调号自然字母），
+        # 改为断言实际音高：3/6/7 级降半音 → C D Eb F G Ab Bb c
+        pc = actual_pitches(r["abc"])
+        self.assertEqual(pc, [0, 2, 3, 5, 7, 8, 10, 12],
+                         "3/6/7 音级各降半音，其余不变")
 
     def test_minor_to_major_sharpens_third_sixth_seventh(self):
         r = abc_edit.transform("X:1\nM:4/4\nL:1/4\nK:Cm\nC D _E F G _A _B c |\n",
@@ -172,6 +196,459 @@ class Robustness(unittest.TestCase):
         self.assertIn("M:4/4", r["abc"])
         self.assertLess(r["abc"].index("X:"), r["abc"].index("K:"),
                         "头部顺序应保持 X 在前、K 在后")
+
+
+class KeySignatureAwareTranspose(unittest.TestCase):
+    """带调号的谱移调：被调号自动升降的音必须先叠进实际音高再 +delta。
+    这是 2026-10 修的根因 bug——旧逻辑只看字母，K:E 的 f（实为 F#）
+    被当 F，移 +5 算成 A 而非 B，整条旋律偏半音，听感上"调都变了"。
+    SheetSage2 输出几乎都带调号且不在音上写显式记号，所以这组测试才是
+    真正抓得住回归的。"""
+
+    def test_sharp_key_transpose_keeps_intervals(self):
+        """K:E（4 升号）下 f 实为 F#；移 +5 应为 B（不是 A）。
+        旧实现会算成 A#——少半音，旋律被破坏。"""
+        src = "X:1\nM:4/4\nL:1/4\nK:E\nf2|]\n"
+        r = abc_edit.transform(src, transpose=5)
+        self.assertIn("K: A", r["abc"], "E +5 = A 大调")
+        pc = actual_pitches(r["abc"])
+        self.assertEqual(pc, [23], "F#5(18) + 5 半音 = B5(23)")
+
+    def test_sharp_key_full_scale_transpose_preserves_intervals(self):
+        """K:E 全音阶移调 +2 后相邻音的半音差不变（音程关系是移调的定义）。"""
+        src = "X:1\nM:4/4\nL:1/4\nK:E\nc d e f g a b c' |]\n"
+        orig = actual_pitches(src)
+        r = abc_edit.transform(src, transpose=2)
+        moved = actual_pitches(r["abc"])
+        self.assertEqual(len(orig), len(moved), "音数不变")
+        for a, b in zip(orig, moved):
+            self.assertEqual(b - a, 2, f"每个音应升 2 半音：{orig} → {moved}")
+
+    def test_sheetsage2_real_output_transpose_preserves_intervals(self):
+        """真实 SheetSage2 输出样例（K:E，含 bb 后缀降号写法）移调后每个音严格 +5。
+        这是用户实际会踩的路径：SheetSage2 转谱 → 乐谱加工页移调 → 生成歌曲。"""
+        src = ("X:1\nM:2/4\nL:1/16\nQ:1/4=73\nK:E\n"
+               "c'2bb3gf|g2z6|c'2g'2g'2c'2|f'2g'2z2e'd'|\n")
+        orig = actual_pitches(src)
+        r = abc_edit.transform(src, transpose=5)
+        moved = actual_pitches(r["abc"])
+        self.assertEqual(len(orig), len(moved), "音数不变")
+        diffs = set(b - a for a, b in zip(orig, moved))
+        self.assertEqual(diffs, {5}, f"所有音差应恒为 5：{orig} → {moved}")
+        self.assertIn("K: A", r["abc"], "K:E +5 → K:A")
+
+    def test_consecutive_same_letter_notes_are_two_notes(self):
+        """`bb` 是 B B 两个音，不是 Bb 一个音。
+        铁证是小节时值：M:2/4 L:1/16 每小节 8 个 1/16——
+        c'2 b b3 g f = 2+1+3+1+1 = 8 凑满；若 bb 是一个 Bb3 则 2+3+1+1=7 缺拍。
+        旧 _TOKEN 带 `[#bn]?` 后缀，把紧跟的 b 音吞成降号 → 丢音+节奏塌缩。"""
+        src = "X:1\nM:2/4\nL:1/16\nK:E\nc'2bb3gf|\n"
+        self.assertEqual(actual_pitches(src),
+                         [25, 23, 23, 20, 18],
+                         "c' b b g f = C#5 B4 B4 G#4 F#4（bb 是两个 B）")
+        r = abc_edit.transform(src, transpose=5)
+        moved = actual_pitches(r["abc"])
+        self.assertEqual(len(moved), 5, "移调后必须还是 5 个音")
+        self.assertEqual([b - a for a, b in zip([25, 23, 23, 20, 18], moved)],
+                         [5, 5, 5, 5, 5], "每个音严格 +5")
+
+    def test_note_followed_by_b_note_is_not_merged(self):
+        """任何音后紧跟 b 音都不能被吞：`gb` = G B 两个音，不是 Gb 一个音。
+        SheetSage2 真实输出第二行就有 `z2gb`——旧正则会把 gb 并成一个 Gb。"""
+        src = "X:1\nM:2/4\nL:1/16\nK:E\nc'2g2z2gb|\n"
+        self.assertEqual(actual_pitches(src), [25, 20, 20, 23],
+                         "c' g (z) g b：C#5 G#4 G#4 B4（gb 是 G B 两个音，z 不算音）")
+        r = abc_edit.transform(src, transpose=5)
+        moved = actual_pitches(r["abc"])
+        self.assertEqual(len(moved), 4, "4 个音一个不能少")
+        self.assertEqual([b - a for a, b in zip([25, 20, 20, 23], moved)],
+                         [5, 5, 5, 5])
+
+    def test_output_uses_prefix_accidentals_only(self):
+        """产出的谱面变音记号必须是前缀 ^_（ABC 标准），不能写后缀 #b——
+        标准解析器（audiocpp）会把后缀 # 当噪音丢掉，音高错半音。"""
+        src = "X:1\nM:2/4\nL:1/16\nK:E\nf'2g'2z2e'd'|\n"
+        r = abc_edit.transform(src, transpose=1)
+        headers, body = abc_edit.split_abc(r["abc"])
+        for tok in abc_edit._TOKEN.findall("\n".join(body)):
+            m = _NOTE_RE.match(tok)
+            if not m:
+                continue
+            pre, letter, ticks = m.groups()
+            self.assertNotIn(letter[0] + "#", tok,
+                             f"音符 {tok} 不能用后缀 # 写变音（应为前缀 ^）")
+            self.assertNotIn(letter[0] + "b", tok,
+                             f"音符 {tok} 不能用后缀 b 写变音（应为前缀 _）")
+
+    def test_bar_duration_unchanged_after_transpose(self):
+        """移调后每小节的时值总量必须不变（节奏不能塌缩）。
+        用 token 序列对照：非音符 token 原样、音符 token 一一同构。"""
+        src = ("X:1\nM:2/4\nL:1/16\nK:E\n"
+               "c'2bb3gf|g2z6|c'2b2b3c'-|c'2g2z2gb|\n")
+        r = abc_edit.transform(src, transpose=5)
+        _, orig_body = abc_edit.split_abc(src)
+        _, new_body = abc_edit.split_abc(r["abc"])
+        orig_toks = abc_edit._TOKEN.findall("\n".join(orig_body))
+        new_toks = abc_edit._TOKEN.findall("\n".join(new_body))
+        self.assertEqual(len(orig_toks), len(new_toks),
+                         f"token 数必须守恒：{orig_toks} → {new_toks}")
+        for a, b in zip(orig_toks, new_toks):
+            is_note_a = bool(_NOTE_RE.match(a))
+            is_note_b = bool(_NOTE_RE.match(b))
+            self.assertEqual(is_note_a, is_note_b,
+                             f"token 结构错位：{a} → {b}")
+            if not is_note_a:
+                self.assertEqual(a, b, f"非音符 token 必须原样：{a} → {b}")
+
+    def test_inline_voice_lines_are_untouched(self):
+        """`V: Vocal` / `V: Ins` 是声部切换行，不是音符——SheetSage2 每段都写。
+        旧实现把 Vocal 里的 c/a 当音移调成 `V: Vofd'l`，声部路由全乱。
+        所有 inline 字段行（V:/K:/M:/w: …）必须整行原样透传。"""
+        src = ("X:1\nM:2/4\nL:1/16\nK:E\nV: Vocal\nc'2bb3gf|\n"
+               "V: Ins\nZ4|\nV: Vocal\nc'2g2z2gb|\n")
+        r = abc_edit.transform(src, transpose=5)
+        self.assertEqual(r["abc"].count("V: Vocal"), 2)
+        self.assertEqual(r["abc"].count("V: Ins"), 1)
+        self.assertNotIn("Vofd", r["abc"], "声部名绝不能被移调")
+        # 声部行必须独占一行（不能跟音符行粘连）
+        for ln in r["abc"].splitlines():
+            if ln.strip().startswith("V:"):
+                self.assertTrue(__import__("re").fullmatch(
+                    r"V:\s*\w+", ln.strip()), f"声部行被粘连：{ln!r}")
+
+    def test_real_sheetsage2_score_full_conservation(self):
+        """真实 SheetSage2 全谱（多声部、V: 行、Z 休止、bb 连写）移调守恒：
+        每个声部段音数不变、每个音严格 +5。内嵌样例取自实际输出结构。"""
+        src = ("X:1\nM:2/4\nL:1/16\nQ:1/4=73\n"
+               "V: Vocal clef=treble name=\"Vocal Melody\"\n"
+               "V: Ins clef=treble name=\"Ins Melody\"\nK:E\n"
+               "V: Vocal\nc'2bb3gf|g2z6|c'2g'2g'2c'2|f'2g'2z2e'd'|\n"
+               "V: Ins\nZ4|\n"
+               "V: Vocal\nc'2b2b3c'-|c'2g2z2gb|c'c'z4c'e'|f'4z2c'b|\n"
+               "V: Ins\nZ4|\n")
+        r = abc_edit.transform(src, transpose=5)
+        self.assertIn("K: A", r["abc"])
+        # 逐段音高守恒（跳过纯休止的 Ins 段）
+        headers, body_lines = abc_edit.split_abc(src)
+        key_a = abc_edit._get_header(headers, "K")
+        headers2, body2 = abc_edit.split_abc(r["abc"])
+        key_b = abc_edit._get_header(headers2, "K")
+        ka = abc_edit._key_accidentals(abc_edit._sig_of(*abc_edit._parse_key(key_a)[:2]))
+        kb = abc_edit._key_accidentals(abc_edit._sig_of(*abc_edit._parse_key(key_b)[:2]))
+
+        def segs(lines):
+            out, cur, buf = [], None, []
+            for line in "\n".join(lines).split("\n"):
+                s = line.strip()
+                m = __import__("re").match(r"^V:\s*(\w+)", s)
+                if m:
+                    if cur is not None:
+                        out.append((cur, buf))
+                    cur, buf = m.group(1), []
+                elif __import__("re").match(r"^[A-Za-z]:", s) or s.startswith("%"):
+                    continue
+                elif s:
+                    buf.append(s)
+            if cur is not None:
+                out.append((cur, buf))
+            return out
+
+        def pitches(lines, kacc):
+            res = []
+            for line in lines:
+                for tok in abc_edit._TOKEN.findall(line):
+                    m = _NOTE_RE.match(tok)
+                    if not m:
+                        continue
+                    pre, letter, ticks = m.groups()
+                    pc = abc_edit._actual_pc(letter.upper(), pre, kacc)
+                    oct_ = (1 if letter.islower() else 0) + ticks.count("'") - ticks.count(",")
+                    res.append(oct_ * 12 + pc)
+            return res
+
+        for (va, la), (vb, lb) in zip(segs(body_lines), segs(body2)):
+            self.assertEqual(va, vb)
+            pa, pb = pitches(la, ka), pitches(lb, kb)
+            self.assertEqual(len(pa), len(pb), f"[{va}] 音数变了")
+            if pa:
+                self.assertEqual(set(b - a for a, b in zip(pa, pb)), {5},
+                                 f"[{va}] 每个音必须严格 +5")
+
+    def test_flat_key_transpose_keeps_intervals(self):
+        """K:Bb（2 降号）下 B 实为 Bb；移 +2 应为 C（12）。"""
+        src = "X:1\nM:4/4\nL:1/4\nK:Bb\nB2|]\n"
+        r = abc_edit.transform(src, transpose=2)
+        pc = actual_pitches(r["abc"])
+        self.assertEqual(pc, [12], "Bb3(-2) + 2 半音 = C4(0)... 实为 Bb4(10)+2=C5(12)")
+
+    def test_explicit_sharp_overrides_key_signature(self):
+        """显式前缀 ^ 覆盖调号：K:E 下 ^c 是 C##（实为 D）。移 +1 → D#+1 = E... 不深究多重升降，
+        只验证显式记号不被调号覆盖。"""
+        src = "X:1\nM:4/4\nL:1/4\nK:E\n^c2|]\n"
+        r = abc_edit.transform(src, transpose=1)
+        pc = actual_pitches(r["abc"])
+        # ^c: K:E 调号本就升 C（C#=1）；
+        # 显式 ^ 覆盖调号后也是 C+1=1。移 +1 → 2(D)，octave=1 → 14
+        self.assertEqual(pc, [14])
+
+    def test_zero_transpose_on_keyed_score_is_noop(self):
+        """SheetSage2 输出 K:E 不带显式记号，移调 0 必须完全不变。"""
+        src = "X:1\nM:4/4\nL:1/4\nK:E\nc'2bb3gf|g2z6|c'2g'2g'2c'2|f'2g'2z2e'd'|\n"
+        r = abc_edit.transform(src, transpose=0)
+        self.assertEqual(actual_pitches(src), actual_pitches(r["abc"]),
+                         "移调 0 不应改任何音高关系")
+        self.assertEqual(r["note"], "谱面未改动")
+
+
+class LegacyCorruptionGuard(unittest.TestCase):
+    """坏谱哨兵：2026-10-10 修复前的旧版会把声部名当音符移调（Vocal→Vobg'l）、
+    用后缀 # 写变音（c#'2）。坏谱存在前端 localStorage 里被反复叠加加工
+    （实测 K:D 原谱被叠三次 +5 到 K:F），必须在入口拒绝，不能默默继续。"""
+
+    def _bad(self, **kw):
+        """带声部声明的完整谱（模拟 SheetSage2 真实头部结构）。"""
+        return ("X:1\nM:4/4\nL:1/16\nQ:1/4=82\n"
+                'V: Vocal clef=treble name="Vocal Melody" snm="Vocal"\n'
+                'V: Ins clef=treble name="Ins Melody" snm="Inst."\n'
+                "K:C\n% verse\n" + kw.get("body", ""))
+
+    def test_mangled_voice_name_rejected(self):
+        """声部名带八度记号（Vobg'l）→ 拒绝加工。"""
+        src = self._bad(body="V: Vobg'l\n\"C\"c2d2e2f2|\nV: Ins\nZ4|\n")
+        with self.assertRaises(ValueError) as cm:
+            abc_edit.transform(src, transpose=5)
+        self.assertIn("声部名", str(cm.exception))
+
+    def test_undeclared_voice_prefix_collision_rejected(self):
+        """声部名不在声明里且撞两字母前缀（Vofdl vs Vocal）→ 拒绝。"""
+        src = self._bad(body="V: Vofdl\n\"C\"c2d2e2f2|\n")
+        with self.assertRaises(ValueError):
+            abc_edit.transform(src, transpose=5)
+
+    def test_suffix_sharp_rejected(self):
+        """音符后缀 #（c#'2）是旧版 _render 残留 → 拒绝加工。"""
+        src = self._bad(body="V: Vocal\n\"C\"c#'2d2e2f2|\n")
+        with self.assertRaises(ValueError) as cm:
+            abc_edit.transform(src, transpose=5)
+        self.assertIn("#", str(cm.exception))
+
+    def test_chord_name_sharp_not_flagged(self):
+        """引号里的和弦名（"F#7/A#"）是合法的，不能误报。"""
+        src = self._bad(body="V: Vocal\n\"F#7/A#\"z16|c2d2e2f2|\n")
+        r = abc_edit.transform(src, transpose=5)  # 不抛错即通过
+        self.assertTrue(r["abc"])
+
+    def test_comment_sharp_not_flagged(self):
+        """注释行里的 # （% bridge#1）不误报。"""
+        src = self._bad(body="% bridge#1\nV: Vocal\nc2d2e2f2|\n")
+        r = abc_edit.transform(src, transpose=5)
+        self.assertTrue(r["abc"])
+
+    def test_clean_score_passes(self):
+        """干净谱（声明过的声部名 + 前缀变音）正常加工。"""
+        src = self._bad(body="V: Vocal\n\"C\"^c2_d2e2f2|\nV: Ins\nZ4|\n")
+        r = abc_edit.transform(src, transpose=5)
+        self.assertIn("K: F", r["abc"])
+
+    def test_undeclared_unrelated_voice_allowed(self):
+        """没撞前缀的自定义声部名（如 V: Drums 且头部未声明）不拦——
+        手写谱可能这么写，哨兵只拦"确定是坏"的。"""
+        src = ("X:1\nM:4/4\nL:1/16\nK:C\n"
+               "% verse\nV: Drums\n\"C\"c2d2e2f2|\n")
+        r = abc_edit.transform(src, transpose=5)
+        self.assertIn("V: Drums", r["abc"])
+
+
+class OctaveWrapTranspose(unittest.TestCase):
+    """跨八度移调（B4+1=C5）不能让字母选错导致差 13 半音。
+
+    根因：极端调号（K:C# 7 升号、K:Cb 7 降号）下，多个字母都能 mod 12 匹配
+    同一目标 pc。旧版 `_spell_in_key` 按字母序优先选，会把 B4+1 选成 B#
+    （K:C# 下 B 升=C6）而不是 C5——实际音高跨了一个八度（差 13 不是 1）。
+    修：`_spell_in_key` 加第 1 档——优先用 `_PC[L]==tp` 的自然音字母，
+    必要时加显式 `=` 还原号抵消调号自动升降。"""
+
+    SCALE_C = "X:1\nM:4/4\nL:1/4\nQ:1/4=88\nK:C\nC D E F | G A B c' |\n"
+
+    def _trans_diff(self, src, n):
+        orig = actual_pitches(src)
+        r = abc_edit.transform(src, transpose=n)
+        moved = actual_pitches(r["abc"])
+        return orig, moved
+
+    def test_kc_up_one_b_to_c(self):
+        """K:C 全音阶 +1：每个音严格 +1 半音，跨八度无错位。"""
+        orig, moved = self._trans_diff(self.SCALE_C, 1)
+        self.assertEqual(len(orig), len(moved))
+        self.assertEqual(set(b - a for a, b in zip(orig, moved)), {1})
+
+    def test_kc_up_two_three(self):
+        for n in (2, 3, 5, 7, 12):
+            orig, moved = self._trans_diff(self.SCALE_C, n)
+            self.assertEqual(set(b - a for a, b in zip(orig, moved)), {n},
+                             f"K:C +{n} 差集异常")
+
+    def test_kc_down_all(self):
+        for n in (-1, -2, -3, -5, -7, -12):
+            orig, moved = self._trans_diff(self.SCALE_C, n)
+            self.assertEqual(set(b - a for a, b in zip(orig, moved)), {n})
+
+    def test_ke_all_transpose_values(self):
+        """K:E（4 升号）下移 ±1/2/3/5/7/12 全部精确守恒。"""
+        src = ("X:1\nM:2/4\nL:1/16\nQ:1/4=73\nK:E\n"
+               "V: Vocal\nc'2bb3gf|g2z6|c'2g'2g'2c'2|f'2g'2z2e'd'|\n"
+               "V: Ins\nz4z4|z4z4|z4z4|z4z4|\n")
+        for n in (1, 2, 3, 5, 7, 12, -1, -2, -3, -5, -7, -12):
+            orig, moved = self._trans_diff(src, n)
+            self.assertEqual(len(orig), len(moved),
+                             f"K:E +{n} 音数变 {len(orig)}→{len(moved)}")
+            self.assertEqual(set(b - a for a, b in zip(orig, moved)), {n},
+                             f"K:E +{n} 差集异常")
+
+    def test_kbb_all_transpose_values(self):
+        """K:Bb（2 降号方向）下移 ±1/2/3/5/7/12 全部精确守恒。"""
+        src = "X:1\nM:4/4\nL:1/4\nQ:1/4=88\nK:Bb\nB c d e | f g a b |\n"
+        for n in (1, 2, 3, 5, 7, 12, -1, -2, -3, -5, -7, -12):
+            orig, moved = self._trans_diff(src, n)
+            self.assertEqual(len(orig), len(moved))
+            self.assertEqual(set(b - a for a, b in zip(orig, moved)), {n},
+                             f"K:Bb +{n} 差集异常")
+
+    def test_kgm_minor_key_all_transpose_values(self):
+        """K:Gm（1 升号，小调）下移调全部精确守恒——
+        小调调号 sig_of 已含 +3 偏移。"""
+        src = "X:1\nM:4/4\nL:1/4\nQ:1/4=88\nK:Gm\nG A B c | d e f g |\n"
+        for n in (1, 2, 3, 5, 7, 12, -1, -2, -3, -5, -7, -12):
+            orig, moved = self._trans_diff(src, n)
+            self.assertEqual(len(orig), len(moved))
+            self.assertEqual(set(b - a for a, b in zip(orig, moved)), {n},
+                             f"K:Gm +{n} 差集异常")
+
+
+class ParallelModalConversion(unittest.TestCase):
+    """平行大小调：3/6/7 级音升降半音，主音不变、八度不动。
+    大调→小调只允许 0/-1 差；小调→大调只允许 0/+1 差。"""
+
+    def test_kc_major_to_minor_step_by_step(self):
+        """K:C → K:Cm：C D E F G A B c' → C D Eb F G Ab Bb c'（仅 3/6/7 降半音）。"""
+        src = "X:1\nM:4/4\nL:1/4\nQ:1/4=88\nK:C\nC D E F G A B c'|\n"
+        r = abc_edit.transform(src, mode="major_to_minor")
+        out = actual_pitches(r["abc"])
+        # C D E F G A B c'(=C6=24)
+        expected = [0, 2, 3, 5, 7, 8, 10, 24]
+        self.assertEqual(out, expected, f"应 {expected} 实 {out}")
+        self.assertIn("K: Cm", r["abc"])
+
+    def test_ke_major_to_minor_only_0_or_minus1(self):
+        """K:E → K:Em：每个音差只能是 0（不动）或 -1（3/6/7 级降半音）。"""
+        src = ("X:1\nM:2/4\nL:1/16\nQ:1/4=73\nK:E\n"
+               "V: Vocal\nc'2bb3gf|g2z6|c'2g'2g'2c'2|f'2g'2z2e'd'|\n"
+               "V: Ins\nz4z4|z4z4|z4z4|z4z4|\n")
+        orig = actual_pitches(src)
+        r = abc_edit.transform(src, mode="major_to_minor")
+        moved = actual_pitches(r["abc"])
+        self.assertEqual(len(orig), len(moved))
+        diffs = set(b - a for a, b in zip(orig, moved))
+        self.assertTrue(diffs.issubset({0, -1}),
+                        f"差集应 ⊆ {{0, -1}}，实际 {diffs}")
+        self.assertIn("K: Em", r["abc"])
+        self.assertEqual(r["abc"].count("V: Vocal"), src.count("V: Vocal"))
+        self.assertEqual(r["abc"].count("V: Ins"), src.count("V: Ins"))
+
+    def test_kgm_minor_to_major_step_by_step(self):
+        """K:Gm → K:G：3级(_B→B)、6级(_e→e)、7级(F→F#) 各升半音。"""
+        src = "X:1\nM:4/4\nL:1/4\nQ:1/4=88\nK:Gm\nG A _B c' d' _e f' g'|\n"
+        r = abc_edit.transform(src, mode="minor_to_major")
+        out = actual_pitches(r["abc"])
+        # G A _B c' d' _e f' g' = [7,9,10,24,26,15,29,31]
+        # 升 3级: 10→11, 6级: 15→16, 7级: 29→30
+        expected = [7, 9, 11, 24, 26, 16, 30, 31]
+        self.assertEqual(out, expected, f"应 {expected} 实 {out}")
+        self.assertIn("K: G\n", r["abc"])
+
+    def test_kem_minor_to_major_step_by_step(self):
+        """K:Em → K:E：3级(G→G#)、6级(C→C#)、7级(D→D#) 各升半音。"""
+        src = "X:1\nM:4/4\nL:1/4\nQ:1/4=88\nK:Em\nE ^F G A | B c' d' e'|\n"
+        r = abc_edit.transform(src, mode="minor_to_major")
+        out = actual_pitches(r["abc"])
+        # E ^F G A B c' d' e' = [4,6,7,9,11,24,26,28]
+        # 升 3级: 7→8, 6级: 24→25, 7级: 26→27
+        expected = [4, 6, 8, 9, 11, 25, 27, 28]
+        self.assertEqual(out, expected, f"应 {expected} 实 {out}")
+        self.assertIn("K: E\n", r["abc"])
+
+
+class RelativeModalConversion(unittest.TestCase):
+    """关系大小调：旋律一个音不动，只改调号（K:C↔K:Am、K:Em↔K:G）。"""
+
+    def test_kc_to_relative_minor_melody_unchanged(self):
+        """K:C → K:Am：旋律不动（共用调号 sig=0），仅调号变。"""
+        src = "X:1\nM:4/4\nL:1/4\nQ:1/4=88\nK:C\nC D E F | G A B c' |\n"
+        orig = actual_pitches(src)
+        r = abc_edit.transform(src, mode="major_to_relative_minor")
+        moved = actual_pitches(r["abc"])
+        self.assertEqual(moved, orig, f"旋律应完全不动 {orig} vs {moved}")
+        self.assertIn("K: Am", r["abc"])
+
+    def test_kem_to_relative_major_melody_unchanged(self):
+        """K:Em → K:G：旋律不动（共用 sig=1），仅调号变。"""
+        src = "X:1\nM:4/4\nL:1/4\nQ:1/4=88\nK:Em\nE F G A | B c d e |\n"
+        orig = actual_pitches(src)
+        r = abc_edit.transform(src, mode="minor_to_relative_major")
+        moved = actual_pitches(r["abc"])
+        self.assertEqual(moved, orig, f"旋律应完全不动 {orig} vs {moved}")
+        self.assertIn("K: G\n", r["abc"])
+
+
+class CombinedOperations(unittest.TestCase):
+    """组合操作：移调 + 模式 + tempo + tempo_scale + strip_chords。"""
+
+    def test_transpose_plus_parallel_modal(self):
+        """K:E +5 → K:Am 同名小调：每音差 ⊆ {4, 5}（5 减去 modal 降的 1 半音）。"""
+        src = ("X:1\nM:2/4\nL:1/16\nQ:1/4=73\nK:E\n"
+               "V: Vocal\nc'2bb3gf|g2z6|c'2g'2g'2c'2|f'2g'2z2e'd'|\n"
+               "V: Ins\nz4z4|z4z4|z4z4|z4z4|\n")
+        orig = actual_pitches(src)
+        r = abc_edit.transform(src, transpose=5, mode="major_to_minor")
+        moved = actual_pitches(r["abc"])
+        self.assertEqual(len(orig), len(moved))
+        diffs = set(b - a for a, b in zip(orig, moved))
+        self.assertTrue(diffs.issubset({4, 5}),
+                        f"组合差集应 ⊆ {{4,5}}，实际 {diffs}")
+        self.assertIn("K: Am", r["abc"])
+
+    def test_minor_key_transpose_keeps_mode(self):
+        """K:Gm +5 → K:Cm（小调移调仍是小调）：每音 +5。"""
+        src = "X:1\nM:4/4\nL:1/4\nQ:1/4=88\nK:Gm\nG A B c | d e f g |\n"
+        orig = actual_pitches(src)
+        r = abc_edit.transform(src, transpose=5, mode="keep")
+        moved = actual_pitches(r["abc"])
+        self.assertEqual(set(b - a for a, b in zip(orig, moved)), {5})
+        self.assertIn("K: Cm", r["abc"])
+
+    def test_tempo_set_to_120(self):
+        src = "X:1\nM:4/4\nL:1/4\nQ:1/4=88\nK:C\nC D E F |\n"
+        r = abc_edit.transform(src, tempo=120)
+        self.assertIn("120", next(l for l in r["abc"].split("\n") if l.startswith("Q:")))
+
+    def test_tempo_scale_1_5(self):
+        src = "X:1\nM:4/4\nL:1/4\nQ:1/4=88\nK:C\nC D E F |\n"
+        r = abc_edit.transform(src, tempo_scale=1.5)
+        self.assertIn("132", next(l for l in r["abc"].split("\n") if l.startswith("Q:")))
+
+    def test_tempo_scale_pure_number_q(self):
+        """Q: 不带 = 形式也能缩放。"""
+        src = "X:1\nM:4/4\nL:1/4\nQ:88\nK:C\nC D E F |\n"
+        r = abc_edit.transform(src, tempo_scale=2.0)
+        self.assertIn("176", next(l for l in r["abc"].split("\n") if l.startswith("Q:")))
+
+    def test_strip_chords_removes_but_keeps_notes(self):
+        src = 'X:1\nM:4/4\nL:1/4\nQ:1/4=88\nK:C\n"C"C D |"G"E G |\n'
+        r = abc_edit.transform(src, strip_chords=True)
+        self.assertNotIn('"C"', r["abc"])
+        self.assertNotIn('"G"', r["abc"])
+        self.assertIn("C", r["abc"])
+        self.assertIn("D", r["abc"])
 
 
 if __name__ == "__main__":

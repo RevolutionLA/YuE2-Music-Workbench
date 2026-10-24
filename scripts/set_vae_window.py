@@ -23,10 +23,48 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BACKUP_SUFFIX = ".bak-vae-window"
+SIDECAR_NAME = "yue2-vae-config.json"
 
 
 def find_configs(root: Path = ROOT) -> list[Path]:
-    return sorted((root / "cpp" / "model").glob("*/sidecars/yue2-vae-config.json"))
+    """所有 VAE sidecar 配置，两种模型布局都认（issue #4-1）。
+
+    老写法只 glob `*/sidecars/yue2-vae-config.json`，只匹配"每个量化档一个子目录"
+    的布局；而"权重直接摊在 cpp/model/ 下"的扁平布局，它一份都匹配不到 —— 于是
+    脚本报"没找到配置"，网页开关则改了没在用的那份。
+      * 扁平：  cpp/model/yue2-3b-q8_0.gguf  → cpp/model/sidecars/yue2-vae-config.json
+      * 子目录：cpp/model/<quant>/<x>.gguf   → cpp/model/<quant>/sidecars/yue2-vae-config.json
+    """
+    model_dir = root / "cpp" / "model"
+    found: list[Path] = []
+    flat = model_dir / "sidecars" / SIDECAR_NAME
+    if flat.is_file():
+        found.append(flat)
+    for p in sorted(model_dir.glob(f"*/sidecars/{SIDECAR_NAME}")):
+        if p.is_file() and p not in found:
+            found.append(p)
+    return found
+
+
+def active_config(root: Path = ROOT) -> Path | None:
+    """当前在用模型对应的那份 sidecar（读 cpp/server.json）；解析不出来返回 None。
+
+    只用于在输出里标"（在用）"，不改变"改全部"的 CLI 语义。
+    """
+    try:
+        cfg = json.loads((root / "cpp" / "server.json").read_text(encoding="utf-8"))
+        entry = (cfg.get("models") or [{}])[0]
+    except (OSError, ValueError, IndexError, AttributeError):
+        return None
+    rel = str(entry.get("path") or "").strip().replace("\\", "/")
+    name = str((entry.get("session_options") or {}).get("yue2.model_gguf") or "").strip()
+    if not name and rel:
+        name = rel.rsplit("/", 1)[-1]
+    if not name:
+        return None
+    parent = (root / "cpp" / rel).parent if "/" in rel else (root / "cpp" / "model")
+    sidecar = parent / "sidecars" / SIDECAR_NAME
+    return sidecar if sidecar.is_file() else None
 
 
 def patch_file(path: Path, frames: int) -> tuple[int, int]:
@@ -61,8 +99,12 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     configs = find_configs(a.root)
     if not configs:
-        print(f"[x] 没找到 {a.root / 'cpp' / 'model'}/*/sidecars/yue2-vae-config.json")
+        print(f"[x] 没找到 VAE sidecar 配置：{a.root / 'cpp' / 'model'}/sidecars/{SIDECAR_NAME}"
+              f" 或 {a.root / 'cpp' / 'model'}/*/sidecars/{SIDECAR_NAME}")
         return 2
+    active = active_config(a.root)
+    if active is not None:
+        print(f"[i] 当前加载模型的配置：{active}")
     if a.restore:
         n = sum(restore_file(p) for p in configs)
         print(f"[OK] 已恢复 {n} 份 VAE sidecar；重启引擎后生效")
@@ -72,7 +114,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     for p in configs:
         old, new = patch_file(p, a.frames)
-        print(f"[OK] {p}: decode_core_frames {old} -> {new}")
+        mark = "（在用）" if p == active else ""
+        print(f"[OK] {p}{mark}: decode_core_frames {old} -> {new}")
     print("[!] 已备份为 *.bak-vae-window；重启引擎/工作台后生效。窗口越小接缝风险越高，请完整试听。")
     return 0
 

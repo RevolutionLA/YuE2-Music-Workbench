@@ -22,9 +22,12 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
-for p in (str(ROOT), str(ROOT / "src")):
+for p in (str(ROOT), str(ROOT / "src"), str(Path(__file__).resolve().parent)):
     if p not in sys.path:
         sys.path.insert(0, p)
+
+# 可选运行件探针（issue #4-3）：RVC/PyMSS 都不入库，缺件时这些用例只会红得毫无意义
+from _env import HAS_PYMSS, HAS_RVC_ENV, SKIP_PYMSS, SKIP_RVC  # noqa: E402
 
 # 编译网关 main.cp312-win_amd64.pyd 不入库（见 README「首次运行准备」），
 # 测试需要一个可 import 的替身：app.py 只用 main.app 与 main.settings 两处。
@@ -1615,6 +1618,7 @@ class TestWatchdogEarlyDeath(unittest.TestCase):
         self.assertEqual(len(svc["_spawns"]), 1)
 
 
+@unittest.skipUnless(HAS_RVC_ENV, SKIP_RVC)
 class TestRvcSerialQueue(Sandbox):
     """投诉④：连点「换声」不能并行。一次只跑一个，后面的排队、看得见、没开跑的能取消。
 
@@ -1951,6 +1955,7 @@ class TestRvcIndexFiles(Sandbox):
             app.RVC_MODELS_DIR = saved
 
 
+@unittest.skipUnless(HAS_RVC_ENV, SKIP_RVC)
 class TestRvcSubmitGate(Sandbox):
     """P0：两个换声入口在入队前把注定失败的参数拦下来（失败点原本在十几分钟队列之后）。"""
 
@@ -2079,6 +2084,7 @@ class TestRvcSubmitGate(Sandbox):
                          "参数不合法时不该在本机留下半成品工作目录")
 
 
+@unittest.skipUnless(HAS_RVC_ENV, SKIP_RVC)
 class TestRvcTrainCheck(Sandbox):
     """P1：训练前先给素材做体检（时长/静音/爆音/响度 + 建议轮数），确认后再开练不重传。"""
 
@@ -3511,6 +3517,7 @@ class TestRvcCapsProbe(unittest.TestCase):
         self.assertFalse(app._rvc_fcpe_ok())
 
 
+@unittest.skipUnless(HAS_RVC_ENV, SKIP_RVC)
 class TestTrainClean(Sandbox):
     """A1 素材净化锁测：两阶段 CLI 的真实命令行形状、声部实名挑选
     （Dry / No Noise——"No Noise" 含 "Noise"，子串匹配会选错边）、

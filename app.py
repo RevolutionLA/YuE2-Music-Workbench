@@ -482,6 +482,18 @@ def backend_mode() -> str:
 
 
 _ENGINE_BACKENDS_CACHE: list[str] | None = None
+_ENGINE_BACKENDS_CACHE_AT: float = 0.0
+# 缓存活多久。没有失效点时会出这种事（issue #4-6）：首次在没有 cpp/*.exe 的机器上
+# 调用 → 缓存 ['cpu']；随后 setup_runtime 装好引擎，resolve_backend("cuda") 仍回 cpu，
+# 并附一句"该构建只能用 CPU"，直到重启网关。TTL + 显式失效两头都堵。
+_ENGINE_BACKENDS_TTL = 60.0
+
+
+def _invalidate_engine_backends() -> None:
+    """丢弃后端能力缓存。候选集变了（装好引擎/重启成功/换模型）就必须调一次。"""
+    global _ENGINE_BACKENDS_CACHE, _ENGINE_BACKENDS_CACHE_AT
+    _ENGINE_BACKENDS_CACHE = None
+    _ENGINE_BACKENDS_CACHE_AT = 0.0
 
 
 def engine_backends() -> list[str]:
@@ -491,8 +503,10 @@ def engine_backends() -> list[str]:
     同时带 cpu 与 vulkan。用户点「切GPU」时，必须按**这份构建实际支持什么**落后端，
     否则会出现"页面说切成功、引擎根本起不来"。
     """
-    global _ENGINE_BACKENDS_CACHE
-    if _ENGINE_BACKENDS_CACHE is not None:
+    global _ENGINE_BACKENDS_CACHE, _ENGINE_BACKENDS_CACHE_AT
+    now = time.time()
+    if (_ENGINE_BACKENDS_CACHE is not None
+            and now - _ENGINE_BACKENDS_CACHE_AT < _ENGINE_BACKENDS_TTL):
         return _ENGINE_BACKENDS_CACHE
     found: list[str] = []
     try:
@@ -512,6 +526,7 @@ def engine_backends() -> list[str]:
         # 之后 `_restart_audiocpp` 会一直传 --backend cpu 把 CUDA 机器静默降速（评审 T2）。
         return []
     _ENGINE_BACKENDS_CACHE = found
+    _ENGINE_BACKENDS_CACHE_AT = now
     return found
 
 
@@ -602,6 +617,66 @@ _ENGINE_STARTED_AT = 0.0   # 本网关最后一次拉起引擎的时刻（排障
 _ENGINE_DIRTY = True
 
 
+_SERVER_BUSY_BAK = ".bak-busy-timeout"
+
+
+def _ensure_server_json_busy_timeout(path: Path | None = None) -> str:
+    """补齐 `cpp/server.json` 的 `busy_timeout_ms`，返回给人看的结论（空串=无需处理）。
+
+    issue #4-5：升级用户的旧 server.json 没有这个键，引擎就沿用自带的 5 分钟 busy
+    守卫——一首跑几小时的歌会在中途被 503 掐断，而日志里**没有一条**指向配置。
+    处理原则：
+      * 缺失 → 备份成 `*.bak-busy-timeout` 后补写 0（README「三条硬规矩」里就是这么写的）；
+      * 显式非 0 → 只 WARN，不擅自改用户的选择，但把后果说清；
+      * 模型级也带这个键时单独提示——它可能覆盖顶层（本机就是顶层 0、模型级 600000）。
+    """
+    p = Path(path) if path is not None else (ROOT / "cpp" / "server.json")
+    try:
+        cfg = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""          # 没有配置/读不动：留给 _ensure_backend 报更准确的错
+    if not isinstance(cfg, dict):
+        return ""
+    notes: list[str] = []
+    if "busy_timeout_ms" not in cfg:
+        bak = p.with_name(p.name + _SERVER_BUSY_BAK)
+        try:
+            if not bak.exists():
+                shutil.copy2(p, bak)
+            cfg["busy_timeout_ms"] = 0
+            tmp = p.with_name(p.name + ".tmp")
+            tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, p)
+            notes.append(f"server.json 缺 busy_timeout_ms，已备份为 {bak.name} 并补写 0"
+                         "（否则长歌会在 5 分钟时被引擎 busy 守卫 503 掐断）")
+        except OSError as e:
+            notes.append(f"server.json 缺 busy_timeout_ms，补写失败（{e}）："
+                         "长歌可能在 5 分钟后被引擎 503 掐断，请手工补 \"busy_timeout_ms\": 0")
+    else:
+        try:
+            top = int(cfg.get("busy_timeout_ms") or 0)
+        except (TypeError, ValueError):
+            top = -1
+        if top != 0:
+            notes.append(f"server.json 顶层 busy_timeout_ms={cfg.get('busy_timeout_ms')!r} 不是 0："
+                         "引擎自带的 busy 守卫会把长跑的歌在中途 503 掐断（应为 0）")
+    for i, entry in enumerate(cfg.get("models") or []):
+        if not isinstance(entry, dict) or "busy_timeout_ms" not in entry:
+            continue
+        try:
+            v = int(entry.get("busy_timeout_ms") or 0)
+        except (TypeError, ValueError):
+            v = -1
+        if v != 0:
+            mins = f"{v / 60000:.0f} 分钟" if v > 0 else "非法值"
+            notes.append(f"models[{i}].busy_timeout_ms={entry.get('busy_timeout_ms')!r}（{mins}）非 0。"
+                         "若引擎按模型级覆盖顶层，超过该时长的单首会被 503 掐断；"
+                         "要跑长歌就删掉这个键或也设 0")
+    for n in notes:
+        print(f"[startup] {n}", flush=True)
+    return "；".join(notes)
+
+
 def _restart_audiocpp(server_json_path: str, backend: str | None = None) -> None:
     """杀掉当前 audio.cpp 服务进程，并按新配置重启。
 
@@ -609,6 +684,9 @@ def _restart_audiocpp(server_json_path: str, backend: str | None = None) -> None
     backend 参数可临时覆盖本次启动的后端（cpu/cuda），不改变持久化模式。
     """
     global _ENGINE_STARTED_AT, _ENGINE_DIRTY
+    # 引擎二进制可能刚被「一键补齐运行件」替换过，重启前先丢掉旧的能力缓存，
+    # 否则这一次重启还会按上一次（可能是"只有 cpu"）的判断传 --backend（issue #4-6）。
+    _invalidate_engine_backends()
     if os.name == "nt":
         subprocess.run(
             ["taskkill", "/IM", "audiocpp_server.exe", "/F"],
@@ -805,7 +883,9 @@ def capabilities():
 def settings_get():
     return {"cpu_fallback_allowed": _cpu_fallback_allowed(),
             "cpu_fallback_source": _cpu_fallback_source(),
-            "deepseek_api_key_set": _deepseek_key_set()}
+            "deepseek_api_key_set": _deepseek_key_set(),
+            # 来源必须可见：env 来源时本页清除不掉，前端据此换文案（issue #4-2）
+            "deepseek_key_source": _deepseek_key_source()}
 
 
 @router.post("/settings")
@@ -823,16 +903,26 @@ def settings_set(payload: dict):
         key = payload.get("deepseek_api_key")
         if not isinstance(key, str) or len(key) > 500:
             raise HTTPException(status_code=400, detail="deepseek_api_key 必须是字符串（≤500 字符）")
+        overridden = _deepseek_key_source() == "env"
         _deepseek_key_write(key)
-        messages.append("DeepSeek Key 已保存" if key.strip() else "DeepSeek Key 已清除")
+        if key.strip():
+            messages.append("DeepSeek Key 已保存到 secrets/deepseek_api_key.txt"
+                            + ("（但" + _deepseek_env_note() + "）" if overridden else ""))
+        else:
+            messages.append("DeepSeek Key 文件已清除")
     if payload.get("deepseek_api_key_clear") is True:
         _deepseek_key_write("")
-        messages.append("DeepSeek Key 已清除")
+        # 清掉文件后还要看 env：是 env 在撑着"已配置"，就不能只报"已清除"
+        if _deepseek_key_source() == "env":
+            messages.append("已删除本页保存的 Key，但" + _deepseek_env_note())
+        else:
+            messages.append("DeepSeek Key 已清除")
     if not messages:
         raise HTTPException(status_code=400, detail="没有可保存的设置")
     return {"ok": True,
             "cpu_fallback_allowed": _cpu_fallback_allowed(),
             "deepseek_api_key_set": _deepseek_key_set(),
+            "deepseek_key_source": _deepseek_key_source(),
             "message": "；".join(messages)}
 
 
@@ -895,11 +985,78 @@ def backend_mode_set(payload: dict):
 # --------------------------------------------------------------------------- #
 _VAE_WINDOW_SUFFIX = ".bak-vae-window"      # 与 set_vae_window.py 的备份后缀一致
 _VAE_WINDOW_CHOICES = (512, 1024)           # UI 两档；脚本层的完整区间是 16~4096 的 8 倍数
+_VAE_SIDECAR_NAME = "yue2-vae-config.json"
+
+
+def _rel(p: Path) -> str:
+    """仓库内路径→相对 posix 路径；不是仓库内（测试里的假路径）就原样给，绝不抛。"""
+    try:
+        return p.relative_to(ROOT).as_posix()
+    except ValueError:
+        return p.as_posix()
+
+
+def _active_model_gguf() -> Path | None:
+    """引擎**接下来会加载**的权重文件（绝对路径）；读不到配置就返回 None。
+
+    权威是 `cpp/server.json` 的 `models[].session_options["yue2.model_gguf"]`
+    （缺了用 `models[].path` 的 basename）。不用 `runtime/data/engine_state.json`：
+    那是"上次真的加载了什么"，用户切了量化档但引擎没重启时它是旧值，而这里要回答的
+    是"点开关时引擎会去读哪份 sidecar"——必须按配置走。
+    """
+    try:
+        cfg = json.loads((ROOT / "cpp" / "server.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    entries = cfg.get("models") or []
+    if not isinstance(entries, list) or not entries or not isinstance(entries[0], dict):
+        return None
+    entry = entries[0]
+    rel = str(entry.get("path") or "").strip().replace("\\", "/")
+    so = entry.get("session_options") or {}
+    name = str(so.get("yue2.model_gguf") or "").strip().replace("\\", "/")
+    if not name and rel:
+        name = rel.rsplit("/", 1)[-1]       # 没有 session_options 的老配置，退回 path 的文件名
+    if not name:
+        return None
+    # model_gguf 只是文件名；**目录以 path 为准**（path 相对 cpp/），否则换档后会去找错目录。
+    parent = (ROOT / "cpp" / rel).parent if "/" in rel else (ROOT / "cpp" / "model")
+    return parent / name
+
+
+def _vae_sidecar_dir_of(model_file: Path) -> Path:
+    """引擎在**模型同目录**的 sidecars/ 下找 VAE sidecar（engine_state 的 loaded_vae_from=同目录）。"""
+    return model_file.parent / "sidecars"
+
+
+def _active_vae_config() -> Path | None:
+    """当前在用模型对应的 VAE sidecar；定位不到返回 None（不猜，也不拿别的档顶替）。"""
+    model = _active_model_gguf()
+    if model is None:
+        return None
+    sidecar = _vae_sidecar_dir_of(model) / _VAE_SIDECAR_NAME
+    return sidecar if sidecar.is_file() else None
 
 
 def _vae_window_configs() -> list[Path]:
-    """所有模型目录的 VAE sidecar 配置（现取不缓存：用户可能刚下完新模型）。"""
-    return sorted((ROOT / "cpp" / "model").glob("*/sidecars/yue2-vae-config.json"))
+    """所有 VAE sidecar 配置，**当前在用那份永远排第一**（现取不缓存：可能刚下完新模型）。
+
+    两种模型布局都得认（issue #4-1：老代码只 glob `*/sidecars/…`，扁平布局一份都匹配不到）：
+      * 扁平：权重摊在 `cpp/model/` 下 → sidecar 在 `cpp/model/sidecars/`
+      * 分子目录：`cpp/model/<quant>/<x>.gguf` → sidecar 在 `cpp/model/<quant>/sidecars/`
+    排序第一的会被当成"引擎实际会读的那份"报给开关和显存预检，所以 active 必须排头。
+    """
+    model_dir = ROOT / "cpp" / "model"
+    found: list[Path] = []
+    active = _active_vae_config()
+    if active is not None:
+        found.append(active)
+    candidates = [model_dir / "sidecars" / _VAE_SIDECAR_NAME]
+    candidates += sorted(model_dir.glob(f"*/sidecars/{_VAE_SIDECAR_NAME}"))
+    for p in candidates:
+        if p.is_file() and p not in found:
+            found.append(p)
+    return found
 
 
 def _vae_window_of(path: Path) -> int:
@@ -933,25 +1090,48 @@ def _vae_window_patch(path: Path, frames: int) -> tuple[int, int]:
 
 @router.get("/vae/window")
 def vae_window_get():
-    """设置页开关的当前状态：引擎实际会读到的窗口值 + 各模型目录明细。"""
+    """设置页开关的当前状态：**引擎实际会读到的**那份 sidecar 的窗口值 + 各文件明细。
+
+    `active` 是"当前加载模型对应的那份"，`configs[].active` 逐条标记；定位不到时
+    active=None 并在 note 里说清（不拿别的量化档顶替，那正是 issue #4-1 的病根）。
+    """
     configs = _vae_window_configs()
     if not configs:
         raise HTTPException(
             status_code=404,
-            detail="没找到 VAE sidecar 配置（cpp/model/*/sidecars/yue2-vae-config.json）；"
+            detail="没找到 VAE sidecar 配置（cpp/model/sidecars/yue2-vae-config.json 或 "
+                   "cpp/model/*/sidecars/yue2-vae-config.json）；"
                    "请先运行「一键补齐运行件.bat」把模型下载完",
         )
-    per = [{"path": p.relative_to(ROOT).as_posix(), "frames": _vae_window_of(p)}
-           for p in configs]
-    # 引擎一次只加载一个模型，预检估算读的也是 configs[0]；开关就报这一个值。
-    # 多模型目录若不一致，明细一并给出，避免"开关显示 512、其实那份是 1024"。
-    return {"frames": per[0]["frames"], "choices": list(_VAE_WINDOW_CHOICES),
-            "configs": per}
+    active = _active_vae_config()
+    if active is not None and active not in configs:
+        active = None
+    per = [{"path": _rel(p), "frames": _vae_window_of(p),
+            "active": p == active} for p in configs]
+    head = next((c for c in per if c["active"]), per[0])
+    model = _active_model_gguf()
+    out = {"frames": head["frames"], "choices": list(_VAE_WINDOW_CHOICES),
+           "configs": per,
+           "active": head["path"] if head["active"] else None,
+           "model": model.name if model is not None else ""}
+    if active is None:
+        out["note"] = (f"定位不到当前加载模型的 sidecar（cpp/server.json 缺 models[].path 或"
+                       f"该目录下没有 sidecars/），开关只能改全部 {len(per)} 份；多档不一致时"
+                       f"可能改不到引擎真正读的那份。")
+    # 多份不一致时把差异挑明：开关只报当前那份，别的档差着值是正常的（用户可能故意分开设）
+    others = [c for c in per if not c["active"] and c["frames"] != head["frames"]]
+    if others:
+        out["mismatch"] = [c["path"] for c in others]
+    return out
 
 
 @router.post("/vae/window")
 def vae_window_set(payload: dict):
-    """切换 VAE 解码窗口并重启引擎。frames 只接受 512 / 1024（UI 两档）。"""
+    """切换 VAE 解码窗口并重启引擎。frames 只接受 512 / 1024（UI 两档）。
+
+    默认**只改当前加载模型那一份**（`all: true` 才批量改全部）：老代码改全部分，
+    而扁平布局下那句 glob 一份都匹配不到，于是出现"页面显示 512、引擎读的仍是 1024"。
+    """
     try:
         frames = int(payload.get("frames"))
     except (TypeError, ValueError):
@@ -965,21 +1145,37 @@ def vae_window_set(payload: dict):
     configs = _vae_window_configs()
     if not configs:
         raise HTTPException(status_code=404, detail="没找到 VAE sidecar 配置，无法切换窗口")
-    changed: list[tuple[str, int, int]] = []
-    for p in configs:
+    active = _active_vae_config()
+    if active is None or active not in configs:
+        # 定位不到在用那份：只能全改（旧行为），但必须说清，不能让用户以为只改了一份
+        active = None
+        targets = configs
+        scope = f"定位不到当前加载模型，已改全部 {len(configs)} 份"
+    elif payload.get("all") is True:
+        targets = configs
+        scope = f"已改全部 {len(configs)} 份"
+    else:
+        targets = [active]
+        scope = "只改当前加载的那份"
+    changed: list[dict] = []
+    for p in targets:
         old, new = _vae_window_patch(p, frames)
-        if new != old:
-            changed.append((p.relative_to(ROOT).as_posix(), old, new))
-    if not changed:
-        return {"ok": True, "frames": frames, "restarted": False,
+        changed.append({"path": _rel(p), "old": old, "new": new,
+                        "active": p == active})
+    touched = [c for c in changed if c["new"] != c["old"]]
+    if not touched:
+        return {"ok": True, "frames": frames, "restarted": False, "changed": [],
+                "active": _rel(active) if active else None,
                 "message": f"VAE 窗口已是 {frames} 帧，无需切换（引擎未重启）"}
     _restart_audiocpp(str(SERVER_JSON))
-    where = "、".join(f"{name}（{old} → {new}）" for name, old, new in changed)
+    where = "、".join(f"{c['path']}（{c['old']} → {c['new']}）" for c in touched)
     note = ("；512 窗口显存约 1.95GB、长歌更稳，但切片变多接缝略明显，请完整试听一首"
             if frames == 512 else
             "；1024 为官方默认、速度略快，但 16GB 内存机器跑长歌可能 OutOfDeviceMemory")
-    return {"ok": True, "frames": frames, "restarted": True,
-            "message": f"已切换 VAE 窗口：{where}；引擎正在重启，约半分钟后生效{note}"}
+    print(f"[vae/window] {scope} → {frames} 帧：{where}", flush=True)
+    return {"ok": True, "frames": frames, "restarted": True, "changed": touched,
+            "active": _rel(active) if active else None,
+            "message": f"已切换 VAE 窗口（{scope}）：{where}；引擎正在重启，约半分钟后生效{note}"}
 
 
 # --------------------------------------------------------------------------- #
@@ -1045,6 +1241,23 @@ def _ai_ready() -> dict:
     return out
 
 
+def _gateway_kernel() -> dict:
+    """网关内核来自哪：编译的 `.pyd` 还是仓库里的 `main.py`（开源 shim）。
+
+    CPython 的扩展模块优先于同名 `.py`，而 `main.cp312-win_amd64.pyd` 在 .gitignore
+    里、老安装机器上普遍存在 —— 于是**同一版本两台机器可能走不同内核**：pyd 是编译版，
+    不启用开源网关"按 spec 白名单筛字段 + 丢弃键写日志"那套。以前这件事在任何界面
+    和日志里都看不出来（issue #4-7）。
+    """
+    f = Path(str(getattr(main, "__file__", "") or ""))
+    kind = "pyd" if f.suffix.lower() == ".pyd" else "shim"
+    note = ("编译版内核（*.pyd）：不启用开源网关的字段白名单/丢弃键日志，"
+            "要换成开源网关请把同目录的 main.cp312-win_amd64.pyd 移走"
+            if kind == "pyd" else
+            "开源网关 shim（main.py）：按 spec 白名单筛字段，被丢弃的键写日志")
+    return {"kind": kind, "path": str(f), "note": note}
+
+
 @router.get("/system/info")
 def system_info():
     """版本号 / 端口 / 目录 / 磁盘 / 显存 / 引擎就绪——全本地，不联网，不回密钥。"""
@@ -1055,6 +1268,8 @@ def system_info():
     out_dir = Path(OUTPUT_DIR)
     return {
         "version": _version_from_changelog(),
+        # 走的是 pyd 还是 shim：同版本两台机器内核可能不同，必须能查出来（issue #4-7）
+        "gateway_kernel": _gateway_kernel(),
         "ports": {"gateway": p.get("gateway"), "dsh": p.get("dsh"),
                   "audiocpp": p.get("audiocpp"), "ports_file": str(_ports.PORTS_FILE),
                   "ports_file_exists": _ports.PORTS_FILE.is_file()},
@@ -1142,15 +1357,19 @@ def _score_archive_dir(score_id: str) -> Path:
     return SCORES_DIR / sid
 
 
-def _score_save(job_id: str, abc: str, artifacts: list[str] | None = None) -> dict:
+def _score_save(job_id: str, abc: str, artifacts: list[str] | None = None,
+                title: str | None = None) -> dict:
     """乐谱入库（JSON 文件），返回记录（含 id、时间、ABC、分析摘要、已归档产物清单）。
 
     artifacts 是这一首歌在 data/scores/<id>/ 里归档到的文件名（MIDI/lab/events.json…）；
-    空列表就是真的没归档（老记录或上游没产出）——导出接口据此回明确错误，不返回 200 空体。"""
+    空列表就是真的没归档（老记录或上游没产出）——导出接口据此回明确错误，不返回 200 空体。
+    title 是「另存为」时给的名字（如『+5 半音 G 大调』）；老记录没有，列表就退化用 time+preview。"""
     SCORES_DIR.mkdir(parents=True, exist_ok=True)
     rec = {"id": job_id, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
            "abc": abc, "analysis": _abc_analyze(abc),
            "artifacts": sorted(artifacts or [])}
+    if title:
+        rec["title"] = title.strip()[:80]
     (SCORES_DIR / f"{job_id}.json").write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
     return rec
 
@@ -1427,7 +1646,7 @@ def abc_edit(payload: dict):
            "key": res["key"], "analysis": _abc_analyze(res["abc"][:200_000])}
     if payload.get("save"):
         sid = _new_id()
-        rec = _score_save(sid, res["abc"], [])
+        rec = _score_save(sid, res["abc"], [], title=payload.get("name"))
         out["score_id"] = rec["id"]
         out["saved_note"] = (payload.get("name") or "")[:80] or "乐谱加工结果"
     return out
@@ -1531,6 +1750,7 @@ def scores_list():
             an = rec.get("analysis") or {}
             arts = rec.get("artifacts") or []
             out.append({"id": rec.get("id"), "time": rec.get("time"),
+                        "title": rec.get("title") or "",
                         "cot": an.get("cot_suggested"),
                         "abc_preview": (rec.get("abc") or "")[:120],
                         # 前端据此决定导出按钮给不给（没有归档的 MIDI 就点了也是错）
@@ -3143,9 +3363,6 @@ _SETTINGS_JSON = ROOT / "runtime" / "data" / "settings.json"
 _DEEPSEEK_KEY_FILE = ROOT / "secrets" / "deepseek_api_key.txt"
 _SETTINGS_LOCK = threading.Lock()
 
-# VAE 窗口配置路径（用于预检显存估算）
-_VAE_CONFIG_PATHS = [p for p in (ROOT / "cpp" / "model").glob("*/sidecars/yue2-vae-config.json")]
-
 
 def _read_vae_config(path: Path) -> dict:
     """读取 VAE sidecar 配置。"""
@@ -3155,13 +3372,35 @@ def _read_vae_config(path: Path) -> dict:
         return {}
 
 
-def _deepseek_key_set() -> bool:
-    if os.environ.get("DEEPSEEK_API_KEY", "").strip():
-        return True
+_DEEPSEEK_ENV = "DEEPSEEK_API_KEY"
+
+
+def _deepseek_key_source() -> str | None:
+    """这把 Key 从哪来：`"env"`（环境变量）/ `"file"`（⑫ 里保存的）/ `None`（未配置）。
+
+    顺序不能反：环境变量优先是既有约定（`src/ai_lab.py:ai_key()` 与
+    `local_env.bat` 注入的部署都靠它），改顺序会让老部署悄悄换成文件里那把。
+
+    但**必须把来源说出来**：⑫ 点「清除」只删文件，环境变量还在，页面却继续显示
+    "已配置"——用户以为换了 key，实际走的还是 env 那把（issue #4-2）。
+    """
+    if os.environ.get(_DEEPSEEK_ENV, "").strip():
+        return "env"
     try:
-        return bool(_DEEPSEEK_KEY_FILE.read_text(encoding="utf-8").strip())
+        return "file" if _DEEPSEEK_KEY_FILE.read_text(encoding="utf-8").strip() else None
     except OSError:
-        return False
+        return None
+
+
+def _deepseek_key_set() -> bool:
+    return _deepseek_key_source() is not None
+
+
+def _deepseek_env_note() -> str:
+    """env 覆盖时的统一说明：保存/清除都只是动文件，运行期仍用 env 那把。"""
+    return (f"当前 Key 来自环境变量 {_DEEPSEEK_ENV}（优先级高于本页保存的），"
+            f"本页的保存/清除都只影响 secrets/deepseek_api_key.txt，"
+            f"要换 Key 请改 local_env.bat 里的 {_DEEPSEEK_ENV} 后重启工作台。")
 
 
 def _deepseek_key_write(key: str) -> None:
@@ -3274,14 +3513,22 @@ def _preflight_memory_estimate(payload: dict) -> dict:
     if frames <= 0:
         return {"ok": True, "message": "", "frames": 0, "peak_gb": 0, "budget_gb": 0}
     
-    # 读取实际 VAE 窗口配置
-    vae_window = 1024  # 默认值
-    if _VAE_CONFIG_PATHS:
+    # 读**当前加载模型**那份 sidecar 的窗口值（老代码读 `_VAE_CONFIG_PATHS[0]`：
+    # 那按目录名排序取第一份，扁平布局下干脆一份都没有 → 按官方默认 1024 猜，
+    # 若有人把 q4_k_m 设成 512 而实际跑 q8，估算会偏小 → OOM 或静默降级 CPU）。
+    vae_window = 1024  # 默认值（官方）
+    vae_cfg_path = _active_vae_config()
+    if vae_cfg_path is not None:
         try:
-            cfg = _read_vae_config(_VAE_CONFIG_PATHS[0])
-            vae_window = cfg.get("decode_core_frames", 1024)
-        except Exception:
-            pass
+            vae_window = int(_read_vae_config(vae_cfg_path).get("decode_core_frames")
+                             or 1024)
+            print(f"[preflight] VAE 窗口读自 {_rel(vae_cfg_path)}"
+                  f" → decode_core_frames={vae_window}", flush=True)
+        except (ValueError, TypeError):
+            vae_window = 1024
+    else:
+        print("[preflight] 定位不到当前加载模型的 VAE sidecar，按官方默认 1024 帧估算",
+              flush=True)
     
     # 根据窗口大小计算 VAE 显存
     if vae_window <= 512:
@@ -4621,6 +4868,20 @@ RVC_MODELS_DIR = RVC_DIR / "assets" / "weights"
 RVC_JOB_DIR = RVC_DIR / "jobs"
 _RVC_LOCK = threading.Lock()
 _RVC_JOBS: dict[str, dict] = {}  # rid -> {id,status,error,sec,model,...}
+
+_RVC_ENV_MISSING = ("换声/训练运行件未安装：缺 py312/python.exe 或 runtime/rvc/infer/cli.py。"
+                    "请双击「一键补齐运行件.bat」装好后再试；其余功能不受影响。")
+
+
+def _require_rvc_env() -> None:
+    """换声/训练类端点的统一前置检查：缺件回 503，不装崩。
+
+    原先是 500「rvc python 环境缺失」——500 的含义是"服务器代码出错了"，用户和 CI
+    都会去翻 traceback；而这其实只是这台机器没装可选运行件。503 才配得上"暂时不可用"
+    的语义，前端也能据此给"去装"的指引（issue #4-3）。
+    """
+    if not (RVC_PY.is_file() and (RVC_DIR / "infer" / "cli.py").is_file()):
+        raise HTTPException(status_code=503, detail=_RVC_ENV_MISSING)
 
 
 def _rvc_models() -> list[str]:
@@ -6896,8 +7157,7 @@ async def rvc_convert(
             detail="缺少换声的源：要么带 file（multipart 上传音频），要么带 source_id"
                    "（服务器素材标识：『<任务ID>』＝ output/<任务ID>.wav，"
                    "『<任务ID>|vocals / vocals_noharmony / accompaniment』＝⑩分离产物）")
-    if not RVC_PY.is_file():
-        raise HTTPException(status_code=500, detail="rvc python 环境缺失（py312/python.exe）")
+    _require_rvc_env()
     models = _rvc_models()
     if model not in models:
         raise HTTPException(status_code=400, detail=f"未知音色模型：{model}（可用：{models}）")
@@ -9378,8 +9638,7 @@ async def rvc_train_check(files: list[UploadFile] | None = File(None),
         raise HTTPException(status_code=400,
                             detail="需要至少一份素材：files（上传音频）与 source_ids"
                                    "（服务器素材标识，逗号分隔）至少给一个")
-    if not RVC_PY.is_file():
-        raise HTTPException(status_code=500, detail="rvc python 环境缺失（py312/python.exe）")
+    _require_rvc_env()
     # 标识全部解析完再建目录：写错一条就让整条请求在落任何东西之前失败
     server_srcs = [_server_audio_path(s) for s in specs]
     rid = _new_id()
@@ -10279,6 +10538,17 @@ if _mine_root is not None:
 
 if __name__ == "__main__":
     _orphan_cleanup_on_startup()
+    # 老升级用户的 server.json 可能缺 busy_timeout_ms：补齐（备份）并 WARN，别让长歌
+    # 无声无息地在第 5 分钟被引擎 503 掐断（issue #4-5）
+    _ensure_server_json_busy_timeout()
+    _kernel = _gateway_kernel()
+    print(f"[startup] 网关内核：{_kernel['kind']}（{_kernel['path']}）—— {_kernel['note']}",
+          flush=True)
+    _vae_cfg = _active_vae_config()
+    print("[startup] VAE 窗口配置：" + (
+        f"{_rel(_vae_cfg)}（decode_core_frames={_vae_window_of(_vae_cfg)}）"
+        if _vae_cfg is not None else "未定位到当前模型的 sidecar，预检将按官方 1024 帧估算"),
+        flush=True)
     uvicorn.run(
         app,
         host=settings.app_host,

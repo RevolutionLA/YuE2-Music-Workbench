@@ -75,6 +75,11 @@ class TestStoredLyricsAreTheUsersOwn(Sandbox):
         # Sandbox 自己占用了 self._saved（是它要还原的 dict），这里另起名，别把它的表盖掉
         self._saved_gen = (app._gen_run, app._GEN_JOB)
         app._GEN_JOB = None
+        # 中断标志是**模块级全局**：前面任何一组用例（终止/取消那几组）留下的残留标志
+        # 会让 `_gen_run` 在第一处 `if _stop_requested(): return` 直接返回，这里就
+        # 拿不到送给引擎的 payload。实测在干净导出树上时红时绿（同一棵树、同一个命令，
+        # 只因后台线程在那 1.1 秒窗口里置了标志）。用例自己声明基线，不赌别人清得干净。
+        app._clear_stop_flags()
         self.seen: list[tuple[dict, dict]] = []
 
     def tearDown(self) -> None:
@@ -111,13 +116,32 @@ class TestStoredLyricsAreTheUsersOwn(Sandbox):
             return 500, "桩：不让它真跑", b"", {}
 
         names = ("_ensure_backend", "_gen_run_once", "_commit_free_mb",
-                 "backend_mode", "_win_toast")
+                 "backend_mode", "_win_toast", "_stop_requested",
+                 "_audiocpp_alive", "_restart_audiocpp", "_mem_available_mb",
+                 "_ENGINE_DIRTY")
         saved = {n: getattr(app, n) for n in names}
         app._ensure_backend = lambda: None
         app._gen_run_once = fake_once
         app._commit_free_mb = lambda: 999999
         app.backend_mode = lambda: "cpu"
         app._win_toast = lambda *a, **k: None
+        # 本用例锁的是"送给引擎那份 payload 带收尾段"，与终止逻辑无关。
+        # `_stop_requested()` 读的是模块级 Event：`_gen_run` 里前置检查要跑约 1 秒，
+        # 期间若另一组用例留下的后台线程把标志置上，`_gen_run` 会在
+        # `if _stop_requested(): return` 处静默返回 → got 空 → KeyError 'lyrics'。
+        app._stop_requested = lambda: False
+        # ★ 最重要的一条：`_gen_run` 里有"每首开跑前重启引擎清驻留"的逻辑
+        #   （`if _audiocpp_alive() and _ENGINE_DIRTY: _restart_audiocpp(...)`），而
+        #   `_ENGINE_DIRTY` 的模块初值就是 True。只要本机 8080 上真有一个引擎在跑，
+        #   这条**单元测试就会 taskkill 掉它**，然后 `_wait_backend_ready` 失败抛错，
+        #   `_gen_run` 走异常分支、got 变空 → KeyError 'lyrics'。
+        #   实测这就是本地时红时绿的原因（跑测试前后引擎从"活"变"死"，正是它干的）。
+        #   跑测试绝不能碰真引擎：这里把三个入口都钉成"引擎不在、也别去起"。
+        app._audiocpp_alive = lambda: False
+        app._restart_audiocpp = lambda *a, **k: None
+        app._ENGINE_DIRTY = False
+        # 同理，可用物理内存是运行时的实时状态，不该决定一条 payload 断言的成败
+        app._mem_available_mb = lambda: 16384
         payload = {"style": "Mandarin folk", "lyrics": BODY, "cot": "full", "seed": 7}
         job = {"id": app._new_id(), "status": "running", "style": "Mandarin folk", "lyrics": BODY}
         try:

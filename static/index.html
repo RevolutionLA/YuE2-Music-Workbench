@@ -5238,12 +5238,18 @@ async function refreshVaeWindowSetting() {
   try {
     const j = await (await fetch("/api/vae/window")).json();
     const is512 = j.frames === 512;
+    // 报的是**当前加载模型**那份的值；标出模型名，避免多档不一致时又成"显示 A 实际 B"
+    const who = j.model ? ` · ${j.model}` : "";
+    const warn = j.active ? "" : " · 未定位到在用配置，切换将改全部";
     $("vaeWindowToggle").checked = is512;
-    $("vaeWindowLabel").textContent = is512
+    $("vaeWindowLabel").textContent = (is512
       ? "当前：512 帧窗口（推荐，显存占用约 1.95GB）"
-      : `当前：${j.frames || 1024} 帧窗口（官方默认，显存占用约 3.89GB）`;
+      : `当前：${j.frames || 1024} 帧窗口（官方默认，显存占用约 3.89GB）`) + who + warn;
+    $("vaeWindowLabel").title = (j.configs || [])
+      .map((c) => `${c.path} → ${c.frames}${c.active ? "（在用）" : ""}`).join("\n");
   } catch (e) {
     $("vaeWindowLabel").textContent = "读取失败：" + friendlyErr(e);
+    $("vaeWindowLabel").title = "";
   }
 }
 $("vaeWindowToggle").onchange = async () => {
@@ -5261,9 +5267,8 @@ $("vaeWindowToggle").onchange = async () => {
     });
     const j = await r.json();
     toast(j.message || "VAE 窗口已切换，引擎正在重启…", "ok");
-    $("vaeWindowLabel").textContent = targetFrames === 512
-      ? "当前：512 帧窗口（推荐，显存占用约 1.95GB）"
-      : `当前：${targetFrames} 帧窗口（官方默认，显存占用约 3.89GB）`;
+    // 重新拉一次真实状态，别拿本地目标值直接写进界面（那正是"显示 A 实际 B"的来源）
+    await refreshVaeWindowSetting();
     setTimeout(refreshHealth, 5000);
   } catch (e) {
     el.checked = !el.checked;
@@ -5292,10 +5297,20 @@ async function refreshDeepseekKey() {
   try {
     const j = await (await fetch("/api/settings")).json();
     const set = !!j.deepseek_api_key_set;
-    $("deepseekKeyState").textContent = set
-      ? "已配置。输入新 Key 可覆盖；留空不会改动。"
-      : "未配置；填入 DeepSeek Key 后 AI 写词/AI 工作台才可用。";
-    $("deepseekKeyState").style.color = set ? "var(--ok)" : "var(--muted)";
+    // 来源必须说清：env 优先于本页保存的文件，此时"清除"清不掉（issue #4-2）
+    const src = j.deepseek_key_source || (set ? "file" : null);
+    const el = $("deepseekKeyState");
+    if (src === "env") {
+      el.textContent = "已配置，来自环境变量 DEEPSEEK_API_KEY（优先级高于本页保存的）。"
+        + "本页清除不了它——要换 Key 请改 local_env.bat 后重启工作台。";
+      el.style.color = "var(--warn)";
+    } else if (src === "file") {
+      el.textContent = "已配置（保存在 secrets/deepseek_api_key.txt）。输入新 Key 可覆盖；留空不会改动。";
+      el.style.color = "var(--ok)";
+    } else {
+      el.textContent = "未配置；填入 DeepSeek Key 后 AI 写词/AI 工作台才可用。";
+      el.style.color = "var(--muted)";
+    }
   } catch (e) { $("deepseekKeyStatus").textContent = "读取失败：" + friendlyErr(e); }
 }
 $("deepseekKeySave").onclick = async () => {
@@ -5316,7 +5331,7 @@ $("deepseekKeySave").onclick = async () => {
   finally { $("deepseekKeySave").disabled = false; }
 };
 $("deepseekKeyClear").onclick = async () => {
-  if (!confirm("清除已保存的 DeepSeek Key？")) return;
+  if (!confirm("清除已保存的 DeepSeek Key？\n（若 Key 来自环境变量 DEEPSEEK_API_KEY，这一步清不掉它）")) return;
   try {
     const r = await jfetch("/api/settings", { method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({ deepseek_api_key_clear: true }) });
@@ -6235,7 +6250,7 @@ async function loadScoreList() {
       row.style.cssText = "display:flex;align-items:center;gap:8px;padding:4px 8px;margin:2px 0;border-radius:var(--r-sm);font-size:12px;cursor:pointer;background:rgba(127,127,127,.06);";
       const label = document.createElement("span");
       label.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
-      label.textContent = (s.time || "") + (s.cot ? " [" + s.cot + "]" : "") + " · "
+      label.textContent = (s.title ? s.title + " · " : "") + (s.time || "") + (s.cot ? " [" + s.cot + "]" : "") + " · "
         + (s.abc_preview || "").replace(/\s+/g, " ").slice(0, 40);
       label.title = "点击回填到乐谱框";      label.onclick = async () => {
         try {
@@ -8618,7 +8633,7 @@ async function loadScorePicker() {
     list.forEach((s) => {
       const o = document.createElement("option");
       o.value = s.id;
-      o.textContent = (s.time || s.id) + (s.cot ? " [" + s.cot + "]" : "") + " · " + (s.abc_preview || "").replace(/\s+/g, " ").slice(0, 34);
+      o.textContent = (s.title ? s.title + " · " : "") + (s.time || s.id) + (s.cot ? " [" + s.cot + "]" : "") + " · " + (s.abc_preview || "").replace(/\s+/g, " ").slice(0, 34);
       sel.appendChild(o);
     });
     // 不再按"别的页面留下的 scoreId"预选：那等于替用户做选择。默认停在列表第一条。
@@ -8943,7 +8958,7 @@ let sysCache = null;
    分 4 组（端口 / 目录 / 存储与显存 / 引擎），每组一个 .kv-group + 小标题，
    再让分组本身走多列流式排布 —— 高度腰斩，且"我要看什么"变成了"我去哪一组找"。 */
 const SYS_GROUPS = [
-  { key: "port",  title: "端口与版本", match: (k) => /^(version|ports\.|gateway$|read_only)/.test(k) },
+  { key: "port",  title: "端口与版本", match: (k) => /^(version|ports\.|gateway$|read_only|gateway_kernel\.)/.test(k) },
   { key: "path",  title: "目录",       match: (k) => /^paths\./.test(k) },
   { key: "disk",  title: "存储与显存", match: (k) => /^(disk\.|gpu\.|backend$)/.test(k) },
   { key: "eng",   title: "引擎与模型", match: (k) => /^(engines\.|audiocpp$)/.test(k) },
@@ -8954,6 +8969,10 @@ function sysGroupOf(k) {
 }
 const SYS_LABEL = {
   version: "版本", read_only: "只读说明",
+  // 网关走的是编译内核（pyd）还是开源 shim（main.py）——同一版本两台机器可能不同，
+  // 能力也不同（pyd 不做字段白名单/丢键日志），所以必须能在⑬看见（issue #4-7）
+  "gateway_kernel.kind": "网关内核", "gateway_kernel.path": "内核位置",
+  "gateway_kernel.note": "内核说明",
   // 后三个是 /api/system/info 缺席时退回 /api/health 用的裸键
   gateway: "网关", backend: "引擎模式", audiocpp: "音频引擎",
   "ports.gateway": "网关端口", "ports.dsh": "局域网入口 (dsh)", "ports.audiocpp": "引擎端口",

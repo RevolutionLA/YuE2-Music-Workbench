@@ -18,7 +18,12 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "src"))
+for _p in (str(ROOT / "src"), str(Path(__file__).resolve().parent)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+# 这条要起 py312 子进程验证 transformers 的 import 期常量：py312 不入库（issue #4-3）
+from _env import HAS_PY312, SKIP_PY312  # noqa: E402
 
 import sheetsage_pt  # noqa: E402
 
@@ -49,6 +54,7 @@ class CacheDirsAgree(unittest.TestCase):
         self.assertEqual(d, (ROOT / "runtime" / "hf_download").resolve())
 
 
+@unittest.skipUnless(HAS_PY312, SKIP_PY312)
 class TransformersSeesTheSameCache(unittest.TestCase):
     """光设 env 不算修好：必须断言 transformers 真正读到的那份值（评审 B14）。
 

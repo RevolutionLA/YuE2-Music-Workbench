@@ -9,6 +9,88 @@
 版本的唯一真源是 git 的**附注标签**（`git tag -l -n`），本文件是给人看的说明；
 宣传文案里要写的版本号从本文件顶部条目取，不在别处另记一份数字（`app.py:_version_from_changelog()` 读本文件首条）。
 
+## [v10.24.0] - 2026-10-24
+
+> 整改 GitHub issue #4（评审 v10.23.0 的 8 条）。每条都先在**扁平布局**
+> （权重摊在 `cpp/model/`、sidecar 在 `cpp/model/sidecars/`）与**干净导出树**上复现过，
+> 修完再用同一条件验证。全量从 727 条涨到 **756 条全绿**；干净 clone 从
+> **24 红 + 5 错** 降到 **0 红 0 错（55 skipped）**。
+
+### 修复（P1）：⑫「VAE 显存优化」改不到正在用的那份配置，预检还可能读错
+- 根因：三处同一个 glob `*/sidecars/yue2-vae-config.json`（`app.py` 的 `_vae_window_configs`、
+  `_VAE_CONFIG_PATHS`、`scripts/set_vae_window.py` 的 `find_configs`）只匹配"每个量化档一个
+  子目录"的布局。扁平布局下 `cpp/model/sidecars/yue2-vae-config.json`（当前加载的 q8 用的那份）
+  **一份都匹配不到** → 点 512 改的是没在用的 q4 那份，页面却显示 512；预检读
+  `_VAE_CONFIG_PATHS[0]`（排序第一 = q4 的 1024）→ 估算偏小 → OOM 或静默降级 CPU。
+- 新增 `_active_model_gguf()` / `_active_vae_config()`：从 `cpp/server.json` 的
+  `models[0].session_options["yue2.model_gguf"]`（缺则 `path` 的 basename）解析，**目录以 `path` 为准**，
+  sidecar 取"模型同目录下 `sidecars/`"（与引擎的 `loaded_vae_from=同目录` 一致）。
+  `_vae_window_configs()` 两种布局都认，且**在用那份永远排第一**。
+- `GET /api/vae/window` 增加 `active` / `model` / `configs[].active` / `mismatch`；
+  定位不到时给 `note` 明说（不拿别的量化档顶替）。
+- `POST` 默认**只改 active 那一份**，`{"all": true}` 才批量；回包 `changed` 逐份回显
+  `{path, old, new, active}`。定位不到 active 时退回全改，但 message 里写明"已改全部 N 份"。
+- 预检改为读 active 那份，并把"读自哪个文件、decode_core_frames 多少"打进日志。
+- `scripts/set_vae_window.py` 同步兼容两种布局，输出里标「（在用）」。
+- 前端 `vaeWindowLabel` 带上模型名，`title` 列出全部 sidecar 明细；切换成功后不再拿本地目标值
+  直接写界面，而是**重新拉一次真实状态**（那正是"显示 A 实际 B"的来源）。
+
+### 修复（P1）：DeepSeek Key 清除无效、页面永远显示"已配置"
+- 根因：`_deepseek_key_set()` 先看环境变量，而"清除"只写空文件 → env 在场时永远为真；
+  `GET /api/settings` 又不报来源，用户以为换了自己的 key，实际仍走 env
+  （`tests/test_batch_restart.py:245` 就是这么红的）。
+- 新增 `_deepseek_key_source()` → `"env" | "file" | null`，`GET/POST /api/settings` 都返回。
+- 清除时若来源是 env，回包明确说"已删除本页保存的 Key，但当前 Key 来自环境变量
+  `DEEPSEEK_API_KEY`，要换请改 `local_env.bat` 后重启"；保存时同样提示"文件不会生效"。
+- ⑫ 按来源给三种文案（env 用 `--warn` 色），清除按钮的 confirm 也提前说明 env 清不掉。
+- 用例补上 `delenv` 隔离，并新增 3 条：env 来源清除后仍为已配置且文案含"环境变量/local_env.bat"、
+  env 在场时保存要警告、全无配置时来源为 `null`。
+
+### 修复（P2）：测试对可选组件不隔离，干净 clone 24 红 + 5 错
+- 根因：`cpp/`、`runtime/`、`py312/` 全在 `.gitignore` 里，缺件用例要么拿到
+  `500 {"detail":"rvc python 环境缺失"}`，要么直接 `FileNotFoundError`。红绿混在一起，
+  新贡献者分不清"我改坏了"和"我没装运行件"。
+- 新增 `tests/_env.py`：`HAS_RVC_ENV` / `HAS_PYMSS` / `HAS_PY312` / `HAS_ENGINE` /
+  `HAS_SERVER_JSON` 探针 + 统一跳过理由（判据一律"文件真的在"，环境变量能把机器说成装好了，文件不会）。
+  按**模块/类级** `skipUnless`，用例根本不收集。
+- 端点对缺件从 **500 改 503**（`_require_rvc_env()`）：500 的意思是"代码崩了"，503 才配得上
+  "这台机器没装可选运行件"，文案直接给「一键补齐运行件.bat」的指引。
+
+### 修复（P2）：测试把本机量化档写死
+- `tests/test_shim_main.py` 两条断言原本写死 `yue2-3b-q4_k_m.gguf`，换 q8 立刻假红。
+  改为期望值从 `cpp/server.json` **现读**（`session_options.yue2.model_gguf`，缺则 `path` 的
+  basename），并加"必须以 `.gguf` 结尾"守住"取不到就退回 id"那种退化。
+
+### 修复（P2）：老安装缺 `busy_timeout_ms`，无迁移无提示
+- 引擎自带的 5 分钟 busy 守卫会把长跑的歌中途 503 掐断，而日志里没有一条指向配置。
+- 新增 `_ensure_server_json_busy_timeout()`，网关启动时调用：**缺失 → 备份为
+  `*.bak-busy-timeout` 后补 0**；显式非 0 → 只 WARN 不擅改；模型级也带这个键时单独提示
+  （本机就是顶层 0、模型级 600000=10 分钟）。
+- `scripts/setup_runtime.py` 的"已存在不覆盖"分支现在也幂等补键（以前只在新建时写模板，
+  老安装重跑脚本永远补不上）。
+
+### 修复（P2）：`engine_backends()` 缓存没有失效点
+- 首次在没 `cpp/*.exe` 的机器上调用会缓存 `['cpu']`，随后装好引擎仍按 cpu 启动，
+  直到重启网关（`resolve_backend("cuda")` 还附一句"该构建只能用 CPU"）。
+- 加 60 秒 TTL + `_invalidate_engine_backends()`；`_restart_audiocpp` 在 taskkill **之前**
+  失效缓存（引擎二进制可能刚被替换），这次重启就按新能力判后端。
+
+### 修复（P3）：`main.cp312-win_amd64.pyd` 遮蔽 `main.py` 且无任何提示
+- CPython 扩展模块优先于同名 `.py`，而 `.pyd` 在 `.gitignore` 里、老安装机器上普遍存在
+  → 同一版本两台机器走不同内核（pyd 不做字段白名单/丢键日志），没人看得出来。
+- 新增 `_gateway_kernel()` → `{kind: "pyd"|"shim", path, note}`；**启动日志**打印
+  `[startup] 网关内核：…`，**`/api/system/info`** 新增 `gateway_kernel`，⑬ 关于页可见
+  （`SYS_LABEL` 补三个中文标签 + 归入"端口与版本"组）。
+- README 写清两条路的能力差异与切换方式（移走同目录 pyd）。启动日志同时打印
+  "VAE 窗口配置读自哪个文件"。
+
+### 文档
+- README 用例数 642 → **756**（中英同步），并把"测试依赖前提"写清：干净 clone 上是
+  `skipped` 不是红，机制在 `tests/_env.py`，端点缺件回 503。
+- 新增 `tests/test_vae_window_api.py::ActiveConfigResolution`（10 条）、
+  `tests/test_server_json_hygiene.py`（13 条），`test_backend_mode.py` +3 条，
+  `test_batch_restart.py` +3 条。
+
 ## [v10.23.0] - 2026-10-23
 
 ### 修复：设置页「VAE 显存优化」开关点下去 404
