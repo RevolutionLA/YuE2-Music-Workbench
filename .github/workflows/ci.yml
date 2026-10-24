@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - name: Install ruff
         run: python -m pip install --upgrade pip ruff
       # 硬门禁只判语法级错误（E9）。F821 这类在这里会假红：项目大量使用
@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - name: Install core deps
         run: |
           python -m pip install --upgrade pip
@@ -55,7 +55,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - name: pip install --dry-run
         run: |
           python -m pip install --upgrade pip
