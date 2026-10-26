@@ -1,0 +1,1336 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>音乐工作台 · YuE2</title>
+<link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3.5' fill='%23a85a14'/%3E%3Cpath d='M11.2 3 6.8 4v5.6a1.9 1.9 0 1 0 .9 1.6V6.1l3.5-.8v2.9a1.9 1.9 0 1 0 .9 1.6V3z' fill='%23fff'/%3E%3C/svg%3E" />
+<style>/*__APP_CSS__*/</style>
+</head>
+<body>
+
+<aside class="side">
+  <div class="brand">
+    <div class="mark"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 1.5 6 2.7v7.1a2.4 2.4 0 1 0 1.2 2.1V5.4l4.3-1v3.4a2.4 2.4 0 1 0 1.2 2.1V1.5z"/></svg></div>
+    <div>
+      <div class="brand-name">音乐工作台</div>
+      <div class="brand-sub">YuE2 · 本地音乐生成</div>
+    </div>
+  </div>
+  <nav>
+    <!-- v2.0：一条链路上的每个环节各占一页，三组分栏。data-tab 值即 hash 与 #tab-X 面板名 -->
+    <div class="nav-group">创作</div>
+    <button class="tab active" data-tab="style"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 5.2h11M2.5 10.8h11"/><circle cx="6" cy="5.2" r="1.7"/><circle cx="10.4" cy="10.8" r="1.7"/></svg><span class="tno">①</span><span class="tlabel">Style 设计</span></button>
+    <button class="tab" data-tab="sing"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 12.7V3.6l7-1.6v9.1"/><circle cx="4.2" cy="12.7" r="1.8"/><circle cx="11.2" cy="11.1" r="1.8"/></svg><span class="tno">②</span><span class="tlabel">歌词+style生成歌曲</span></button>
+    <button class="tab" data-tab="score"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="2.2" width="10" height="11.6" rx="1.6"/><path d="M5.4 5.4h5.2M5.4 8h5.2M5.4 10.6h3"/></svg><span class="tno">③</span><span class="tlabel">参考歌曲提取乐谱</span></button>
+    <button class="tab" data-tab="scoreEdit"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 12.5h11"/><path d="M4.5 12.5V6.5M7.5 12.5V4M10.5 12.5V7.5"/><path d="M12.8 2.6l1.8 1.8-2.4 2.4-1.8-1.8z"/></svg><span class="tno">④</span><span class="tlabel">乐谱加工</span></button>
+    <button class="tab" data-tab="scoreSing"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="2.2" width="10" height="11.6" rx="1.6"/><path d="M5.4 5.4h5.2M5.4 8h3.4"/><circle cx="10.6" cy="10.4" r="1.5"/><path d="M12.1 10.4V7.2l1.6-.5"/></svg><span class="tno">⑤</span><span class="tlabel">歌词+style+乐谱生成歌曲</span></button>
+    <button class="tab" data-tab="ailab"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l1.7 3.5 3.8.5-2.8 2.7.7 3.8L8 10.5l-3.4 1.8.7-3.8L2.5 5.8l3.8-.5z"/></svg><span class="tno">⑥</span><span class="tlabel">歌词曲风 AI 工作台</span></button>
+    <div class="nav-group">声音</div>
+    <button class="tab" data-tab="train"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5" r="2.6"/><path d="M2.8 13.5c.6-2.8 2.7-4.3 5.2-4.3s4.6 1.5 5.2 4.3"/></svg><span class="tno">⑦</span><span class="tlabel">音色制作</span></button>
+    <button class="tab" data-tab="voices"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="6" y="1.8" width="4" height="7.2" rx="2"/><path d="M3.8 7.6a4.2 4.2 0 0 0 8.4 0M8 11.8v2.4"/></svg><span class="tno">⑧</span><span class="tlabel">音色库</span><span class="badge" id="voiceCount">0</span></button>
+    <button class="tab" data-tab="convert"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 10V6a5 5 0 0 1 10 0v4"/><rect x="2" y="9.5" width="3" height="4.5" rx="1.2"/><rect x="11" y="9.5" width="3" height="4.5" rx="1.2"/></svg><span class="tno">⑨</span><span class="tlabel">歌曲换声</span></button>
+    <button class="tab" data-tab="sep"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="4" cy="12.2" r="1.6"/><circle cx="4" cy="3.8" r="1.6"/><path d="M5.5 4.8 13 11.4M5.5 11.2 13 4.6"/></svg><span class="tno">⑩</span><span class="tlabel">人声伴奏分离</span></button>
+    <div class="nav-group">系统</div>
+    <button class="tab" data-tab="history"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.3 2.3"/></svg><span class="tno">⑪</span><span class="tlabel">任务管理</span><span class="badge" id="histCount">0</span></button>
+    <button class="tab" data-tab="settings"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.5"/><path d="M8 1.6v1.8M8 12.6v1.8M1.6 8h1.8M12.6 8h1.8M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3"/></svg><span class="tno">⑫</span><span class="tlabel">设置</span></button>
+    <button class="tab" data-tab="about"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 11.2V8M8 5.2v.2"/></svg><span class="tno">⑬</span><span class="tlabel">关于</span></button>
+
+    <div class="nav-group">工具</div>
+    <button class="tab" data-tab="lrc"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10M3 8h7M3 12.5h9"/><circle cx="12.5" cy="8" r="1.2" fill="currentColor" stroke="none"/></svg><span class="tno">⑭</span><span class="tlabel">歌词时间轴</span></button>
+  </nav>
+  <div class="side-foot">
+    <div class="foot-row loading" id="health">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 14S2.5 10.5 2.5 6.6C2.5 4.4 4.2 3 6 3c1 0 1.7.5 2 1 .3-.5 1-1 2-1 1.8 0 3.5 1.4 3.5 3.6C13.5 10.5 8 14 8 14z"/></svg>
+      <span class="fr-label" id="healthText">正在连接…</span>
+      <span class="dot"></span>
+    </div>
+
+  </div>
+</aside>
+
+<main>
+  <!-- ============ 创作 ============ -->
+  <!-- ============ ① Style 设计 ============ -->
+  <section class="panel-tab" id="tab-style">
+    <div class="page-head">
+      <h1 class="page-title">Style 设计</h1>
+      <p class="page-sub">用配方库或六要素装配台，拼出这一首的曲风描述。左边那段英文就是最终提交给模型的内容，可以随时手改。</p>
+    </div>
+    <!-- compose：两栏各自封顶到视口高度、栏内自己滚。① 的右栏（配方库/装配台）内容很长，
+         整页滚会把左边的 Style 产出推出视野——"点右边、看左边"就断了。 -->
+    <div class="grid compose">
+
+      <!-- 左＝产出。位置从"页面最底部"提到左上：以前调完下面的旋钮要滚回页面顶端
+           才知道 Style 变成了什么，现在视线不动就能同时看见"我选的"和"得到的"。 -->
+      <div class="pane pane-out">
+        <div class="pane-head"><b>产出 · 这段英文就是提交给模型的 Style</b><span class="hint-xs" title="可直接手改；手改后右侧只刷新预览，不覆盖这里">可直接手改；手改后右侧只刷新预览，不覆盖这里</span></div>
+        <div class="pane-body">
+          <!-- 预算表：用户问"超出 12 个词到底会怎样，页面上怎么不吭声"。
+               12 条是官方样本均值而不是模型上限（本机 20 条短语的历史任务照样出了音频），
+               所以这里只把长度实时亮出来并分级着色，不做拦截、也不偷偷删词。 -->
+          <div class="budgetrow">
+            <span class="budget ok" id="asmBudget" title="">— 短语 · — 词 · — 字符</span>
+            <details class="budget-help">
+              <summary>信息预算怎么算</summary>
+              <div class="hint-xs">短语 / 词 / 字符：官方样本平均 12 条、约 20 词、200 字符；本机最长的一条成功生成是 20 条短语 / 330 字符。所以这是信息预算不是上限，词越多每个词越轻，重点要素记得放前面。</div>
+            </details>
+          </div>
+          <!-- ① 自己的曲风框。★ 它以前是 #styleBox —— 同一份 DOM 在 ①②⑤ 之间搬家，
+               于是"在 ① 写了风格，点别的页面它还在那儿"。用户两次要求页面之间独立、
+               不要自动带内容，所以改成各页各一个框：① 的装配结果留在 ①。
+               下方的「用于②/⑤」是显式接力，只有点击并确认后才写入目标页。 -->
+          <div id="styleSlotAsm"><div id="styleBoxAsm">
+            <label for="styleAsm" style="margin-top:0;">Style / 曲风描述（英文效果最佳 · 装配结果就在这）</label>
+            <textarea id="styleAsm">English, warm piano pop, expressive female voice, acoustic piano, rounded bass and light drums, lyrical memorable melody, unhurried phrasing, 88 BPM</textarea>
+          </div></div>
+          <div class="six" id="sixBox" style="margin-top:9px;"></div>
+          <div class="lint" id="styleLint"></div>
+          <div class="hint-xs pn" id="presetNote" style="margin-top:7px;"></div>
+          <div class="hint-xs" id="styleRecipe" style="margin-top:6px;"></div>
+        </div>
+        <div class="pane-foot">
+          <div class="actions">
+            <button class="primary" id="styleToSing" title="显式把左边这段 Style 带到②；②已有不同内容会先询问，不会自动提交">→ 用于②生成</button>
+            <button class="ghost" id="styleToScoreSing" title="显式把左边这段 Style 带到⑤；⑤已有不同内容会先询问，不会自动提交">→ 用于⑤按谱生成</button>
+            <button class="ghost" id="styleCopy" title="复制到剪贴板，贴去任何地方">⧉ 复制</button>
+          </div>
+          <div class="hint-xs">「用于②/⑤」是显式接力：点击后才写入目标页，目标已有不同内容会先询问；普通切页或刷新不会自动带走内容。复制按钮仍可用于外部粘贴。</div>
+        </div>
+      </div>
+
+      <!-- 右＝两种用法二选一。
+           以前「曲风配方库」和「六要素装配台」是上下两套并列的旋钮，用户不知道该动哪一套：
+           卡片点完还要去六格再点一遍，才意识到两处改的是同一个东西。
+           现在做成互斥开关——挑配方就只看见配方库，微调就只看见六格。
+           两者的出口完全相同（都写进左边那个 Style 框），所以互斥不会丢功能，只会少一层困惑。 -->
+      <div class="pane pane-in">
+        <div class="pane-head"><b>曲风来源（二选一）</b><span class="hint-xs">两条路都汇进左边那个 Style 框</span></div>
+        <div class="pane-body">
+        <div class="seg" id="asmModeSeg" role="tablist" aria-label="选择曲风来源方式">
+          <button class="segbtn active" id="segPreset" data-asm="preset" type="button" role="tab" aria-selected="true" title="从现成配方里挑一张卡片：不知道从哪下手时用这条">① 曲风配方库</button>
+          <button class="segbtn" id="segSix" data-asm="six" type="button" role="tab" aria-selected="false" title="逐格自己拼：想精确把控每一个维度时用这条">② 六要素装配台</button>
+        </div>
+        <!-- 原来这里有一行 38px 的 asmModeHint（"不知道从哪下手 → …"）。
+             两个分段按钮的标签已经说明了各自的适用场景，这行只是重复；
+             内容改挂到按钮的 title 上（悬停可得），省下的 38px 还给卡片区。 -->
+
+        <!-- ========== 视图 A：曲风配方库 ========== -->
+        <div class="asmview" id="asmPresetView">
+          <!-- 这三层的关系以前只能靠猜（用户原话："曲风装配台要和下面的 1-6 是什么关系讲清楚"）：
+               大类是筛选器、卡片是配方、六格是配方的明细，最后才汇成 Style 那一句。
+               画成一条流程，每一级都标"点它会发生什么"，避免把"点大类"误当成"选了曲风"。 -->
+          <div class="flow" aria-label="曲风配方库的三步流程" style="margin-top:12px;">
+            <div class="node"><b>① 大类</b><small>流行 / 摇滚…<br>只是筛选，不改曲风</small></div><span class="arw">→</span>
+            <div class="node"><b>② 曲风卡片</b><small>钢琴抒情 / 主流流行<br>点它＝采用这套配方</small></div><span class="arw">→</span>
+            <div class="node out"><b>Style 产出（左侧）</b><small>真正提交给模型的<br>那一句英文</small></div>
+          </div>
+          <div class="step" style="margin-top:10px;"><span class="sn">①</span>选一个大类（下面的卡片会被筛成这一类）</div>
+          <div class="pfam" id="famTabs" role="tablist"></div>
+          <div class="step"><span class="sn">②</span>选一张曲风卡片 —— 一次采用这套配方</div>
+          <div class="wtools">
+            <label class="srch" for="presetSearch"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.2"/><path d="M10.4 10.4L14 14"/></svg><input id="presetSearch" placeholder="搜曲风（中文或英文，如 国风 / city pop / 808）· 不填只在本大类里挑" aria-label="搜索曲风配方" /></label>
+          </div>
+          <div class="pgrid2" id="presetGrid"></div>
+          <div class="hint-xs" style="margin-top:7px;">点一张曲风卡片 = 这套配方一次性写进左边的 Style；想再逐个词改，切到「六要素装配台」。</div>
+
+          <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l5.5 2.4v3.6c0 3.4-2.3 5.7-5.5 6.6-3.2-.9-5.5-3.2-5.5-6.6V4.2z"/></svg>我的预设</div>
+          <div class="chips" id="myPresetChips" style="margin-top:6px;"></div>
+        </div><!-- /asmPresetView -->
+
+        <!-- ========== 视图 B：六要素装配台 ========== -->
+        <div class="asmview" id="asmSixView" hidden>
+        <div class="sec" style="margin-top:12px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4h12M2 8h8M2 12h10"/></svg>曲风装配台
+          <button class="ghost btn-xs" id="asmReset" type="button" style="margin-left:auto;" title="清空装配台的所有选择，回到空白">清空</button>
+        </div>
+        <div class="step"><span class="sn">①</span>六个维度逐格微调，改动实时写进左侧的 Style 产出</div>
+        <div class="wtools">
+          <label class="srch" for="wordSearch"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.2"/><path d="M10.4 10.4L14 14"/></svg><input id="wordSearch" placeholder="搜候选词（中文或英文，如 治愈 / warm / 钢琴）· 四格一起筛" aria-label="搜索候选词" /></label>
+          <button class="ghost" id="wordExpand" type="button">▾</button>
+        </div>
+        <div class="asm" style="margin-top:14px;">
+          <div class="arow">
+            <div class="ak">1 语言<small>放最前</small></div>
+            <div class="av"><select id="aLang" style="max-width:210px;"></select></div>
+          </div>
+          <div class="arow">
+            <div class="ak">2 曲风<small>已选</small></div>
+            <div class="av"><span id="genreNow" class="chip active" style="cursor:default;min-height:26px;">—</span>
+              <input id="aGenre" placeholder="或自己写曲风词，如 city pop / piano ballad" style="flex:1;min-width:150px;" /></div>
+          </div>
+          <div class="arow">
+            <div class="ak">3 情绪<small>可多选</small></div>
+            <div class="av"><div class="chips" id="moodChips"></div></div>
+          </div>
+          <div class="arow">
+            <div class="ak">4 人声<small>性别+音色</small></div>
+            <div class="av">
+              <!-- 同 6 节奏：定宽下拉单独一行，音色候选词满宽铺开。
+                   以前 150px 下拉 + 11 个词挤一行，候选词每行只排 2 个、整格 279px。 -->
+              <div class="av-lead">
+                <select id="gender"></select>
+              </div>
+              <div class="chips" id="timbreChips"></div>
+            </div>
+          </div>
+          <div class="arow">
+            <div class="ak">5 配器<small>可多选</small></div>
+            <div class="av"><div class="chips" id="instChips"></div></div>
+          </div>
+          <div class="arow">
+            <div class="ak">6 节奏<small>BPM/调性</small></div>
+            <div class="av">
+              <!-- BPM + 调性单独占一行（.av-lead），候选词再换行铺满整宽。
+                   以前三者挤在同一行：96px 输入 + 120px 下拉吃掉 216px，
+                   留给 15 个候选词的只剩 ~170px → 每行只排 2 个 → 整格高 796px，
+                   是其它五格的两倍还多，右栏总高 1930px（可视只有 357px）。
+                   把定宽控件抽到上一行，候选词区就拿到满宽（约 310px），行数直接减半。 -->
+              <div class="av-lead">
+                <input id="bpm" type="number" value="" min="40" max="220" placeholder="BPM 如 88" />
+                <select id="aKey"></select>
+              </div>
+              <div class="chips" id="feelChips"></div>
+            </div>
+          </div>
+          <div class="arow">
+            <div class="ak">补充<small>氛围质感</small></div>
+            <div class="av"><input id="aMore" placeholder="可选：neon night atmosphere / warm tape saturation / lo-fi vinyl crackle" /></div>
+          </div>
+        </div>
+
+        <div class="actions" style="margin-top:10px;">
+          <button class="ghost" id="asmApply" title="按上面六个维度重新生成 Style 文本（会覆盖产出框里的手改）">↻ 重新装配到 Style</button>
+          <button class="ghost" id="asmSave" title="把当前这套配方存进「我的预设」，下次一键回填">💾 存为我的预设</button>
+        </div>
+        </div><!-- /asmSixView -->
+        </div><!-- /pane-body -->
+      </div><!-- /右栏 -->
+
+    </div>
+  </section>
+
+  <!-- ============ ② 歌词+style生成歌曲 ============ -->
+  <!-- ②⑤ 是同一个生成内核：#genForm 这一份 DOM 在两个页签的槽位之间搬家，
+       差异只是 data-mode（② 收起乐谱区，⑤ 展开）。绝不写两套生成代码。 -->
+  <section class="panel-tab" id="tab-sing" style="display:none;">
+    <div class="page-head">
+      <h1 class="page-title">歌词 + Style 生成歌曲</h1>
+      <p class="page-sub">给它一段歌词和一份曲风描述，直接唱成一首完整的歌。左边填内容，右边调参数。</p>
+    </div>
+    <div id="genSlotSing">
+    <div class="grid compose" id="genForm" data-mode="sing">
+
+      <!-- 左栏＝成品区：这一栏里的内容才真正提交给模型（任务名 / 歌词 / 进度）。
+           右栏＝选项区：点一下就把结果写进左栏——"点右边、看左边"就是这么分的。 -->
+      <div class="pane pane-out">
+        <div class="pane-head"><b>成品 · 要提交给模型的就是这些</b><span class="hint-xs">曲风 + 歌词（+ 乐谱）都在这边填，参数在右边</span></div>
+        <div class="pane-body">
+          <!-- 这一页自己的曲风框。它以前是空的落位槽，靠 switchTab 把 ① 的 #styleBox 搬进来，
+               于是 ① 写的风格会"自己跟过来"—— 与页面独立性相违，现在两页各一份。 -->
+          <div id="styleSlotGen"><div id="styleBox">
+            <label for="style" style="margin-top:0;">Style / 曲风描述（英文效果最佳 · 这里就是提交给模型的内容）</label>
+            <textarea id="style"></textarea>
+          </div></div>
+          <div class="hint-xs" style="margin-top:5px;" title="① 是另一个独立的框，不会自动流到这里；想用它装配好的那句，点 ① 的「用于②生成」，或复制后粘贴。">英文效果最佳。这一页的曲风框是独立的：① 装配的结果不会自动带过来，可点 ① 的「用于②生成」显式接力，也可以在这里直接写。</div>
+
+          <label for="taskName">任务名称（用于历史展示与下载命名）</label>
+          <input id="taskName" placeholder="例如：稻香" maxlength="100" />
+
+          <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10v9H3zM6 6.5h4M6 9h5"/></svg>歌词</div>
+          <label for="lyrics" style="margin-top:0;">[Verse] [Chorus] 分段，每段 4–8 行</label>
+          <textarea id="lyrics">[Verse]
+Neon fades along the lane
+Footsteps keep the time of rain
+Fold the night and leave it here
+Morning has a sky to clear
+
+[Chorus]
+Let the day come into view
+Every road begins with you
+Hold a little room for light
+We will sing beyond the night</textarea>
+          <div class="actions" style="margin-top:8px;">
+            <button class="ghost" id="lyricCheck" title="用服务端同一套校验规则检查段落标签/行数/副歌一致性">🔍 检查歌词结构</button>
+            <button class="ghost" id="lyricSkeleton" title="按 6 段最小曲式骨架补齐标签，词自己填">＋ 插入曲式骨架</button>
+            <button class="ghost" id="lyricFromAudio" title="翻唱用：把原唱音频识别成词，填进上面的歌词框（CoT 会自动改为 melody）">🎤 从参考音频识别歌词</button>
+            <button class="ghost" id="lyricUndo" type="button" style="display:none;">↶ 恢复上一版</button>
+            <input type="file" id="lyricAudio" accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a,.webm" style="display:none;" />
+          </div>
+          <div class="lint" id="lyricLint"></div>
+          <!-- 没词的时候才出现的一行指路（有词就收起来，不常年占左栏高度）：
+               本页刻意不自造歌词模板，所以"词从哪来"必须有人回答，否则第一次用的人
+               面对一个空框就卡住了。内嵌在 dsh 壳里时「AI 工作台」页签是隐藏的
+               （壳本身就是工作台），所以两种模式下指的路不一样。 -->
+          <div class="hint-xs" id="lyricHelp" style="margin-top:6px;"></div>
+          <!-- 填词助手：只在 ⑤ 出现——歌词行数与谱子小节数对不上时提前警告，
+               不等生成四五分钟后才发现唱不下。 -->
+          <div class="lint" id="lyricBarWarn" hidden></div>
+
+          <!-- 关系条（②/⑤）：放在两个输入框**之后**，当作"这张图解释你刚填的东西怎么汇成一首歌"。
+               原来它在 Style 框和任务名之间，正好卡在两个必填输入中间：
+               621px 的窗口里左栏只有 ~260px 可视高，这条 66px 的图把「歌词」框
+               顶到了可视区之外（实测 lyrics 底部 662 / 可视底 424，差 238px）——
+               用户进页第一眼看不到本页最该填的那个框。输入在前、说明在后，
+               是表单类页面唯一站得住的顺序。 -->
+          <div class="flow" id="flowBarSing" aria-label="歌词+style生成歌曲的两段输入" hidden>
+            <div class="node"><b>Style</b><small>曲风那一句英文<br>本页上方输入框</small></div><span class="arw">＋</span>
+            <div class="node"><b>歌词</b><small>[Verse] [Chorus] 分段<br>本页左栏</small></div><span class="arw">→</span>
+            <div class="node out"><b>一首完整的歌</b><small>旋律与和声<br>都由模型自己规划</small></div>
+          </div>
+
+          <!-- 三段关系条（⑤ 专用）：Style + 乐谱 + 歌词 → 歌曲。
+               ⑤ 不接乐谱以外的输入，所以这里刻意只出现这三环——画出不存在的输入
+               只会让人以为漏填了什么东西。 -->
+          <div class="flow" id="flowBar" aria-label="歌词+style+乐谱生成歌曲的三段输入" hidden>
+            <div class="node"><b>Style</b><small>曲风那一句英文<br>本页上方输入框</small></div><span class="arw">＋</span>
+            <div class="node"><b>乐谱</b><small>ABC 谱决定旋律<br>右侧乐谱区</small></div><span class="arw">＋</span>
+            <div class="node"><b>歌词</b><small>填进谱子的哪个字<br>本页左栏</small></div><span class="arw">→</span>
+            <div class="node out"><b>按谱演唱的歌</b><small>模型照谱唱，<br>不自编旋律</small></div>
+          </div>
+
+          <!-- 结果卡：完成后给五个出口。以前出成片只剩底部播放坞一个口，
+               想要 LRC / eLRC / 送去换声都得先绕去 ⑪ 任务管理把这一条找回来。 -->
+          <div id="genResult" class="gresult" hidden>
+            <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 8.5l3.5 3.5L14 3.5"/></svg>成片出口<span class="m-count" id="genResultId"></span></div>
+            <div class="actions" id="genResultActs"></div>
+            <div class="lint" id="genResultNote"></div>
+          </div>
+        </div>
+        <div class="pane-foot">
+          <div class="actions">
+            <button class="primary" id="go">生成歌曲</button>
+            <button class="ghost" id="queue" title="不立即生成，加入队列由后台依次执行">加入队列</button>
+            <button class="ghost" id="exportLyricsTxt" title="把左边歌词导出为 TXT；不需要生成音频，也不占 GPU/VAE">⬇ 歌词 TXT</button>
+            <button class="danger" id="stopGen" style="display:none">终止任务</button>
+          </div>
+          <div class="progress" id="progress"><div id="progressBar"></div></div>
+          <div class="status" id="status">当前默认「草稿」档，约 1–2 分钟，适合先试听走向；满意后再切「标准」或「成曲」（成曲本机约 60–90 分钟）。填写曲风和歌词后点击生成。</div>
+        </div>
+      </div>
+
+      <!-- 右栏＝选项区：乐谱（仅⑤）→ 模型与参数 → 批次 → 歌词候选。
+           折叠方式重做（用户原话："这种折叠、滚动方式太呆了"）：
+           ① 删掉每格词表自己的内滚动条，展开后由这一栏唯一的那条滚动条接手；
+           ② 候选词各自配搜索框（中英都能搜）；
+           ③ 「其余 N 个 ▾」改成实心可点的动作按钮并留在原位。 -->
+      <div class="pane pane-in">
+        <div class="pane-head"><b>选项 · 点一下写进左边</b><span class="hint-xs">乐谱 → 模型与参数 → 批次 → 歌词候选</span></div>
+        <div class="pane-body">
+
+        <!-- 乐谱区：⑤ 的主位（data-mode="score" 时展开），② 里整块收起 -->
+        <div id="scoreSection" hidden>
+          <div class="sec" style="margin-top:0;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h7"/></svg>乐谱（ABC）<span class="m-count" id="scoreModeTag"></span></div>
+          <div class="pgrid g2">
+            <div><label for="scoreSrc">乐谱来源</label>
+              <select id="scoreSrc">
+                <option value="keep">用当前乐谱框里的谱（从 ③ 带过来的就是它）</option>
+                <option value="lib">从乐谱库里挑一份</option>
+                <option value="manual">自己粘贴 / 手填</option>
+              </select>
+            </div>
+            <div id="scoreLibWrap" hidden><label for="scorePick">乐谱库</label><select id="scorePick"></select></div>
+          </div>
+          <div id="abcSlotSing"></div>
+          <div class="actions" style="margin-top:8px;">
+            <button class="ghost" id="scoreLoadBtn" hidden>↩ 载入所选乐谱</button>
+            <button class="ghost" id="scoreFromAudio" title="上传一首歌，用 SheetSage2 转出乐谱（在 ③ 页）">🎸 从参考歌曲提取</button>
+            <button class="ghost" id="scoreClear" title="清空乐谱：本页就退回 ② 的自由发挥模式">✕ 不用谱，让模型自己编</button>
+            <button class="ghost" id="planAbcBtn" title="只让引擎跑到 ABC 规划这一步（本机 6GB 卡实测约 8 秒），谱写进上面那个框。不渲染音频，所以这一步没有歌可听。">🧭 让引擎先规划一份谱</button>
+          </div>
+          <div class="lint" id="planAbcStatus"></div>
+          <div class="hint-xs" style="margin-top:6px;">填了谱就按谱唱：谱里有没有和弦记号，右侧「规划 CoT」会自动定为 <b>full</b> 或 <b>melody</b>（不需要手选，改谱后也会跟着改）。清空乐谱＝回到「模型自己规划旋律」，那时档位由你自己定。</div>
+        </div>
+
+        <!-- 参数区改成常开：以前它是折叠的，而"模型/seed/steps/cfg"恰恰是每次生成前
+             都要确认的东西，折叠只是把一次点击的成本藏起来，打开率 100% 的折叠没有意义。
+             CoT 档位现在还由谱面自动定，更需要摊开让人看见它被改成了什么。 -->
+        <div class="fold flat" id="paramFold">
+          <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 5h3l1.5-2h3L11 5h3v8H2zM8 10.2a1.8 1.8 0 1 0 0-3.6 1.8 1.8 0 0 0 0 3.6z"/></svg>模型与参数<span class="fold-sum" id="paramSum"></span></div>
+          <div class="fold-body">
+        <div class="model-now"><span class="mn-k">当前模型</span><b id="modelNow">—</b>
+          <button class="ghost" id="toSettingsModel" title="量化档切换在 ⑫ 设置页，会重启音频引擎">去 ⑫ 切换</button></div>
+        <div class="preset-row" style="margin-top:10px;" role="group" aria-label="生成档位预设">
+          <span class="row-label">档位</span>
+          <button type="button" class="ghost btn-sm" data-gen-preset="draft"
+                  title="cot=off / 8 步：最快听旋律走向；填了乐谱时自动改用 melody">草稿</button>
+          <button type="button" class="ghost btn-sm" data-gen-preset="standard"
+                  title="cot=full / 16 步：速度与质量折中">标准</button>
+          <button type="button" class="ghost btn-sm" data-gen-preset="final"
+                  title="cot=full / 32 步：最终成曲档，本机可能 1 小时以上">成曲</button>
+        </div>
+        <div class="hint-xs" id="presetHint" style="margin-top:4px;">草稿：off · 8 步（有谱时 melody），最快 1-2 分钟</div>
+        <div class="pgrid" style="margin-top:10px;">
+          <div><label for="cot">规划 CoT<span class="hint-xs" style="margin-left:6px;">（有谱时按和弦自动定）</span></label>
+            <select id="cot">
+              <option value="full">full · 旋律+和弦</option>
+              <option value="melody">melody · 只旋律</option>
+              <option value="off" selected>off · 直接生成</option>
+            </select>
+          </div>
+          <div><label for="seed">Seed（-1 随机）</label><div style="display:flex;gap:6px;align-items:center;"><input id="seed" type="number" value="-1" style="flex:1;min-width:0;" /><button class="ghost btn-sm" id="randSeed" title="生成一个随机种子" style="flex:none;">🎲</button></div></div>
+          <div><label for="steps">NAR Steps</label><input id="steps" type="number" value="8" min="1" /></div>
+          <div><label for="cfg">CFG Scale</label><input id="cfg" type="number" step="0.01" value="1.0" min="0" max="20" /></div>
+        </div>
+
+        <details style="margin-top:12px;">
+          <summary>高级采样参数</summary>
+          <div class="pgrid" style="margin-top:10px;">
+            <div><label>ABC temp</label><input id="abc_temperature" type="number" step="0.05" placeholder="0.7"></div>
+            <div><label>ABC top_p</label><input id="abc_top_p" type="number" step="0.05" placeholder="0.9"></div>
+            <div><label>ABC top_k</label><input id="abc_top_k" type="number" placeholder="30"></div>
+            <div><label>Sem temp</label><input id="semantic_temperature" type="number" step="0.05" placeholder="1.0"></div>
+            <div><label>Sem top_p</label><input id="semantic_top_p" type="number" step="0.05" placeholder="0.95"></div>
+            <div><label>Sem top_k</label><input id="semantic_top_k" type="number" placeholder="100"></div>
+          </div>
+        </details>
+
+        <details style="margin-top:14px;">
+          <summary>参数怎么填（CoT 档位 / 乐谱 / 显存）</summary>
+          <div class="hint">
+            <b>seed -1</b> 随机，固定数字可复现<br>
+            <b>full</b> 模型先规划「旋律+和弦」再合成；贴进来的谱要带和弦记号才配得上，适合改编/重配和声<br>
+            <b>melody</b> 模型只规划旋律不写和弦；贴进来的谱要干净（无和弦记号），伴奏由模型配，适合翻唱<br>
+            <b>off</b> 跳过符号规划直接从文字生成，速度最快，不能带谱<br>
+            <b>填了乐谱</b> 就按你的谱唱：无和弦自动定为 melody、有和弦自动定为 full（改谱即改档，引擎不会替你改写谱面）<br>
+            <b>没填乐谱</b> 档位归你自己：full 让模型先规划旋律+和弦，melody 只规划旋律，off 直接生成、最快<br>
+            <b>6GB 显存</b> 推荐 Q4_K_M；失败时减小 Steps 或缩短歌词
+          </div>
+        </details>
+          </div><!-- /fold-body -->
+        </div><!-- /paramFold -->
+
+        <div class="fold flat" id="batchFold">
+          <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 4.5h10M3 8h10M3 11.5h6"/></svg>批次<span class="fold-sum" id="batchSum"></span></div>
+          <div class="fold-body">
+            <label for="genCount">连发首数（1-20）</label>
+            <input id="genCount" type="number" value="1" min="1" max="20" />
+            <div class="hint-xs" style="margin-top:8px;">两种出多首的办法不一样：<br>
+              <b>连发 N 首</b> = 一次请求里出 N 个候选（走 /api/generate/start 的 count），同一串行队列连着跑，中途可终止；<br>
+              <b>加入队列</b> = 把这一组参数交给后台批量队列（走 /api/batch/start），可在 ⑪ 任务管理里看到位次、一键继续，逐条完成。<br>
+              要挑最佳take用连发；要挂着跑一批不同参数用队列。</div>
+            <div class="hint-xs" id="batchMini" style="margin-top:6px;"></div>
+          </div>
+        </div><!-- /batchFold -->
+
+        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10v9H3zM6 6.5h4M6 9h5"/></svg>歌词候选</div>
+        <div class="hint-xs" style="margin:-2px 0 6px;">点一张卡片 = 把这份词整首填进<b>左边</b>的歌词框（现在的内容会被替换）。</div>
+        <div class="chips" id="lyricChips"></div>
+        <!-- 最近生成过的歌词：用户要求"一点就把最近几次用的词填进来"。
+             数据源用生成历史同一个接口（/api/generate/list），只取已完成、歌词够长、
+             内容不重复的最近 10 份；换声/训练任务（kind=rvc/train）不算歌词，跳过。 -->
+        <div id="recentLyricBox" hidden>
+          <div class="step">🎧 最近生成过的歌词
+            <span class="hint-xs">点一下即填进左边的歌词框（本机已完成任务里最近 10 份，同词只留一份）</span></div>
+          <div class="chips" id="recentLyricChips"></div>
+        </div>
+        </div><!-- /pane-body -->
+      </div><!-- /pane-in（右栏＝选项区） -->
+
+    </div><!-- /#genForm -->
+    </div><!-- /#genSlotSing -->
+  </section>
+
+  <!-- ============ ③ 参考歌曲提取乐谱 ============ -->
+  <section class="panel-tab" id="tab-score" style="display:none;">
+    <div class="page-head">
+      <h1 class="page-title">参考歌曲提取乐谱</h1>
+      <p class="page-sub">丢一首参考歌进来，转成 ABC 乐谱。这份谱可以拿去 ④ 加工，再送进 ⑤ 生成新歌。</p>
+    </div>
+    <div class="grid compose">
+
+      <!-- 左＝上传与乐谱库。转谱有服务端串行锁，同一时刻只能有一份在跑。 -->
+      <div class="pane pane-in">
+        <div class="pane-head"><b>① 上传参考歌曲</b><span class="hint-xs">SheetSage2 转谱 · 3 分钟歌约 1-2 分钟</span></div>
+        <div class="pane-body">
+          <label for="abcPick">服务器上已有的歌（可选；生成成品或入库整曲）</label>
+          <select id="abcPick"><option value="">— 不选，使用下面的文件 —</option></select>
+          <div class="hint-xs" style="margin:6px 0;">也可以先选服务器上已有的歌；选了下拉就转它，忽略下面的文件。</div>
+          <div class="drop" id="abcDrop" tabindex="0" role="button" aria-label="选择或拖入音频文件">
+            <b>点选或拖入音频文件</b>
+            <small>wav / mp3 / flac / m4a / ogg / opus / aac / wma — 选完即提交转谱</small>
+          </div>
+          <input type="file" id="abcAudio" accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" style="display:none;">
+          <div class="actions" style="margin-top:10px;">
+            <button class="primary" id="extractAbc">🎸 选择歌曲开始转谱</button>
+            <span class="status" id="abcStatus" style="padding:0;"></span>
+          </div>
+          <label for="abcChords" class="check" style="margin-top:10px;">
+            <input id="abcChords" type="checkbox" />
+            <span>提取时带和弦（出「旋律+和弦」完整谱）</span>
+          </label>
+          <div class="hint-xs">不勾 = 纯旋律谱（配 melody 路线，伴奏交给模型，翻唱常用）；勾选 = 谱里额外写进 <code>"C"</code>、<code>"Am7"</code> 这类和弦记号（配 full 路线，和声也锚住）。和弦本来就会被识别，勾选几乎不多花时间；但个别和弦性质不被记号表认得时整份谱会提取失败，失败就取消勾选重提一次。</div>
+          <div class="actions" id="abcRetryWrap" style="margin-top:8px;" hidden>
+            <button class="ghost" id="abcRetryPure" title="上一次带和弦提取失败时用这个：取消勾选并重新提交">↻ 改用纯旋律重试</button>
+          </div>
+          <div class="hint-xs" style="margin-top:10px;">⚠ 转谱在服务端串行执行：转谱期间再提交一份会互相覆盖输出目录，所以提交后本页会锁住上传，等这一份出结果为止。</div>
+
+          <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h7"/></svg>乐谱库<span class="m-count">已保存的谱（点一行回填到右边）</span></div>
+          <div id="scoreList"></div>
+        </div>
+      </div>
+
+      <!-- 右＝乐谱本体：#abcBlock 这一份 DOM 在 ③⑤ 之间搬家，两页共用同一个谱框与同一套分析。 -->
+      <div class="pane pane-out">
+        <div class="pane-head"><b>② 乐谱（ABC 源码，可直接改）</b><span class="hint-xs">改完 0.5 秒自动重分析</span></div>
+        <div class="pane-body">
+          <!-- 共用的 ABC 谱框：③ 与 ⑤ 之间搬家（同一时刻只在一个面板里可见） -->
+          <div id="abcSlotScore"><div id="abcBlock">
+            <label for="abc" style="margin-top:0;">ABC 乐谱（填了=按这份谱生成；留空=由模型自己规划乐谱）</label>
+            <textarea id="abc" class="abc" placeholder="X:1&#10;M:4/4&#10;K:C&#10;V:Vocal&#10;C2 D2 E2 F2 |"></textarea>
+            <div class="hint-xs" id="abcAnalysis" style="margin-top:6px;"></div>
+          </div></div>
+          <!-- 复制仍是外部导出；另加两个显式接力按钮。
+               ③⑤共用同一份 #abcBlock，所以「去⑤生成」只定位这份共用谱框，不复制、不代填；
+               ④ 有独立的 #seSrc，因此带去④时才需要确认覆盖。两者都不会自动提交生成。 -->
+          <div class="actions" style="margin-top:10px;">
+            <button class="ghost" id="abcCopy" title="复制这份 ABC 源码">⧉ 复制谱面</button>
+            <button class="ghost" id="abcToEdit" title="显式把当前谱带到④加工；④已有不同原谱会先询问">→ 送去④加工</button>
+            <button class="primary" id="abcToScoreSing" title="切到⑤并定位这份共用谱框；不会自动提交">→ 去⑤按谱生成</button>
+          </div>
+          <div class="lint" id="abcIoStatus"></div>
+          <div class="hint-xs" style="margin-top:6px;">「送去④加工」只有点击后才写入④；「去⑤按谱生成」使用③⑤共用的同一份谱框。普通切页或刷新不会自动代填，也不会自动提交。</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ ④ 乐谱加工 ============ -->
+  <!-- 纯符号变换：移调 / 大小调 / 速度 / 去和弦。不碰 GPU、不调模型，
+       所以每次改参数都能立刻看到新谱（/api/abc/edit 同步返回）。
+       放在 ③（提取）与 ⑤（按谱生成）之间，是因为这正是它的位置：转出来的谱先加工，再用。 -->
+  <section class="panel-tab" id="tab-scoreEdit" style="display:none;">
+    <div class="page-head">
+      <h1 class="page-title">乐谱加工</h1>
+      <p class="page-sub">把一份乐谱移调、换大调小调、调速度——全部是符号运算，不跑模型，改完即时出结果。</p>
+    </div>
+    <div class="grid compose">
+
+      <!-- 左＝谱：上原谱、下加工结果。两个框上下摆，改右边参数时眼睛不用来回找。 -->
+      <div class="pane pane-out">
+        <div class="pane-head"><b>谱面 · 原谱与加工结果</b><span class="hint-xs">改右边任一参数即实时重算</span></div>
+        <div class="pane-body">
+          <label for="seSrc" style="margin-top:0;">原谱（ABC）</label>
+          <textarea id="seSrc" class="abc" placeholder="X:1&#10;M:4/4&#10;K:C&#10;V:Vocal&#10;C2 D2 E2 F2 |"></textarea>
+          <div class="actions" style="margin-top:8px;">
+            <button class="ghost" id="seFromLib" title="从乐谱库挑一份">📁 从乐谱库载入</button>
+            <select id="seLibPick" hidden style="max-width:190px;"></select>
+            <button class="ghost" id="sePasteClip" title="从剪贴板粘贴">📋 粘贴</button>
+            <button class="ghost" id="seClear">✕ 清空</button>
+          </div>
+
+          <div class="sec" style="margin-top:16px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 12.5h11M4.5 12.5V6.5M7.5 12.5V4M10.5 12.5V7.5"/></svg>加工结果</div>
+          <div class="lint" id="seChanged">先在上面放一份谱，再到右边选加工项。</div>
+          <textarea id="seOut" class="abc" readonly placeholder="加工后的谱会出现在这里"></textarea>
+          <div class="hint-xs" id="seAnalysis" style="margin-top:6px;"></div>
+        </div>
+        <div class="pane-foot">
+          <div class="actions">
+            <button class="ghost" id="seCopy" title="复制加工后的 ABC">⧉ 复制结果</button>
+            <button class="primary" id="seSave" title="另存一份进乐谱库（不覆盖原谱）；存完在 ⑤ 的乐谱库里挑这份就能按谱生成">💾 存入乐谱库</button>
+            <button class="ghost" id="seToScoreSing" title="显式把加工结果填进⑤的谱框；⑤已有不同谱会先询问，不会自动提交">→ 用于⑤生成</button>
+            <button class="ghost" id="seDownload" title="下载 .abc 文本">⬇ ABC</button>
+          </div>
+          <div class="hint-xs" id="seFootNote">加工结果只在这里和乐谱库里，原谱不会被覆盖。「用于⑤生成」只有点击后才写入⑤，已有不同谱会先询问；也可以存进乐谱库后再去⑤选择。</div>
+        </div>
+      </div>
+
+      <!-- 右＝加工项：四类，每类一句话说清它到底改了什么 -->
+      <div class="pane pane-in">
+        <div class="pane-head"><b>加工项</b><span class="hint-xs">可叠加，顺序由服务端固定：移调 → 调式 → 速度 → 去和弦</span></div>
+        <div class="pane-body">
+
+          <div class="sec" style="margin-top:0;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 12.5h11M4.5 12.5V6.5M7.5 12.5V4M10.5 12.5V7.5"/></svg>① 移调</div>
+          <div class="frow" style="grid-template-columns:120px 1fr;">
+            <div><label for="seTrans">半音数</label><input id="seTrans" type="number" value="0" min="-36" max="36" /></div>
+            <div><label for="seTransRange">拖一下听感差别</label><input id="seTransRange" type="range" min="-12" max="12" step="1" value="0" /></div>
+          </div>
+          <div class="chips" id="seTransChips"></div>
+          <div class="hint-xs" style="margin-top:4px;">正数升高、负数降低。常见用法：女声谱给男声唱降 5~7 半音，男声谱给女声唱升 5~7；差一个八度用 ±12。</div>
+
+          <div class="sec" style="margin-top:18px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.6v10.8M4.5 5.4h7M4.5 10.6h7"/></svg>② 大小调</div>
+          <label for="seMode" style="margin-top:0;">调式操作</label>
+          <select id="seMode">
+            <option value="keep">不改调式</option>
+            <option value="major_to_minor">大调 → 同名小调（C → Cm）</option>
+            <option value="minor_to_major">小调 → 同名大调（Am → A）</option>
+            <option value="major_to_relative_minor">大调 → 关系小调（C → Am）</option>
+            <option value="minor_to_relative_major">小调 → 关系大调（Am → C）</option>
+          </select>
+          <div class="hint-xs" id="seModeHint" style="margin-top:5px;"></div>
+          <div class="hint">
+            <b>同名（平行）大小调</b>：主音不动，靠动 3/6/7 音级改色彩 —— 大调变忧郁，<b>旋律会改音</b>。<br>
+            <b>关系大小调</b>：共用同一组音，只把调性中心挪小三度 —— <b>旋律一个音都不动</b>，只改调号。<br>
+            <b>诚实边界</b>：和弦记号只在「移调」时跟着走。调式转换不会替你重新配和声（那是作曲决策），
+            想要和弦跟着变，先勾下面「去掉和弦记号」，让 ⑤ 在 full 路线下按新调重新规划。
+          </div>
+
+          <div class="sec" style="margin-top:18px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.3 2.3"/></svg>③ 速度</div>
+          <div class="pgrid g2">
+            <div><label for="seTempo">目标 BPM（留空不改）</label><input id="seTempo" type="number" min="20" max="300" placeholder="如 96" /></div>
+            <div><label for="seTempoScale">倍速（留空不改）</label><input id="seTempoScale" type="number" step="0.05" min="0.25" max="4" placeholder="如 0.5 = 慢一半" /></div>
+          </div>
+          <div class="hint-xs" style="margin-top:5px;">两个都填时以 <b>目标 BPM</b> 为准（倍速忽略）。速度只改 <code>Q:</code> 这一行，不改变音符时值。</div>
+
+          <div class="sec" style="margin-top:18px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10v9H3zM6 6.5h4M6 9h5"/></svg>④ 其他</div>
+          <label for="seStrip" class="check" style="margin-top:0;">
+            <input id="seStrip" type="checkbox" />
+            <span>去掉和弦记号（"Am7" 这类）</span>
+          </label>
+          <div class="hint-xs" style="margin-top:4px;">去掉后这份谱就是纯旋律谱，⑤ 会自动按 <b>melody</b> 路线生成（伴奏由模型配）。</div>
+
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ ⑤ 歌词+style+乐谱生成歌曲 ============ -->
+  <section class="panel-tab" id="tab-scoreSing" style="display:none;">
+    <div class="page-head">
+      <h1 class="page-title">歌词 + Style + 乐谱生成歌曲</h1>
+      <p class="page-sub">带一份乐谱进来，让模型按谱子上写的旋律唱。乐谱有和弦就走完整编曲，纯旋律就走 melody 路线。</p>
+    </div>
+    <div id="genSlotScore"></div>
+  </section>
+
+  <!-- ============ ⑧ 音色库 ============ -->
+  <!-- 只留 RVC。原来这里还有一栏「YuE2 参考音色（参考音频 + 参考文本）」，但它复制不了音色：
+       YuE2 引擎没有 ICL 参考音频参数，存进来的音频只能被识别成歌词，做不到"用这个人的嗓子唱"。
+       存一份"音色"却换不了声，是个假出口，所以整栏删掉；它唯一有用的那半（音频 → 歌词）
+       搬去了 ② 的歌词区，那里才是歌词该去的地方。
+       顶部原来那两个子页签按钮也一并去掉：只剩一栏时，切换按钮就是纯装饰。 -->
+  <section class="panel-tab" id="tab-voices" style="display:none;">
+    <div class="page-head">
+      <h1 class="page-title">音色库</h1>
+      <p class="page-sub">管理换声用的 RVC 音色模型。可以在 ⑦ 训练，也可以把外部下载的 .pth 导入进来。</p>
+    </div>
+    <div class="grid page-fill" id="voicePaneRvc">
+
+      <!-- 左：模型列表 + 导入。列表卡片保留原有 5 个操作（体检/建档/融合/重命名/删除）。 -->
+      <div>
+        <div class="voice-note">这里是<b>换声用的 .pth + 检索索引</b>：歌曲生成好了只想把唱腔换成某个音色，用它（⑨ 歌曲换声）。训练产出与外部下载导入的都在这。</div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 10V6a5 5 0 0 1 10 0v4"/><rect x="2" y="9.5" width="3" height="4.5" rx="1.2"/><rect x="11" y="9.5" width="3" height="4.5" rx="1.2"/></svg>RVC 音色模型<span class="m-count" id="rvcModelCount"></span>
+          <input id="rvcModelFilter" class="m-filter" type="search" placeholder="按名称筛选…" aria-label="按名称筛选音色" />
+        </div>
+        <div class="model-list" id="rvcModelList">
+          <div class="empty">暂无音色模型。可在「⑦ 音色制作」页训练，或点下面的「导入音色文件」装入外部 .pth。</div>
+        </div>
+        <div class="actions" style="margin-top:10px;">
+          <button class="ghost" id="rvcImportBtn" title="上传外部 .pth（可再选一份 .index 检索索引）；入库后必须建档音域才给得出变调建议">⬆ 导入音色文件（.pth）</button>
+          <input type="file" id="rvcImportPth" accept=".pth" style="display:none;">
+          <input type="file" id="rvcImportIndex" accept=".index" style="display:none;">
+          <button class="ghost" id="rvcImportRefBtn" title="该歌手本人 10~30 秒干声：外部音色靠它量出音域，不带就没有变调建议">＋ 建档参考音频</button>
+          <input type="file" id="rvcImportRef" accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" style="display:none;">
+        </div>
+        <div id="rvcImportPick" class="hint-xs" style="margin-top:6px;" hidden></div>
+        <div class="actions" style="margin-top:6px;">
+          <button class="primary" id="rvcImportGo" style="display:none;">提交导入</button>
+          <button class="ghost" id="rvcImportCancel" style="display:none;">取消</button>
+        </div>
+        <div class="status" id="rvcImportStatus"></div>
+        <div class="hint" style="margin-top:8px;">重命名后索引文件保留；删除会同时清理对应的音色索引（只删精确属于自己的那几枚，不抢邻居同名前缀）。正在被换声任务使用的音色不能删除或重命名。</div>
+        <details style="margin-top:10px;">
+          <summary>为什么外部音色要另传一段音频建档？训练时那份素材不能用吗？</summary>
+          <div class="hint">
+            <b>本机训练出来的音色不用建档</b>：训练过程已经把素材的基频（f0）实测写进了
+            <code>logs/&lt;名字&gt;/2b-f0nsf</code>，卡片直接显示「音域 …Hz（来源：训练素材实测）」，
+            「建档音域」按钮根本不会出现——训练素材的量已经在里面了，只是没有另外存一份音频文件。<br>
+            <b>外部下载的 .pth 必须建档</b>：它只是一个权重文件，训练它用的素材在别人机器上，
+            本机没有，也就没有实测音域。量不出来就只能标「无音域」，⑨ 换声页给不出变调建议。<br>
+            <b>为什么不能拿换声产物反推</b>：换声输出唱的是<b>源歌的音高</b>，不含目标音色的音域信息
+            （实测两个不同音色的产物，中位只差 0.09 半音），反推出来的是源歌的音域，是假的。
+            所以只能要一段<b>这个音色本人</b>的干净人声，10~30 秒足够。
+          </div>
+        </details>
+        <details style="margin-top:12px;">
+          <summary>想要"那个人的嗓子"该走哪条路（三条路线的区别）</summary>
+          <div class="hint">
+            ① <b>换声（RVC）</b>：歌已经生成好了、只想把唱腔换成某个音色 → 去「⑨ 歌曲换声」。伴奏可以原样留住，这是唯一能<b>保留原旋律与原编曲</b>的路线。<br>
+            ② <b>翻唱（YuE2）</b>：在 ② 歌词+style生成歌曲 页点「从参考音频识别歌词」→ 把原唱的词识别出来 → cot 选 <b>melody</b> 重新生成 → 同旋律、<b>全新编曲</b>、<b>不保留原歌手音色</b>。<br>
+            ③ <b>自制音色（训练）</b>：手上没有现成模型、要用某人/自己的嗓子反复出片 → 去「⑦ 音色制作」用干声样本训练，练完自动进⑨的音色下拉框。
+          </div>
+        </details>
+      </div>
+
+      <!-- 右：选中音色的分析卡。以前这些数字分散在「体检」弹窗与训练日志里，
+           换声页要判断"这个嗓子能唱多高"得翻两个地方，现在一页看全。 -->
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l5.5 2.4v3.6c0 3.4-2.3 5.7-5.5 6.6-3.2-.9-5.5-3.2-5.5-6.6V4.2z"/></svg>音色文件分析<span class="m-count" id="voiceInfoName">（点左边任一音色）</span></div>
+        <div id="voiceInfo" class="row-list cap">
+          <div class="empty">左边点一个音色，这里展开它的体检报告、音域档案、安全变调区间、索引状态与来源。</div>
+        </div>
+        <div class="actions" style="margin-top:10px;">
+          <button class="ghost" id="voiceInfoRecheck" disabled>↻ 重新体检（不吃缓存）</button>
+          <button class="ghost" id="voiceInfoCopy" disabled>📋 复制音色名</button>
+        </div>
+        <div class="hint-xs" style="margin-top:8px;">外部下载的 .pth 没有训练实测音域，不建档就没有变调建议（页面会直说"无音域"而不是猜一个）。音域档案的单位是 Hz；<b>不要把 RVC 索引里的 2a_f0 当 Hz 读</b>——那是量化后的 mel bin，读错会让建议飞两个八度。</div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ ⑪ 任务管理 ============ -->
+  <section class="panel-tab" id="tab-history" style="display:none;">
+    <div class="page-head">
+      <h1 class="page-title">任务管理</h1>
+      <p class="page-sub">所有生成、转谱、分离、训练任务的进度与产物都在这里。上方按「状态」和「类型」两个维度筛选。</p>
+    </div>
+    <div class="head-row">
+      <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.3 2.3"/></svg>生成历史<span class="m-count" id="histCountHead">0</span>（服务端保留最近 1000 条，含音频）</div>
+      <div class="flex">
+        <button class="ghost btn-sm" id="histRefresh">刷新</button>
+        <button class="danger btn-sm" id="histClear">清空</button>
+      </div>
+    </div>
+    <!-- ★ 筛选工具栏：状态与类型是**两个正交维度**，不是一行七个标签。
+         旧实现把两组 subtabs 并排、中间夹一条 1px 竖线，两组各有一个"全部"，
+         用户读到的是"一串同级的筛选项"，分不清"全部"属于哪一组。
+         现在：两组各带一个小标题（状态 / 类型），各自成行、各自开区间。
+         ★ 搜索框放在**状态行右侧**（不是类型行）：它和"状态"一样属于"收窄视图"，
+           而且这一行更短，右侧正好有一大片空 —— 放这儿不额外占一行高度。
+           页头每高一行，列表就少一行，这页列表才是主角。 -->
+    <div class="hist-filter">
+      <div class="hf-row">
+        <span class="hf-label">状态</span>
+        <div class="subtabs" id="histTabs">
+          <button class="subtab active" data-kind="all">全部 <span id="histN_all">0</span></button>
+          <button class="subtab" data-kind="running">进行中 <span id="histN_running">0</span></button>
+          <button class="subtab" data-kind="done">已完成 <span id="histN_done">0</span></button>
+          <button class="subtab" data-kind="error">失败 <span id="histN_error">0</span></button>
+        </div>
+        <div class="hf-right">
+          <input id="histSearch" class="t-sm" placeholder="搜任务名 / 曲风 / 任务 ID" />
+          <button class="ghost btn-sm" id="batchResume" style="display:none;" title="把意外终止/已停止/失败的队列任务重新入队继续执行">▶ 一键继续</button>
+          <button class="danger btn-sm" id="batchStop" style="display:none;" title="只停批量队列：正在算的这条会跑完，未开始的标为已取消（之后可用「一键继续」全部复位）">⏹ 停止队列</button>
+          <span id="queueBar" class="hf-queue"></span>
+        </div>
+      </div>
+      <div class="hf-row">
+        <span class="hf-label">类型</span>
+        <div class="subtabs" id="histKindTabs">
+          <button class="subtab active" data-kind="all">全部</button>
+          <button class="subtab" data-kind="generate">🎵 生成歌曲</button>
+          <button class="subtab" data-kind="rvc">🎙 换声</button>
+          <button class="subtab" data-kind="train">🎨 音色制作</button>
+          <button class="subtab" data-kind="score">🎼 乐谱提取</button>
+          <button class="subtab" data-kind="separate">✂ 分离</button>
+        </div>
+      </div>
+    </div>
+    <div class="row-list page-fill-list" id="histList" style="width:100%;max-width:1680px; margin-top:var(--sp-3);">
+      <div class="empty">暂无任务记录。</div>
+    </div>
+  </section>
+
+
+  <!-- ============ ⑥ 歌词曲风 AI 工作台 ============ -->
+  <section class="panel-tab" id="tab-ailab" style="display:none;">
+    <div class="page-head">
+      <h1 class="page-title">歌词曲风 AI 工作台</h1>
+      <p class="page-sub">让 AI 帮你写词、改曲风描述：对话与工具都跑在本机网关里，产出点复制带走。</p>
+    </div>
+    <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l1.7 3.5 3.8.5-2.8 2.7.7 3.8L8 10.5l-3.4 1.8.7-3.8L2.5 5.8l3.8-.5z"/></svg>AI 音乐制作人
+      <button class="ghost" id="aiReload" style="margin-left:auto;">↻ 刷新这轮状态</button>
+    </div>
+    <div class="ailab-grid">
+      <div class="ailab-side">
+        <div class="sec" style="margin-top:0;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10v7H6l-3 3z"/></svg>会话<span class="m-count" id="aiSessCount"></span></div>
+        <div class="row-list cap" id="aiSessList"><div class="empty">加载中…</div></div>
+        <div class="actions" style="margin-top:8px;">
+          <button class="ghost btn-xs" id="aiSessReload">↻ 刷新会话</button>
+        </div>
+        <div class="hint-xs" style="margin-top:6px;">这里只读：点开一条会话，右边的对话区就换到那一条；产出卡也按它来取。</div>
+      </div>
+      <div class="chat-wrap">
+        <div class="chat-log" id="chatLog" aria-live="polite">
+          <div class="empty">还没有对话。下面说一句你想要什么样的歌。</div>
+        </div>
+        <div class="chat-confirm" id="chatConfirm" hidden></div>
+        <div class="chat-in">
+          <label for="chatInput" class="lbl" style="margin:0 0 4px;">对本地的 AI 音乐制作人说（Ctrl+Enter 发送）</label>
+          <textarea id="chatInput" rows="3" placeholder="例：写一首中文民谣，雨天旧车站、错过与释怀，女声清澈，88BPM"></textarea>
+          <div class="actions" style="margin-top:6px;">
+            <button class="primary" id="chatSend">发送</button>
+            <button class="ghost" id="chatNew">＋ 新会话</button>
+            <span class="row-label" id="chatState"></span>
+          </div>
+        </div>
+        <div class="hint-xs" style="margin-top:8px;">对话跑在本机网关里（DeepSeek + 9 个工具），不经过任何外部界面；
+          AI 交出来的 Style / 歌词会出现在下面的卡片上，<b>要带去 ① 或 ② 请点复制</b>——页面之间不代填。</div>
+      </div>
+      <div class="ailab-back">
+        <div class="sec" style="margin-top:0;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 12.5V3.5M8 3.5 4.5 7M8 3.5 11.5 7"/></svg>产出回填</div>
+        <label for="aiFeedPick" style="margin-top:0;">取哪一条产出</label>
+        <select id="aiFeedPick"></select>
+        <label for="aiFeedStyle">Style（这条产出的曲风）</label>
+        <textarea id="aiFeedStyle" class="abc" placeholder="（这条产出里没有 Style）"></textarea>
+        <label for="aiFeedLyrics">歌词</label>
+        <textarea id="aiFeedLyrics" placeholder="（这条产出里没有歌词）"></textarea>
+        <div class="lint" id="aiFeedLint"></div>
+        <div class="actions" style="margin-top:8px;">
+          <button class="ghost" id="aiFeedCheck">🔍 校验歌词</button>
+          <button class="ghost" id="aiFeedCopyStyle">📋 复制 Style</button>
+          <button class="primary" id="aiFeedCopyLyrics">📋 复制 歌词</button>
+        </div>
+        <div class="hint-xs" style="margin-top:6px;">这一栏只负责<b>取出来</b>：复制走，粘到 ① 或 ② 里由你自己决定要不要用。页面之间不互相代填。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ ⑨ 歌曲换声（RVC） ============ -->
+  <section class="panel-tab" id="tab-convert" style="display:none;">
+    <div class="page-head">
+      <h1 class="page-title">歌曲换声</h1>
+      <p class="page-sub">把一首歌的人声换成指定音色。会自动分析音域并给出变调建议——务必留意安全区间提示。</p>
+    </div>
+    <div class="grid">
+
+      <!-- 左栏：源头与音高——「用谁的嗓子、抬几个半音」。这四件事互相依赖（音色决定舒适音域、
+           源歌决定变调），所以放在一栏里连着看；分析和推荐也都围绕变调这一个数。 -->
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 10V6a5 5 0 0 1 10 0v4"/><rect x="2" y="9.5" width="3" height="4.5" rx="1.2"/><rect x="11" y="9.5" width="3" height="4.5" rx="1.2"/></svg>音频换声（RVC 音色转换）</div>
+        <label for="rvcTaskName" style="margin-top:0;">任务名称（用于历史展示与下载命名）</label>
+        <input id="rvcTaskName" placeholder="例如：稻香·女声版" maxlength="100" />
+        <label for="rvcFile" style="margin-top:10px;">选择音频文件（wav / mp3 / flac / m4a…，如生成历史里的歌曲）</label>
+        <!-- 原生 file 控件是这一页唯一没被主题接管的零件（"选择文件 / 未选择任何文件"
+             是系统字体+系统灰）。③⑩ 早就换成 .drop 虚线区 + 隐藏 input，这里跟上，
+             文件名仍由下面的 #rvcFileNow 报出来。 -->
+        <div class="drop" id="rvcDrop" tabindex="0" role="button" aria-label="选择或拖入音频文件">
+          <b>点选或拖入音频文件</b>
+          <small>wav / mp3 / flac / m4a / ogg / opus / aac / wma</small>
+        </div>
+        <input id="rvcFile" type="file" accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" style="display:none;" />
+        <div class="actions" style="margin-top:6px;">
+          <select id="rvcSrcPick" aria-label="从服务器素材里选一首" style="flex:1;"></select>
+          <button class="ghost" id="rvcSrcRefresh" title="重新拉一遍服务器上的歌与分离产物">↻</button>
+        </div>
+        <div class="hint-xs">上面选的是<b>本机服务器上已有的音频</b>（生成过的歌、⑩ 分离出的干声/伴奏），换声时由服务端直接取那份文件，不需要你下载再传。留空就用上面上传的文件。</div>
+        <div class="hint-xs" id="rvcFileNow"></div>
+        <div class="pgrid g3" style="margin-top:10px;">
+          <div><label for="rvcModel">音色模型</label><select id="rvcModel"></select></div>
+          <div><label for="rvcPitch">变调（半音）</label><input id="rvcPitch" type="number" value="0" min="-24" max="24" /></div>
+          <div><label for="rvcF0">变调算法</label>
+            <select id="rvcF0">
+              <option value="rmvpe" selected>rmvpe · 通用首选（精准）</option>
+              <option value="fcpe">fcpe · 新一代（高音丢声/发闷时优先试它）</option>
+              <option value="pm">pm · 最快（质量最低，容易飘）</option>
+            </select>
+          </div>
+          <div class="preset-row" style="grid-column: 1 / -1;">
+            <span class="row-label">变调快捷：</span>
+            <button class="ghost btn-sm" type="button" data-pitch="0" title="同一性别声线直接用 0">同性别 0</button>
+            <button class="ghost btn-sm" type="button" data-pitch="-12" title="女生唱的歌曲换成男声">女转男 -12</button>
+            <button class="ghost btn-sm" type="button" data-pitch="12" title="男生唱的歌曲换成女声">男转女 +12</button>
+            <button class="ghost btn-sm" type="button" data-pitch="-4">微调 -4</button>
+            <button class="ghost btn-sm" type="button" data-pitch="4">微调 +4</button>
+          </div>
+          <div class="preset-row" style="grid-column: 1 / -1;">
+            <button class="ghost" type="button" id="rvcAnalyze">分析音域 → 变调建议</button>
+            <label for="rvcAnalyzeSep" class="check check-inline">
+              <input id="rvcAnalyzeSep" type="checkbox" />
+              <span>先做人声分离（整曲必勾，慢 1~2 分钟但准）</span>
+            </label>
+            <button class="ghost" type="button" id="rvcApplyAdvice" style="display:none;"></button>
+            <span id="rvcAdvice" style="color:var(--muted); font-size:12px;">量源唱的音高中枢、对照所选音色的舒适音域，给出该变几个半音（CPU 几秒，不进换声队列）。💡 只放源歌的 10~30 秒人声片段来分析即可，不必丢整首（只读前 5 分钟，带伴奏数字会被污染）。</span>
+          </div>
+          <div class="hint-xs" style="grid-column: 1 / -1;">💡 变调怎么填：先判断「歌曲里原唱的性别」和「目标音色的性别」——不同性别必须 ±12（女转男 -12 / 男转女 +12），否则会闷哑或尖细；同性别可先用 0，听感偏高/偏低再 ±3~5 微调。判断不准就先试 0，跑完听「换声人声」再调。<br>🎹 伴奏自动跟调：填 ±4 这类非整八度，伴奏同等转过去（否则成品里人声伴奏两个调）；填 ±12/±24 整八度只换音区、不换调，伴奏保持原调；填 ±16 这种"八度+零头"，伴奏只转零头那 ±4。原调伴奏另存一份（任务卡里"伴奏（原调）"），想自己配原调用它。</div>
+          <div id="rvcRecoBox" style="grid-column: 1 / -1; border:1px solid var(--line,#2a2f3a); border-radius:var(--r-sm); padding:8px 10px; background:rgba(127,127,127,.06);">
+            <div class="preset-row">
+              <span class="row-label" style="color:var(--text); font-weight:600;">🎯 这个音色的推荐参数</span>
+              <button class="ghost" type="button" id="rvcApplyReco" title="把下面所有旋钮一键设成推荐值">一键套用</button>
+              <span id="rvcRecoState" class="row-label">读取中…</span>
+            </div>
+            <div id="rvcRecoList" class="hint-xs" style="margin-top:6px;"></div>
+            <div id="rvcPitchWarn" class="hint-xs" style="margin-top:6px; display:none; color:var(--err);"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 右栏：效果与净化 → 提交 → 任务队列 → 指南。
+           原来只有一列任务列表（本机一次只跑一个，多数时候是空的），整页右边空一半；
+           现在把「另一组旋钮」和「提交与监控」搬过来，两栏才都有的看、也都能到底。 -->
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4h12M2 8h8M2 12h10"/></svg>效果与净化</div>
+        <div class="pgrid">
+          <div><label for="rvcIndexRate">音色检索强度</label><input id="rvcIndexRate" type="number" step="0.05" value="0.5" min="0" max="1" /></div>
+          <div><label for="rvcProtect">protect（原唱细节保留）</label><input id="rvcProtect" type="number" step="0.01" value="0.33" min="0" max="0.5" /></div>
+          <div><label for="rvcRms">音量跟随原唱</label><input id="rvcRms" type="number" step="0.05" value="0.25" min="0" max="1" /></div>
+          <div><label for="rvcFilter">音高平滑半径</label>
+            <select id="rvcFilter">
+              <option value="3" selected>3（默认）</option>
+              <option value="0">0（关：保留原始音高轨迹）</option>
+              <option value="5">5（哑音/毛刺明显）</option>
+              <option value="7">7（断续严重）</option>
+            </select>
+          </div>
+          <div><label for="rvcResample">输出采样率</label>
+            <select id="rvcResample">
+              <option value="0" selected>模型原生（推荐）</option>
+              <option value="40000">40000</option>
+              <option value="44100">44100</option>
+              <option value="48000">48000</option>
+            </select>
+          </div>
+          <div class="preset-row">
+            <span class="row-label" style="color:var(--text); font-weight:600;">效果预设：</span>
+            <button class="ghost btn-sm" type="button" data-preset="0.5,0.33" title="多数场景的最佳起点：官方默认检索档">⭐ 标准</button>
+            <button class="ghost btn-sm" type="button" data-preset="0.7,0.33" title="更像目标音色，但可能轻微电音（素材优质时用）">更像音色</button>
+            <button class="ghost btn-sm" type="button" data-preset="0.3,0.15" title="检索大幅减弱、清辅音/呼吸多保留；长音与高音电音明显时用它">🔇 防电音</button>
+          </div>
+          <div style="grid-column: 1 / -1;">
+            <label for="rvcSep" class="check">
+              <input id="rvcSep" type="checkbox" checked />
+              <span>先做人声分离再换声（歌曲带伴奏时必勾；官方 PyMSS 分离，约 1.5 分钟/3.5 分钟歌）</span>
+            </label>
+          </div>
+          <div style="grid-column: 1 / -1;">
+            <label for="rvcHarmony" class="check">
+              <input id="rvcHarmony" type="checkbox" />
+              <span>分离后再去和声（HP5 只留主唱；副歌有叠唱/和声时能减少高音电音，多约 1 分钟）</span>
+            </label>
+          </div>
+          <div style="grid-column: 1 / -1;">
+            <label for="rvcGate" class="check">
+              <input id="rvcGate" type="checkbox" checked />
+              <span>静音门：前奏/间奏这些没人声的地方自动压到接近无声（推荐开——模型会在静音处自己"哼"出一个音，即底噪）</span>
+            </label>
+          </div>
+          <div class="hint-xs" style="grid-column: 1 / -1;">💡 输入是完整歌曲（人声+伴奏）→ 保持勾选，换声前会自动分离出纯净人声，完成后可下载/播放「换声成品（带伴奏） / 换声人声（干声） / 原人声 / 伴奏」四份产物；输入已经是纯干声（录音、清唱）→ 取消勾选直接换声，速度更快。</div>
+        </div>
+
+        <div class="actions">
+          <button class="primary" id="rvcGo">开始换声</button>
+        </div>
+        <div class="progress" id="rvcProgress"><div id="rvcProgressBar"></div></div>
+        <div class="status" id="rvcStatus">选择文件与音色后点击「开始换声」。转换在服务端进行，可离开页面；连点不会并行，会排成队一次只跑一个。</div>
+        <div class="hint-xs" style="margin-top:4px;">⚠ 诚实说明：排队位次会落盘（runtime/rvc/queue_state.json），<b>网关重启后尚未开跑的排队任务会重新校验再排回</b>（音色与源音频都还在才接回）。重启那一刻正在转换的任务不自动重跑（推理子进程随网关一起死了，半截结果不可信），会在历史页如实标成「服务重启，任务中断」；已取消的任务不复活。已完成的产物落盘不受影响。</div>
+
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 8.5l3.5 3.5L14 3.5"/></svg>转换结果</div>
+        <div class="row-list cap" id="rvcList">
+          <div class="empty">暂无换声任务。结果也会出现在「任务管理」页（标注 RVC 换声）。</div>
+        </div>
+
+        <details style="margin-top:14px;">
+          <summary>旋钮原理与出问题时怎么调（官方口径）</summary>
+          <div class="hint-xs" style="margin-top:8px;">💡 检索强度越高音色越像，也越容易在长音/高音上出电音——出电音就往下调（0.5→0.3）。官方 FAQ 的取舍说得更准：<b>调到 1 理论上完全没有推理源音色泄露，但音质会倒向你的训练素材——素材比原曲差时，调高反而更糊</b>；素材优质且量大时这个旋钮不重要。protect 的含义是"没人声/气声帧里保留多少原唱特征"：<b>数值越小越保留原唱咬字与呼吸（电音更少），拉到 0.5 = 完全不保护</b>。<br>⚠️「音量跟随原唱」的方向和直觉相反：<b>1 = 完全用模型自己算的音量（原曲动态丢失，静音处可能被填出气声）；0 = 完全跟原唱的强弱走</b>。官方现行默认 0.25（七成跟原唱），别填 1——整首忽大忽小、压不住伴奏、静音段有杂音时往下调（0 → 完全跟原唱动态）。「音高平滑半径」是音高轨迹的中值滤波（官方 WebUI 同名旋钮，滤波核只认奇数）：默认 3；<b>哑音、毛刺、断续明显时调到 5~7</b>，调大会发闷，选 0 关闭。<br>🎯 <b>高音没声音 / 高音发闷</b>：优先把「变调算法」换成 <b>fcpe</b>（rmvpe 在高音区判成"无声"的概率更高，一判错那段就被抹平或丢声），并把「音高平滑半径」降到 0~3（调大也会闷）；还不行就检查变调值——人声被压到音色训练音域之外时，高音会直接发虚。「输出采样率」默认跟随模型原生：40k 音色上采样到 48k 不会凭空补出高频，只多一次重采样，除非特殊需要别改。</div>
+        </details>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ ⑦ 音色制作 ============ -->
+  <section class="panel-tab" id="tab-train" style="display:none;">
+    <div class="page-head">
+      <h1 class="page-title">音色制作</h1>
+      <p class="page-sub">用一段干净的人声训练 RVC 音色。训练耗时长，可以随时暂停、之后接着跑。</p>
+    </div>
+    <div class="grid page-fill">
+
+      <!-- 左栏：素材侧——名字、样本、分离与净化、轮数。录音指南留在这一栏，
+           因为那两段的判据是「听你的素材」，不是「看你的任务」。 -->
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5" r="2.6"/><path d="M2.8 13.5c.6-2.8 2.7-4.3 5.2-4.3s4.6 1.5 5.2 4.3"/></svg>音色制作（用干声样本训练新音色）</div>
+        <label for="rvcTrainName">音色名称（英文/拼音，训练完成后出现在上方音色下拉框）</label>
+        <input id="rvcTrainName" placeholder="例如：myvoice" />
+        <label for="rvcTrainFiles" style="margin-top:10px;">人声样本（可多选；干声最佳，完整歌曲也可以——勾选下方自动分离即可）</label>
+        <div class="drop" id="rvcTrainDrop" tabindex="0" role="button" aria-label="选择或拖入人声样本（可多选）">
+          <b>点选或拖入人声样本（可多选）</b>
+          <small>wav / mp3 / flac / m4a / ogg / opus / aac / wma</small>
+        </div>
+        <input id="rvcTrainFiles" type="file" multiple accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" style="display:none;" />
+        <div class="actions" style="margin-top:6px;">
+          <select id="trainSrcPick" multiple size="5" aria-label="从服务器素材里选若干段" style="flex:1;"></select>
+          <button class="ghost" id="trainSrcRefresh" title="重新拉一遍服务器上的分离产物与历史歌曲">↻</button>
+        </div>
+        <div class="hint-xs">这里列的是<b>本机服务器上已有的音频</b>（⑩ 的分离产物、生成过的歌），按住 Ctrl 可多选；训练素材要干净人声，优先选「人声（去和声）」。<b>上传的文件与这里选的可以并用</b>，体检会把两者一起算。</div>
+        <div class="hint-xs" id="rvcTrainFilesNow"></div>
+        <div style="margin-top:8px;">
+          <label for="rvcTrainSep" class="check">
+            <input id="rvcTrainSep" type="checkbox" />
+            <span>上传的是完整歌曲（含伴奏）→ 自动分离出干净人声再训练（官方 PyMSS，约 1.5 分钟/3.5 分钟歌）</span>
+          </label>
+        </div>
+        <div style="margin-top:10px;">
+          <label for="rvcTrainClean">素材净化（在分离之后、切片之前：去混响 → 轻降噪，官方 PyMSS 净化模型；原始素材原样留档，随时能前后对比）</label>
+          <select id="rvcTrainClean">
+            <option value="light" selected>轻（推荐：保守处理，去混响 + 轻降噪）</option>
+            <option value="off">不净化（素材是棚录干声）</option>
+            <option value="medium">中（混响/噪声很重时；模型更大、更耗时）</option>
+          </select>
+        </div>
+        <div class="hint-xs">🎤 怎么录音：手机自带的录音机即可（m4a 能直接用）——安静房间（关窗、关风扇空调）、离麦 20-30cm 正常说话或唱歌，录 4-6 段每段 1-2 分钟；不要加伴奏、混响、变声特效，不要背景音乐。唱歌音色选唱段、说话音色选说话，或两者混录。手机录的先传到电脑再选文件。</div>
+        <div class="hint-xs">✅ 好素材的判断：回放录音能听清每个字、没有嗡嗡的房间声、音量稳定——素材质量决定音色上限，比任何参数都重要。上传完整歌曲时务必勾选自动分离，否则伴奏会被当成"人声"学进去，音色会发糊。</div>
+        <div class="pgrid" style="margin-top:10px;">
+          <div><label for="rvcTrainEpochs">训练轮数（1-1200；30 试听 / 100 常用 / 200 精训）</label><input id="rvcTrainEpochs" type="number" value="200" min="1" max="1200" step="10" /></div>
+          <div class="preset-row" style="grid-column: 1 / -1;">
+            <span class="row-label">轮数档位：</span>
+            <button class="ghost btn-sm" type="button" data-epochs="30" title="先看看素材能不能练出个像样的东西，几十分钟就有结果">🔎 30 轮试听</button>
+            <button class="ghost btn-sm" type="button" data-epochs="100" title="常规档，多数素材够用">⭐ 100 轮常用</button>
+            <button class="ghost btn-sm" type="button" data-epochs="200" title="官方推荐口径：10 分钟以上素材练到 200 轮">🏆 200 轮精训</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 右栏：体检 → 提交 → 监控 → 任务 → 判断依据。
+           体检是训练前的必查关卡（报告就在这一栏出），提交与任务列表挨在一起，
+           才看得懂"我点的这个按钮现在排到第几"。 -->
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l5.5 2.4v3.6c0 3.4-2.3 5.7-5.5 6.6-3.2-.9-5.5-3.2-5.5-6.6V4.2z"/></svg>素材体检（训练前查时长/静音/爆音）</div>
+        <div class="actions" style="margin-top:6px;">
+          <button class="ghost" id="rvcTrainCheck">先体检素材（不训练，几分钟出报告）</button>
+        </div>
+        <div id="rvcTrainCheckReport" class="hint-xs" style="display:none; white-space:pre-wrap;"></div>
+
+        <div class="actions">
+          <button class="primary" id="rvcTrainGo">开始制作音色</button>
+        </div>
+        <div class="progress" id="rvcTrainProgress"><div id="rvcTrainProgressBar"></div></div>
+        <div class="status" id="rvcTrainStatus">训练在服务端进行（独占 GPU，期间不要同时生成歌曲/换声）。完成后新音色自动出现在换声页的音色下拉框，只保留最终成品。</div>
+
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 8.5l3.5 3.5L14 3.5"/></svg>制作进度</div>
+        <div class="row-list cap" id="rvcTrainList">
+          <div class="empty">暂无音色制作任务。</div>
+        </div>
+
+        <details style="margin-top:14px;">
+          <summary>轮数怎么定 · 要跑多久</summary>
+          <div class="hint-xs" style="margin-top:8px;">💡 轮数不是越高越好：素材不足时加轮数只会把毛病学得更像（发虚、电音都在）。先点「先体检素材」看时长/静音/爆音，体检给的档位就是这批素材该用的轮数；1200 轮在这张 6GB 卡上要跑一整天，只在素材极干净且要出成品时用。</div>
+        </details>
+        <details>
+          <summary>训练完怎么验收（听什么算合格）</summary>
+          <div class="hint-xs" style="margin-top:8px;">🎓 训练完成后怎么验收：先看卡片上的自检数字（有没有出声 + 高频噪声化），再到换声页用新音色换一段 30 秒的清唱试听。发虚发闷→素材太少或轮数不够；<b>有电音/发沙要先分清是谁的账</b>：把同一段的「原唱人声」也听一遍——原唱就电音，那是源音频的问题（YuE2 生成的歌尤其如此），换声换不掉；原唱干净、换声后才脏，是这个音色练过头或素材带噪，用「↻ 重训」填 50~60 轮重来（旧检查点会归档、旧成品先备份），或在卡片上逐档试听挑一档定稿。实测：把「音色检索强度」和 protect 调低对这种高频噪声化<b>没有效果</b>，别在它上面耗时间。</div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ ⑩ 人声伴奏分离 ============ -->
+  <section class="panel-tab" id="tab-sep" style="display:none;">
+    <div class="page-head">
+      <h1 class="page-title">人声伴奏分离</h1>
+      <p class="page-sub">把一首歌拆成人声和伴奏两条轨。分离出的伴奏可以拿去提取乐谱。</p>
+    </div>
+    <div class="grid compose">
+
+      <!-- 左＝上传与提交 -->
+      <div class="pane pane-in">
+        <div class="pane-head"><b>① 上传歌曲</b><span class="hint-xs">官方 PyMSS BS-Roformer · N 卡约 1.5 分钟；核显机器走 CPU，会明显更慢</span></div>
+        <div class="pane-body">
+          <label for="sepName" style="margin-top:0;">任务名称（用于历史展示与下载命名）</label>
+          <input id="sepName" placeholder="例如：稻香·分离" maxlength="100" />
+          <div class="drop" id="sepDrop" tabindex="0" role="button" aria-label="选择或拖入音频文件" style="margin-top:10px;">
+            <b>点选或拖入音频文件</b>
+            <small>wav / mp3 / flac / m4a / ogg / opus / aac / wma</small>
+          </div>
+          <input type="file" id="sepFile" accept=".wav,.flac,.mp3,.m4a,.ogg,.opus,.aac,.wma" style="display:none;">
+          <div class="hint-xs" id="sepFileName"></div>
+          <label for="sepHarmony" class="check" style="margin-top:10px;">
+            <input id="sepHarmony" type="checkbox" />
+            <span>分离后再去和声（只留主唱干声；翻唱与训练素材建议开，多约 1 分钟）</span>
+          </label>
+          <div class="hint-xs" style="margin-top:6px;">开了多产出「人声（去和声）」一份：副歌有叠唱/和声时，这份才是干净的训练素材。产出清单：关=人声(含和声)+伴奏两份，开=三份。</div>
+
+          <!-- 输出目录：默认落在工作台的 output/ 里，但素材往往要进别的工程目录
+               （喂给训练、交给剪辑、放在项目盘），手动搬运一遍纯属浪费。
+               留空 = 用默认目录；填了就由服务端校验可写性，**在任务开始前**就告诉你行不行，
+               不会跑一分半钟之后才失败。 -->
+          <label for="sepOutDir" style="margin-top:12px;">输出目录（留空 = 默认 output 目录）</label>
+          <div class="flex" style="gap:8px;align-items:center;">
+            <input id="sepOutDir" placeholder="例如：E:\\AI\\干声素材 或留空" style="flex:1;min-width:0;" />
+            <button class="ghost" id="sepOutDirClear" type="button" title="清空，回到默认目录">✕</button>
+          </div>
+          <div class="hint-xs" id="sepOutDirNote" style="margin-top:5px;">填绝对路径。目录不存在会自动创建；不能是系统盘根目录或系统目录（会被服务端拒绝）。</div>
+
+          <div class="actions" style="margin-top:12px;">
+            <button class="primary" id="sepGo">开始分离</button>
+            <button class="danger" id="sepStop" style="display:none;">取消排队</button>
+          </div>
+          <div class="progress" id="sepProgress"><div id="sepProgressBar"></div></div>
+          <div class="status" id="sepStatus">GPU 与生成/换声/训练共用一条串行队列：前面有任务时会显示排队位次，不会并行硬抢显存。</div>
+          <div class="hint" style="margin-top:12px;">分离失败会说清是哪一段失败（PyMSS / 降级到 GPT-SoVITS 链 / 静音守卫判定产物为数字静音），不会给你一个空文件就报成功。</div>
+        </div>
+      </div>
+
+      <!-- 右＝产物与历史 -->
+      <div class="pane pane-out">
+        <div class="pane-head"><b>② 产物</b><span class="hint-xs">每份都可单独试听 / 下载 / 送去别的页</span></div>
+        <div class="pane-body">
+          <div class="row-list cap" id="sepResults">
+            <div class="empty">暂无分离结果。</div>
+          </div>
+          <div class="sec" style="margin-top:20px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.3 2.3"/></svg>分离记录</div>
+          <div class="row-list cap" id="sepList">
+            <div class="empty">暂无分离记录。</div>
+          </div>
+        </div>
+        <div class="pane-foot">
+          <div class="hint-xs">产物同时登记进 ⑪ 任务管理（类型「分离」），关掉本页不会丢掉任务。</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ ⑫ 设置 ============ -->
+  <section class="panel-tab" id="tab-settings" style="display:none;">
+    <div class="page-head">
+      <h1 class="page-title">设置</h1>
+      <p class="page-sub">服务健康、模型校验、引擎模式、外观主题色与维护。系统信息与出处见 ⑬ 关于。</p>
+    </div>
+    <div class="grid settings">
+
+      <!-- 左：服务 / 模型 / 引擎 —— 三条只读或低频设置（外观已挪去右栏） -->
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 14S2.5 10.5 2.5 6.6C2.5 4.4 4.2 3 6 3c1 0 1.7.5 2 1 .3-.5 1-1 2-1 1.8 0 3.5 1.4 3.5 3.6C13.5 10.5 8 14 8 14z"/></svg>服务与模型</div>
+        <div class="foot-row" id="modelVerifyRow" style="display:none;">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l5.5 2.4v3.6c0 3.4-2.3 5.7-5.5 6.6-3.2-.9-5.5-3.2-5.5-6.6V4.2z"/></svg>
+          <span class="fr-label" id="modelVerifyText">模型校验…</span>
+          <button id="modelRepairBtn" class="mode-pill" style="display:none;" title="只重下缺失/损坏的文件（断点续传）">修复</button>
+        </div>
+        <div class="actions" style="margin-top:8px;">
+          <button class="ghost" id="modelVerifyNow">↻ 立即重新校验</button>
+        </div>
+        <div id="modelFiles" class="hint-xs" style="margin-top:8px;"></div>
+        <div class="progress" id="repairProgress" style="margin-top:8px;"><div id="repairProgressBar"></div></div>
+        <div class="lint" id="repairStatus"></div>
+
+        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 5h3l1.5-2h3L11 5h3v8H2zM8 10.2a1.8 1.8 0 1 0 0-3.6 1.8 1.8 0 0 0 0 3.6z"/></svg>模型档位</div>
+        <label for="modelSel" style="margin-top:0;">当前模型 / 量化档（切换会重启音频引擎，需 1-2 分钟）</label>
+        <select id="modelSel" class="model-select"></select>
+        <div class="hint-xs" id="modelHint"></div>
+
+        <!-- LoRA 适配器（audio.cpp v0.8.1+；本机内核 v0.9.2）。
+             放在 ⑫ 而不是 ②⑤：它是**引擎级**配置，改一次对之后每一次生成都生效，
+             不是某一首歌的参数——按本页规矩，绝不把它塞进别的页。 -->
+        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2v12M3 5l5 3 5-3M3 11l5 3 5-3"/></svg>LoRA 适配器</div>
+        <div class="hint-xs" id="loraIntro">未放文件时这里只会显示"0 个可用"——把 <b>unfused</b> 的 <code>.safetensors</code> 放进 <code>cpp/lora/</code>（<b>不要</b> <code>_comfyui</code> 那种融合版），再点「重新扫描」。</div>
+        <label for="loraAr">AR 段（管谱与语义规划）</label>
+        <select id="loraAr" class="model-select"></select>
+        <label for="loraArScale" class="hint-xs" style="margin-top:6px;">AR 强度 <span id="loraArScaleVal">1.0</span>（0 = 关闭该适配器）</label>
+        <input id="loraArScale" type="range" min="0" max="2" step="0.05" value="1" />
+        <label for="loraNar" style="margin-top:10px;">NAR 段（管声学渲染，含 tokenizer 替换）</label>
+        <select id="loraNar" class="model-select"></select>
+        <label for="loraNarScale" class="hint-xs" style="margin-top:6px;">NAR 强度 <span id="loraNarScaleVal">1.0</span>（0 连替换一起关）</label>
+        <input id="loraNarScale" type="range" min="0" max="2" step="0.05" value="1" />
+        <div class="btn-row" style="margin-top:10px;">
+          <button id="loraApply" class="primary">挂载并重启引擎</button>
+          <button id="loraClear" class="ghost">卸下全部</button>
+          <button id="loraScan" class="ghost">重新扫描</button>
+        </div>
+        <div class="lint" id="loraStatus"></div>
+
+        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5.5 6.5h5M5.5 9.5h3"/></svg>AI 写词（DeepSeek）</div>
+        <div class="hint-xs" id="deepseekKeyState">未配置</div>
+        <div style="display:flex;gap:6px;margin-top:6px;align-items:center;">
+          <input id="deepseekKey" type="password" placeholder="sk-...（留空不修改）" autocomplete="off" style="flex:1;min-width:0;" />
+          <button class="ghost" id="deepseekKeySave">保存</button>
+          <button class="ghost" id="deepseekKeyClear">清除</button>
+        </div>
+        <div class="lint" id="deepseekKeyStatus"></div>
+
+        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5.5 6.5h5M5.5 9.5h3"/></svg>引擎模式</div>
+        <div class="foot-row" id="modeRow" style="display:none;">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5.5 6.5h5M5.5 9.5h3"/></svg>
+          <span class="fr-label" id="modeText">引擎模式</span>
+          <button id="modeBtn" class="mode-pill" title="切换引擎模式">切GPU</button>
+        </div>
+        <div class="hint-xs" style="margin-top:6px;">CUDA 模式下若显存不足，生成前会自动降级到 CPU（慢 5-10 倍但能出结果）；生成与换声/训练共用 GPU，串行执行。</div>
+        <div class="foot-row" style="margin-top:12px;gap:10px;">
+          <span class="fr-label">GPU 分配失败时自动降级到 CPU</span>
+          <label class="ios-switch" title="开：GPU 失败后自动切 CPU（整首重算，很慢）；关：直接报错并保留检查点">
+            <input type="checkbox" id="cpuFallbackToggle" aria-label="GPU 分配失败时自动降级到 CPU" />
+            <span class="ios-slider"></span>
+          </label>
+        </div>
+        <div class="hint-xs" id="cpuFallbackHint">关闭后，GPU 分配失败会直接报错并保留 AR 检查点；不会把整首歌重算到 CPU。核显上开启可能慢十几倍。</div>
+        <div class="lint" id="cpuFallbackStatus"></div>
+
+      </div>
+
+      <!-- 右：外观 + 维护（系统信息与关于已拆到 ⑬ 关于 独立页）。
+           外观从原来的左栏挪过来：左栏"服务/模型/引擎"是三条只读或低频一行设置，
+           右栏原本只剩维护两个按钮、下方空一大片。把外观（色板 8 格 + 自定义）放过来，
+           两栏高度自然接近，也符合"需要动手调的都归右栏"的同一条归类。 -->
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2.2" fill="currentColor" stroke="none"/></svg>外观</div>
+        <!-- 主题色改成预设色板。原来只有一个取色器：真要调出一套"看得清、不刺眼"的配色，
+             得自己同时兼顾正文对比度、按钮刻字、芯片底色，几乎没人调得动，最后都停在默认色。
+             预设里每一档都按同一套派生规则算过（文字/键面/辉光），选一个就是整套。
+             取色器没删，收到「自定义」那格后面——要精确取色的人还能用。 -->
+        <div class="hint-xs" style="margin-top:0;">挑一个预设色（整站文字、按钮、芯片都会跟着走）</div>
+        <div class="swatches" id="accentSwatches"></div>
+        <div class="flex" style="align-items:center;gap:8px;margin-top:8px;">
+          <input type="color" id="accentPicker" value="#0969da" title="自定义主题色"
+                 style="width:34px;height:26px;padding:0;border:1px solid var(--line);border-radius:var(--r-xs);background:none;cursor:pointer;" />
+          <span class="hint-xs">自定义（点左边色块取色；上面 8 个预设已经调好对比度）</span>
+        </div>
+        <div class="hint-xs" style="margin-top:6px;">主题色写进 localStorage，刷新后保持。</div>
+        <div class="sec" style="margin-top:18px;">明暗模式</div>
+<button class="foot-row" id="themeBtn" title="切换明暗模式" aria-live="polite">
+      <svg class="ico-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1.5v1.8M8 12.7v1.8M1.5 8h1.8M12.7 8h1.8M3.4 3.4l1.3 1.3M11.3 11.3l1.3 1.3M12.6 3.4l-1.3 1.3M4.7 11.3l-1.3 1.3"/></svg>
+      <svg class="ico-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M13.5 9.7A5.8 5.8 0 0 1 6.3 2.5a5.8 5.8 0 1 0 7.2 7.2z"/></svg>
+      <span class="fr-label" id="themeLabel">浅色</span>
+      <span class="mode-pill" id="themePill" title="点一下切到另一种模式">切到深色</span>
+    </button>
+        <div class="hint-xs" style="margin-top:6px;">图标表示当前模式；点右侧胶囊切换。设置写进 localStorage，刷新后保持。</div>
+
+        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7h6M5 9h4"/></svg>VAE 显存优化</div>
+        <div class="hint-xs">VAE 解码窗口大小决定显存占用与切片数量。512 窗口适合 16GB 内存机器，能稳定跑完长歌；1024 窗口速度略快但需要更多显存。</div>
+        <div class="flex" style="align-items:center;gap:12px;margin-top:10px;">
+          <label class="toggle" title="开启后使用 512 帧窗口（推荐），关闭后使用官方 1024 帧窗口">
+            <input type="checkbox" id="vaeWindowToggle" />
+            <span class="toggle-slider"></span>
+          </label>
+          <span class="hint-xs" id="vaeWindowLabel">加载中…</span>
+        </div>
+        <div class="hint-xs" style="margin-top:6px;color:var(--warn);">⚠️ 切换后会立即重启音频引擎，正在生成的任务会中断。</div>
+        <div class="status" id="settingsStatus" style="margin-top:10px;"></div>
+
+        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 3h12v10H2zM5 6h6M5 9h4"/></svg>本机可用功能</div>
+        <div class="hint-xs" id="capabilityList">检测中…</div>
+        <div class="actions" style="margin-top:8px;">
+          <button class="ghost" id="capabilityRefresh">↻ 重新检测</button>
+        </div>
+
+        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 4.5h10M3 8h10M3 11.5h6"/></svg>维护</div>
+        <div class="actions">
+          <button class="danger" id="setClearHist" title="删除服务端保存的历史任务记录与音频">清空任务历史</button>
+          <button class="ghost" id="setLogPath" title="复制日志目录路径到剪贴板">📋 复制日志目录</button>
+        </div>
+
+        <div class="sec" style="margin-top:22px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.2v4M8 4.8v.2"/></svg>系统信息与关于</div>
+        <div class="hint-xs" style="margin-top:0;">主机、端口、目录、版本与出处，都收在 <a href="#about" class="about-link" onclick="switchTab('about');return false;">⑬ 关于</a> 页。</div>
+        <div class="actions" style="margin-top:8px;">
+          <button class="ghost" onclick="switchTab('about')">→ 打开 ⑬ 关于</button>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ⑬ 关于：系统信息（只读）+ 关于（出处 / 许可 / 声明） -->
+  <section class="panel-tab" id="tab-about" style="display:none;">
+    <div class="page-head">
+      <h1 class="page-title">关于</h1>
+      <p class="page-sub">本机的系统信息（只读），以及这个工作台是谁做的、源码在哪、用什么许可。</p>
+    </div>
+    <div class="grid settings grid-about">
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.2v4M8 4.8v.2"/></svg>系统信息（只读）</div>
+        <div class="kv" id="sysInfo"><div class="empty">读取中…</div></div>
+        <div class="actions" style="margin-top:8px;">
+          <button class="ghost" id="sysRefresh">↻ 刷新</button>
+        </div>
+        <div class="hint-xs" style="margin-top:6px;">端口与目录刻意不做成可改：它们由 <code>ports.json</code> 与启动脚本/看门狗共同决定，改了会与三者不一致，风险大于收益。</div>
+        <!-- 用户会问"界面都搬回 7863 了，这行 dsh 是不是没删干净"——它不是残留，是还在承重：
+             局域网那条路目前仍然经 3081 转发，而 7863 故意没开防火墙入站规则。
+             这句话就写在他看到这一行的地方，别让人自己猜。 -->
+        <div class="hint-xs" style="margin-top:4px;">上面那行 <b>局域网入口 (dsh)</b> 不是没删干净的残留：
+          工作台界面已经全部跑在网关 7863 上，但<b>从局域网设备访问仍然经 3081 的内部代理转发</b>
+          （<code>开放局域网</code> 故意不给 7863 开入站规则）。摘除它需要先把访问令牌这道门搬进网关，
+          在那之前停掉 3081 只会让手机/平板打不开。详见 <code>docs/3081与7863架构优化建议.md</code>。</div>
+      </div>
+
+      <!-- 右：关于（出处 / 许可 / 声明） -->
+      <div>
+        <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M8 11.2V8M8 5.2v.2"/></svg>关于</div>
+        <div class="hint-xs" id="aboutLine">音乐工作台 · 版本号在左边「系统信息」的「版本」一行</div>
+        <!-- 作者与仓库：这三行是"这东西是谁做的、源码在哪、还能去哪找更多"，
+             以前关于页只有许可与限制，唯独缺了出处，想给项目点星或提 issue 得先去翻聊天记录。 -->
+        <div class="kv" style="margin-top:8px;">
+          <div><span class="k">作者</span><span class="v">刘昂</span></div>
+          <div><span class="k">邮箱</span><span class="v"><a href="mailto:liuang0307@foxmail.com" class="about-link">liuang0307@foxmail.com</a></span></div>
+          <div><span class="k">项目仓库</span><span class="v"><a href="https://github.com/RevolutionLA/YuE2-Music-Workbench" target="_blank" rel="noreferrer noopener" class="about-link">github.com/RevolutionLA/YuE2-Music-Workbench</a></span></div>
+          <div><span class="k">YuE2 合集</span><span class="v"><a href="https://github.com/RevolutionLA/awesome-YuE" target="_blank" rel="noreferrer noopener" class="about-link">github.com/RevolutionLA/awesome-YuE</a></span></div>
+        </div>
+        <div class="hint" style="margin-top:8px;">
+          许可 <b>CC BY-NC 4.0</b>（署名-非商业性使用）。<br>
+          <b>模型权重不可商用</b>：YuE2 / SheetSage2 / RVC 相关权重与素材各自带非商用限制，产出物请勿用于商业用途。<br>
+          <b>诚实声明</b>：<code>git clone</code> 拿不到运行时二进制（<code>main.cp312-win_amd64.pyd</code>、<code>audiocpp_server.exe</code>、py312 运行时），需按 README 自备；换声队列存在网关内存里，网关重启后排队条目会丢，页面不承诺续跑。
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ ⑭ 歌词时间轴（独立任务，不依赖 VAE） ============ -->
+  <section class="panel-tab" id="tab-lrc" style="display:none;">
+    <div class="page-head">
+      <h1 class="page-title">歌词时间轴</h1>
+      <p class="page-sub">上传歌曲音频 + 粘贴歌词，生成带时间轴的 LRC 与逐字 eLRC。独立任务，不依赖 VAE，也不占用生成队列。</p>
+    </div>
+    <div class="grid compose">
+      <div class="pane pane-in">
+        <div class="pane-head"><b>输入</b><span class="hint-xs">音频 + 歌词</span></div>
+        <div class="pane-body">
+          <label for="lrcPick">服务器上已有的歌（可选；生成成品或入库整曲）</label>
+          <select id="lrcPick"><option value="">— 不选，使用下面上传的音频 —</option></select>
+          <label for="lrcAudio" style="margin-top:10px;">或上传音频（wav / flac / ogg / mp3 / m4a…）</label>
+          <input id="lrcAudio" type="file" accept=".wav,.flac,.ogg,.mp3,.m4a,audio/*" />
+          <label for="lrcName" style="margin-top:10px;">任务名（可选）</label>
+          <input id="lrcName" placeholder="例如：等你回来" maxlength="100" />
+          <label for="lrcLyrics" style="margin-top:10px;">歌词（保留 [Verse] / [Chorus] 段标；段标行不参与对齐）</label>
+          <textarea id="lrcLyrics" rows="12" placeholder="[Verse 1]&#10;城门外 风沙 起了又黄&#10;..."></textarea>
+          <div class="actions" style="margin-top:10px;">
+            <button class="primary" id="lrcGo">生成歌词时间轴</button>
+            <button class="ghost" id="lrcRefresh">↻ 刷新任务列表</button>
+          </div>
+          <div class="status" id="lrcStatus">选服务器歌曲或上传音频，粘贴歌词后开始；对齐在后台执行，刷新页面不会丢任务。</div>
+        </div>
+      </div>
+      <div class="pane pane-out">
+        <div class="pane-head"><b>产物</b><span class="hint-xs">LRC / eLRC</span></div>
+        <div class="pane-body">
+          <div class="actions" id="lrcOutputs" style="display:none;">
+            <button class="primary" id="lrcDownload">⬇ LRC 歌词</button>
+            <button class="ghost" id="lrcElrcDownload">⬇ 逐字 eLRC</button>
+          </div>
+          <div class="hint-xs" id="lrcMethod"></div>
+          <pre id="lrcPreview" class="lrc-preview" style="display:none;"></pre>
+          <div class="sec" style="margin-top:18px;">最近任务</div>
+          <div id="lrcList" class="hint-xs">—</div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ============ 底部播放坞 ============ -->
+<div class="dock">
+  <div class="dock-file">
+    <!-- 原生 file input 长得像浏览器默认控件（"选择文件 / 未选择任何文件"），
+         是整页唯一没被主题接管的零件。换成隐藏原生控件 + 一个主题化的胶囊按钮。 -->
+    <input id="audioFile" type="file" accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a" class="visually-hidden" />
+    <label for="audioFile" class="dock-pick" id="dockPick">♪ 载入本地音频</label>
+    <span class="dock-name" id="audioName">或等生成完成后在此播放</span>
+  </div>
+  <audio id="player" preload="metadata" style="display:none;"></audio>
+  <div class="dock-transport">
+    <button class="dock-btn" id="dockPlay" title="播放 / 暂停" disabled>
+      <svg class="i-play" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.2v9.6c0 .5.55.8.97.53l7.2-4.8a.63.63 0 0 0 0-1.06l-7.2-4.8A.63.63 0 0 0 5 3.2z"/></svg>
+      <svg class="i-pause" viewBox="0 0 16 16" fill="currentColor" style="display:none;"><rect x="4" y="3" width="2.8" height="10" rx="1"/><rect x="9.2" y="3" width="2.8" height="10" rx="1"/></svg>
+    </button>
+    <span class="dock-time" id="dockCur">0:00</span>
+    <div class="dock-track" id="dockTrack" title="点击 / 拖动跳转">
+      <div class="dock-track-fill" id="dockFill"></div>
+      <div class="dock-track-knob" id="dockKnob"></div>
+    </div>
+    <span class="dock-time" id="dockDur">0:00</span>
+  </div>
+  <button class="ghost" id="download" disabled>下载 WAV</button>
+</div>
+
+<!-- 状态播报区：屏幕阅读器专用，视觉上不可见。
+     进度/成功/失败都只是"屏幕上多了一行字"，不播报的话键盘与读屏用户
+     完全不知道任务跑到哪了 —— 对一个动辄跑几分钟的生成工具，这是硬伤。 -->
+<div class="visually-hidden" id="srStatus" role="status" aria-live="polite" aria-atomic="true"></div>
+<div class="visually-hidden" id="srAlert" role="alert" aria-live="assertive" aria-atomic="true"></div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+<div class="sticky-wrap" id="stickyWrap"></div>
+
+<script>/*__APP_JS__*/</script>
+</body>
+</html>

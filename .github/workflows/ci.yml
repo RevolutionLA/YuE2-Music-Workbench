@@ -18,6 +18,13 @@ jobs:
           python-version: "3.12"
       - name: Install ruff
         run: python -m pip install --upgrade pip ruff
+      # 前端源文件（web/）与生成物（static/index.html）必须逐字节同步；
+      # 只想改界面却直接改生成物的提交会在这里被拦下。
+      - name: UI sources in sync
+        run: python scripts/build_ui.py --check
+      # 发布卫生：干净 checkout 上必须没有 pyd / 真实密钥 / 模型权重 / 运行件被跟踪。
+      - name: release hygiene
+        run: python scripts/check_release_hygiene.py --release
       # 硬门禁只判语法级错误（E9）。F821 这类在这里会假红：项目大量使用
       # "np.ndarray" 字符串注解 + 函数内局部 import numpy，ruff 会把注解里的 np 当未定义。
       - name: ruff（语法级，判红）

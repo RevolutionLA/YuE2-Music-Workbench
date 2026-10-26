@@ -154,8 +154,12 @@ def _engine_backend() -> str:
     return mode if mode in ("cpu", "cuda", "vulkan") else "cpu"
 
 
+_AUDIOCPP_PROC = None
+
+
 def start_audiocpp() -> bool:
     """拉起 audio.cpp 引擎。cwd 必须是 cpp\，配置里的模型路径按它相对解析。"""
+    global _AUDIOCPP_PROC
     if _engine_alive():
         return True
     exe = ROOT / settings.audiocpp_bin
@@ -181,7 +185,7 @@ def start_audiocpp() -> bool:
         # 都抛「I/O operation on closed file」——引擎从没起来过，却只留下一份 0 字节日志
         with open(log_dir / "audiocpp_server.log", "ab", buffering=0) as lf:
             kwargs.update({"stdout": lf, "stderr": subprocess.STDOUT})
-            subprocess.Popen(args, **kwargs)  # noqa: S603
+            _AUDIOCPP_PROC = subprocess.Popen(args, **kwargs)  # noqa: S603
     except Exception as exc:  # noqa: BLE001
         _log(f"✗ 引擎拉起失败：{exc}")
         return False
@@ -455,7 +459,21 @@ async def music_generate(request: Request) -> Response:
         raise HTTPException(status_code=400, detail="请求体不是合法 JSON") from None
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="请求体必须是 JSON 对象")
+    return await generate_response(payload)
 
+
+def _in_test_runner() -> bool:
+    """当前进程是不是测试收集器（unittest/pytest）。
+
+    沙箱（tests/_sandbox.py）正常情况下会先设 YUE2_NO_ENGINE_AUTOSTART=1；
+    这里再按 sys.modules 兜底一层：就算有人用旧命令跑 discover，也不会拉起引擎。
+    """
+    return ("unittest" in sys.modules or "pytest" in sys.modules
+            or bool(os.environ.get("PYTEST_CURRENT_TEST")))
+
+
+async def generate_response(payload: dict) -> Response:
+    """生成一首歌：内核路由与 app.py 的进程内调用共用这一段，避免反向 HTTP。"""
     style = str(payload.get("style") or "").strip()
     if not style:
         raise HTTPException(status_code=400, detail="style is required")
@@ -468,6 +486,15 @@ async def music_generate(request: Request) -> Response:
     if abc.strip() and cot == "off":
         raise HTTPException(status_code=400,
                             detail="external ABC requires cot=melody or cot=full")
+
+    # 测试进程里绝不允许真生成：一次手滑就是几分钟 GPU 和一份假产物。
+    # 需要真引擎的用例显式设 YUE2_ALLOW_REAL_ENGINE=1（冒烟脚本走真实服务，不受影响）。
+    if (os.environ.get("YUE2_TESTING") == "1" or _in_test_runner()) \
+            and os.environ.get("YUE2_ALLOW_REAL_ENGINE") != "1":
+        raise HTTPException(
+            status_code=503,
+            detail="测试环境禁止真生成：mock main.generate_response，或显式设 YUE2_ALLOW_REAL_ENGINE=1",
+        )
 
     opts, dropped = _pick_payload(payload)
     opts["style"] = style
@@ -612,5 +639,6 @@ async def music_generate(request: Request) -> Response:
 # 启动即拉起引擎（与内核同行为）。测试或只想改代码不想动进程时设
 # YUE2_NO_ENGINE_AUTOSTART=1 跳过。
 # --------------------------------------------------------------------------- #
-if os.environ.get("YUE2_NO_ENGINE_AUTOSTART", "") not in ("1", "true", "yes"):
+if (not _in_test_runner()
+        and os.environ.get("YUE2_NO_ENGINE_AUTOSTART", "") not in ("1", "true", "yes")):
     start_audiocpp()

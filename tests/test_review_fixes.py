@@ -62,7 +62,8 @@ class Sandbox(unittest.TestCase):
         self.tmp = Path(self._tmp.name)
         self._saved: dict[str, object] = {}
         for name in ("OUTPUT_DIR", "SCORES_DIR", "HIST_DIR", "HIST_JSON",
-                     "RVC_JOB_DIR", "RVC_TRAIN_DIR", "_BATCH_STATE", "_ENGINE_STATE"):
+                     "RVC_JOB_DIR", "RVC_TRAIN_DIR", "_BATCH_STATE", "_ENGINE_STATE",
+                     "_RVC_QUEUE_STATE"):
             self._saved[name] = getattr(app, name)
             setattr(app, name, self.tmp / name.lower())
         # engine_state 不是目录而是文件：显式放到临时目录并给一份干净状态。

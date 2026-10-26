@@ -89,15 +89,15 @@ class GgufAndSize(unittest.TestCase):
 
 
 class ManifestMatchesApp(unittest.TestCase):
-    """下载清单的落点与最小字节数必须和 app.py 的完整性清单一致，否则两边会各说各话。"""
+    """下载清单的落点与最小字节数必须和 model_files.py 的完整性清单一致，否则两边会各说各话。"""
 
     def test_transcription_weight_matches_app_manifest(self):
         repo, rel, dest, min_size, is_gguf = fetch_models.SHEETSAGE
         self.assertEqual(repo, "m-a-p/SheetSage2")
         self.assertEqual(dest, "checkpoints/model.safetensors")
-        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        app_src = (ROOT / "src" / "routers" / "model_files.py").read_text(encoding="utf-8")
         self.assertIn('"checkpoints/model.safetensors", 100_000_000', app_src,
-                      "app.py 的 _MODEL_MANIFEST_MAIN 改了就要同步改这里")
+                      "model_files.py 的 MODEL_MANIFEST_MAIN 改了就要同步改这里")
 
     def test_main_quant_lands_where_server_json_points(self):
         _, dest_dir, _ = fetch_models.QUANTS["q4km"]

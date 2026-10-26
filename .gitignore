@@ -114,6 +114,7 @@ dsh-plugin/_cdp_*.mjs
 # ===== scripts 运行时杂音 =====
 scripts/__pycache__/
 scripts/bak/
+dist/
 
 # ===== SheetSage2 大权重（不入库，运行时自动下载） =====
 checkpoints/model.safetensors

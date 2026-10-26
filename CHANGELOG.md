@@ -9,6 +9,238 @@
 版本的唯一真源是 git 的**附注标签**（`git tag -l -n`），本文件是给人看的说明；
 宣传文案里要写的版本号从本文件顶部条目取，不在别处另记一份数字（`app.py:_version_from_changelog()` 读本文件首条）。
 
+## [v10.26.0] - 2026-10-26
+
+### 内核唯一化与测试隔离（P0）
+- **旧编译内核退役**：仓库根的 `main.cp312-win_amd64.pyd`（9-12 构建、23 个可转发字段）
+  与 shim（10-24、按 spec 27 字段白名单）长期并存，生产与测试走两条不同的路。
+  旧 pyd 已移到 `runtime/backup/`，默认只跑 `main.py`；`tests/test_kernel_hygiene.py`
+  会把"仓库根出现 pyd"判红，回滚需显式 `YUE2_ALLOW_PYD=1`。
+- **测试不再污染开发机**：新增 `tests/_sandbox.py` / `tests/__init__.py` / `tests/conftest.py`，
+  统一禁用引擎自启、重定向测试状态，并在进程退出时还原被误写的 `cpp/server.json` 与 sidecar。
+- **真生成硬闸**：`main.generate_response` 在测试进程（unittest/pytest 或 `YUE2_TESTING=1`）
+  下对有效生成请求直接 503；需要真引擎的用例显式 `YUE2_ALLOW_REAL_ENGINE=1`。
+  这一步是踩出来的：`test_gen_keep_awake` 还在 mock 旧的 `httpx.Client`，改走进程内后
+  真把引擎拉起来跑了 AR/NAR，回归从 90 秒变成挂死。
+
+### 引擎调用与资源（P1/P2）
+- **整库 JSON 原子写**：新增 `src/json_store.py`，历史库、乐谱库、模板库从直接覆盖写
+  改为 `.tmp + os.replace`。这三处不像 output meta 有条目级备份，崩在中途会把整份库
+  变成非法 JSON；现在序列化失败或写盘失败都保留旧文件、清掉 `.tmp`。3 条用例覆盖
+  往返、序列化失败、写盘失败。
+- **统一音频入口**：新增 `src/audio_io.py`，后缀白名单、ffmpeg 定位、转 WAV 只留一份真源。
+  实测本机 `soundfile` 能直读 wav/flac/mp3/ogg(Vorbis)，但读不了 m4a/aac/opus/webm/wma；
+  音色 ASR/降噪、LRC 对齐、人声分离这些直接走 soundfile 的路径，现在会先把这些格式转成
+  16k 单声道 WAV，不再“上传成功、处理时才炸”。音色建档保留原采样率。score/RVC 原有
+  ffmpeg/torchaudio 管线不变。新增 9 条真实 m4a 转换与路由集成用例。
+- **生成去反向 HTTP**：`app._gen_run_once` 直接调用 `main.generate_response`（进程内），
+  不再 HTTP 打自己的 `:7863`；两阶段 AR 检查点逻辑只保留在 `main.py` 一处。
+- **引擎所有权**：`_restart_audiocpp` / 终止生成不再 `taskkill /IM audiocpp_server.exe`
+  （会连坐杀掉本机其它工作台实例），改为只杀本进程拉起/接管的 PID；句柄丢失时按端口
+  查 PID 并核对镜像名，测试进程没有句柄时一律不动手。
+- **统一引擎客户端**：新增 `src/engine_client.py`，健康探测、plan_abc 直连、卸载常驻模型
+  都走同一套 base_url / timeout / trust_env。
+- **上传不再冻事件循环**：`_stream_upload_to` 与 LRC 上传改 `aiofiles`；RVC 素材目录
+  统计改 `run_in_threadpool`。新增 AST 守门用例，禁止 `async def` 里直接 `open()`。
+
+### 结构：领域路由拆分（P1）
+- `app.py` 继续瘦身（10,561 → 9,686 行）：音色/歌词模板/出谱/LRC/历史/模型校验/系统域
+  各自成模块（`src/routers/*.py`），纯逻辑另落 `src/abc_analysis.py`、
+  `src/vae_window.py`、`src/system_probe.py`。
+- 系统域（模型清单、能力清单、设置、后端模式、VAE 窗口、系统信息）整体迁到
+  `src/routers/system.py`；依赖通过 `host` 在请求时解析，测试对
+  `app._active_vae_config` 等名字的 patch 仍生效，`app.system_info()` 兼容别名保留。
+- 回归：全量 874 通过 / 1 跳过；系统域定向 129 条通过。生成/RVC/批处理仍留在
+  `app.py`——它们持有进程级队列与引擎句柄，拆出需要先搬运行状态，另行评估。
+
+### 修复：先跑 LRC 再出谱时 MERT 缓存“找不到”
+- 现象：同一网关进程里先做⑭歌词对齐（FunASR/modelscope 已导入 transformers），再出谱会报
+  “本地缓存不完整 / 连不上 huggingface”，尽管 `runtime/hf_download/hub` 里 MERT-v2 权重齐全。
+- 根因：`TRANSFORMERS_CACHE` 在 transformers 导入时就固化成常量，之后 `configure_hf_home()`
+  改环境变量对已导入的库无效；MERT 父模型于是去错误缓存里找。
+- 修法：`get_model()` 显式把 `cache_dir=runtime/hf_download/hub` 传给 `from_pretrained`，
+  并由自定义加载器原样传给 MERT 父模型，不再依赖任何全局常量；`local_files_only` 继续按离线判定。
+- 真机验证（同一进程顺序）：LRC 36 行 + eLRC → 出谱 193 字符 ABC，PASS；
+  新增 1 条用例锁住 `cache_dir + local_files_only`。
+
+### 功能：③ 参考歌曲也能直接选服务器歌曲
+- `/api/score` 新增可选 `rid`：可直接转谱 `output/` 里已生成或入库的整曲，不必重新上传；
+  `audio` 与 `rid` 至少给一个，两者都不给返回明确 400。
+- ③ 页新增“服务器上已有的歌”下拉（与 ⑭ 共用同一套取库逻辑），选中后按钮变为
+  「转谱所选服务器歌曲」；拖/选本地文件会自动清空下拉，避免文案与提交内容不一致。
+- 2 条后端用例（rid 走完整转谱入库、两者都不给 400）+ 页面契约用例；
+  无头 14 页巡检 14/14、overflow=0、JS 异常=0。
+
+### 功能：⑭ 歌词时间轴可直接选服务器歌曲
+- `/api/lrc/start` 新增可选 `rid`：不重传音频，直接把 output/ 里已生成或入库的整曲复制进
+  独立任务目录再对齐；`file` 与 `rid` 必须给一个，首尾都有明确 400。
+- ⑭ 页新增“服务器上已有的歌”下拉，进页时由本页自己从 `/api/generate/list` 与
+  `/api/history` 取库（符合“页面不代填、输入只来自本页/服务器库”的规矩）；
+  下拉实测 88 首，上传新音频仍保留。
+- 歌词框 14→12 行，状态更新会滚进视野：新增下拉后状态行不再被卡片底部裁掉。
+- 2 条后端用例（服务器的歌走完整对齐流程、两者都不给 400）+ 页面契约用例。
+
+### 修复：模型校验/修复跟随当前 server.json
+- 以前 `/api/models/verify` 与“修复”永远检查/下载 **q4** 包；机器上实际跑 q8 时，
+  设置页会报“模型缺件”，点修复还会白下约 4GB q4。
+- 现在按 `server.json` 的主模型路径动态生成清单（主模型 + 同目录/公共 VAE + sidecars +
+  SheetSage2）；只有配置/路径都拿不到时才回退 q4 清单（新装环境仍可修）。
+  `verify` 返回 `source: active|fallback-q4`，未提供在线源的量化档会明确说“没有修复源”。
+- 本机实测：`source=active`，q8 主模型/VAE/4 个 sidecar/SheetSage2 共 7 个文件全部 OK。
+  6 条用例覆盖 q8/q4/未知量化/无配置兜底/响应来源。
+
+### 修复：④ 乐谱加工"调转完了、唱出来还是不对"
+- 症状：移调后谱面看着像对的，生成出来的旋律却跑调；不同移调量坏的程度不同
+  （−1/−2/−3/+2/+3/+7 最明显，正好是"差半音"的分布）。用户连续两次反馈
+  "验证过 +5 没问题、但换个数又不对"，说明不是单个参数的 bug。
+- 四个根因，逐个修掉：
+  1. **只算音名不算调号**：K:E 的 `f` 实际是 F#，旧实现按 F 算，整条旋律偏半音；
+     SheetSage2 输出的谱几乎都带调号且不在音上写显式升降号，所以必踩。
+  2. **不认小节内变音继承**：ABC 里显式 `^/_/=` 一直有效到小节线，其后同字母裸音
+     全部继承。旧实现逐音只看调号，所有继承音都差半音。
+  3. **变音记号写成后缀**（`c#'2`）：标准 ABC 只有前缀 `^_=`，后缀会被解析器当噪音
+     丢掉；旧正则 `[#bn]?` 还会把 `bb`（两个 B 音）并成一个降号，吞音且节奏塌缩。
+  4. **调式操作与源调式不匹配时只改 `K:` 不动旋律**：对已是小调的谱选"→关系小调"，
+     K:Em（1 升）被写成 K:C#m（4 升），同一个 `f` 从 F 变成 F#，整曲凭空高半音；
+     K:E 选"→关系大调"则整曲低半音。这比不做更糟。
+- 修法：输入侧按「显式变音 > 小节内继承 > 调号自动升降」叠成实际音高；输出侧按新调号
+  拼写，需要变音的音**重复写显式记号**（不依赖下游解析器是否实现继承）、必要时补 `=`
+  还原号；`_spell_in_key` 保证极端调号（K:C#/K:Cb）跨八度换字母时音高不跑。
+  调式转换改为**幂等**：目标调式已达成时逐字节 no-op，接口回 `mode_noop` 并在页面
+  用中性提示（不打绿勾，免得"什么都没变"显示成"已加工"）。
+- 换 oracle 之后又挖出四个同类问题（都是"看着对、唱着错"）：
+  5. **变音继承的范围搞错了**：ABC 2.1 与 abcjs 都只在「同字母 + 同八度」内继承，
+     `^^C` 不影响 `c`/`c'`。旧状态按字母记，另一个八度的同名音被一起升降。
+     真实谱里出现过 `^A`，这类错听起来就是"某个音莫名高半音"。
+  6. **关系大小调把调号也改了**：C# 大调（7 升）的关系小调是 A#m（7 升），
+     却被"少用升降号"优化成 Bbm（5 降）——调号一变，同一条旋律整曲低半音。
+     现在关系调**沿用源调号的升降数**，一个记号都不动。
+  7. **中途变调被抹平**：正文里的 `K:` 行（或行内 `[K:G]`）旧实现一律改写成文件头的
+     新调名，一段 K:C→K:G 的曲子移调后两个调号变同一个，后半段整段错；而且其后音符
+     仍按文件头的调号算音高。现在每段按自己的调号算、各自移调写回。
+  8. **等音调选择反了**：C+1 曾写成 K:C#（7 升），实际该是 K:Db（5 降）。
+     输出侧取升降号更少的一侧；输入侧仍按谱面**声明的写法**读（K:C# 就是 7 升，
+     不能被等音改选迁就成 Db，否则每个受调号影响的音都差半音）。
+     同时修掉坏谱哨兵的假阳性：正文 `K: F#` 的调名 `#` 曾被当成"音符后缀 #"。
+- 顺带修调式判定：后端 `K:Gmix` 曾被当成小调（`rest.startswith("m")`），
+  前端 `seKeyMode` 的 `/m(\b|in|aj|$)/` 把 `K:Gmaj` 判成小调、把对应两个选项禁用。
+  前后端现在共用同一条规则，并加了一条真跑 node 的用例（无 node 时跳过）。
+- **验证用第三方解析器 abcjs 做 oracle**（不拿自己的尺子量自己）：
+  · `tests/test_abc_oracle.py` + `tests/abc_oracle.js`：8 段合成谱（K:E/Eb/Gm/C#、
+    小节内继承与双变音、连音块/连字符/三连音、两种中途变调）× 13 档移调 × 4 种调式 ×
+    4 组移调+调式 × 去和弦，共 **157 例**，作为常驻测试（本机无 node 时自动跳过）。
+  · 真实语料一次性复核：11 份真实谱（K:E/D/Em/Eb/Bb/C/F/G/Gm/Cm/Am）× 移调 ±1…±12 ×
+    4 种调式 × 组合 × 去和弦 × 链式移调，共 **396 例全过**——逐音 MIDI 与预期一致、
+    时值不变、和弦根音与斜杠低音同步、输出零双重变音、`+5 再 +5` 与 `+10` 逐字节相同。
+  · 线上 7863 实测《如诗》+5/+1/−3/+12 四档同样通过。
+  单元测试 71 → 90 条，全量 **922 通过 / 1 跳过**。
+- 顺手修两条"会骗人的用例"（`tests/test_rvc_queue_persist.py`）：一条断言
+  `worker_calls == []`，可恢复流程本来就会拉起队列线程，替身 worker 必然被叫到；
+  另一条想"同步跑真实 worker"，却调到了 setUp 里替换过的替身，于是永远得到 done、
+  测不到 error 分支。两条改完后才真正覆盖它们声称覆盖的路径。
+
+### 上游评估（P3）
+- **出谱路线 A/B**：同一段 30 秒音频，引擎 SheetSage2（Ins 的 audio.cpp 0.8.2 + F32 权重）
+  冷启动 **67.7s** / 432 字符 / 52 音符 / 12 和弦；本项目 PyTorch 官方路径 **90.2s** /
+  435 字符 / 51 音符 / 12 和弦。调性、拍号、BPM、和弦数完全一致，ABC 原文相似度 **0.9873**。
+- 结论：输出等价，引擎冷启动快约 25%；但要额外 2.7GB 权重、且本次是 0.8.2 旧引擎。
+  现阶段**不迁移**，保留 PyTorch 路径；待本项目 0.9.2 接入 SheetSage2 后补热启动/显存
+  A/B 再定。完整记录：`docs/出谱路线AB-20261026.md`。
+
+### 安全（P3）
+- **源码发布包构建器**：`scripts/build_release.py` 按「git 已跟踪 + 未跟踪但未被忽略」收集文件，
+  排除 `cpp/runtime/py312/模型/真实密钥/编译内核`，打包前跑 `check_release_hygiene --release`，
+  产出 zip + sha256。用例实测 233 个文件 / 9.7MB；把运行件或真实密钥塞进工作树会被卫生检查拦下。
+- **发布卫生检查器**：`scripts/check_release_hygiene.py` 检查编译内核、真实密钥
+  （`sk-...` / `YUE2_ACCESS_TOKEN=...`）、模型权重、运行件是否被 git 跟踪，依赖是否全部
+  钉版本且保留 UTF-8 BOM，以及端口表/CHANGELOG/前端产物是否完整；`--release` 还会拒绝
+  发布目录里的 `secrets/local_env.bat`。只报路径不回显密钥；13 条用例覆盖干净包与各种污染。
+  已进 CI 硬门禁与 README 发版清单。
+- **可选网关直连令牌**：设 `YUE2_ACCESS_TOKEN` 后，局域网设备**直连 7863** 必须带
+  `X-Yue2-Token`、`Authorization: Bearer`、`?token=` 或 cookie；本机回环（本机 UI 与
+  dsh 反代）永远免令牌，避免把自己锁在门外。`?token=` 首次访问会换成 HttpOnly cookie，
+  HTML 页再 303 去掉地址栏里的 token；未设令牌时行为与旧版一致。
+- ⑬ 关于页的系统信息新增 `security.lan_mode/direct_access_token/loopback_exempt`，
+  只报布尔、不回令牌本身；安全项的 false 显示为“未开启”而不是红叉。
+- `secrets/local_env.example.bat` 与 FAQ 已补令牌用法；13 条安全用例覆盖无令牌 401、
+  错令牌、四种带令牌方式、query→cookie、回环豁免、未配置兼容与不回显令牌。
+
+### 结构与验证（P1）
+- **ABC 分析纯函数拆出**：`src/abc_analysis.py`（调性/拍号/BPM/曲式/音域/和弦判定）。
+  无 app 全局依赖；app 只留 `_abc_analyze/_abc_has_chords` 兼容别名，score 入库、ABC 路由、
+  `_resolve_cot` 全部走同一实现。`app.py` 10,183 → **10,057 行**；2 条纯函数用例锁住
+  和弦宽松判定与摘要字段。
+- **模型校验/修复子域拆出**：`src/routers/model_files.py`（verify/repair/status 与清单生成）。
+  路径/配置读取由 app 注入，`_MODEL_MANIFEST_MAIN / _active_model_manifest / models_verify`
+  保留兼容别名；`test_fetch_models` 的清单同步断言改读新真源。`app.py` 10,302 → **10,183 行**；
+  2 条契约测试锁住路由与 7 文件校验结果。
+- **14 页浏览器巡检工具**：`scripts/ui_sweep.js`（Node + CDP）。逐页点击并检查面板可见、
+  横向溢出、JS 异常，截图与 `report.json` 落到 `runtime/data/ui-sweep/<时间戳>/`。
+  自动挑 9300+ 空闲调试端口（避免连到被强杀残留的僵尸 Edge）、每条 CDP 命令 15s 超时、
+  整轮 150s 总超时。本次实测 **14/14 ok，overflow=0，JS 异常 0**。
+- **历史 CRUD 拆出**：`src/routers/history.py`（列表/上传入库/回放/清空/删除）。
+  `history_active` 留在 app.py（它聚合生成/换声/训练实时状态）；`HIST_DIR` 用 callable
+  注入，现有测试对 `HIST_DIR/HIST_JSON` 的重定向仍生效。`app.py` 10,327 → **10,240 行**；
+  2 条契约测试覆盖路由与上传/回放/删除/清空往返。
+- **LRC 域路由拆出**：`src/routers/lrc.py`（5 个歌词对齐路由）。worker 与 `_lrc_sa_*`
+  仍在 app.py，现有用例 patch `app.lrc_align_mod` 的钩子保持不变；`LRC_STANDALONE_DIR`
+  用 callable 注入，测试重定向仍生效。`app.py` 10,429 → **10,327 行**；
+  2 条契约测试锁住路由与动态目录。
+- **乐谱域路由拆出**：`src/routers/score.py`（转谱任务 + 乐谱库 CRUD + 导出）。
+  `SCORES_DIR` 以 callable 注入，运行时/测试改 `app.SCORES_DIR` 仍生效；`_SCORE_JOBS`
+  两把锁在 app 保留同名别名指向同一对象，旧用例的 clear/patch 不失效。
+  `app.py` 从 10,560 行降到 10,429 行；3 条契约测试锁住路由、共享对象与动态目录。
+- **音色库路由拆出**：`src/routers/voices.py`（工厂注入依赖），`app.py` 只留
+  `router.include_router(...)`；新增路径/方法契约测试。
+- **内容工具路由拆出**：`src/routers/content.py`（歌词自检 + 模板持久化）。模板路径用
+  callable 注入，运行时改 `app._TEMPLATES_FILE` 与测试重定向都生效；`app.save_template`
+  保留为兼容包装，存储逻辑只有一份。
+- **页面清单唯一真源**：新增 `static/pages.json`，HTML 侧栏、`test_page_contract`、
+  dsh `LAB_TABS`、README 页面表四处交叉校验。顺带修掉 README 表重复 ⑥、缺 ⑧/⑩、
+  编号与页面不一致的漂移；ailab 是否进 dsh 由 manifest 的 `dsh` 字段表达，不再写死在测试里。
+- **生成三档预设**：②⑤ 共用生成面板新增「草稿 / 标准 / 成曲」（off·8 / full·16 / full·32），
+  只改参数不自动提交；填了乐谱时草稿自动用 melody。手改 CoT/步数后高亮会切成“自定义”，
+  不再显示假档位。底部文案从“约 4-8 分钟”改为实测的 60-90 分钟，并指向草稿档。
+  无头 Edge 实测：默认成曲、草稿 off/8、标准 full/16、有谱草稿 melody/8、手改 20 步→自定义，
+  JS 异常 0；布局遵守 `.preset-row > .row-label` 对齐规矩。
+- **前端源文件拆分（运行时仍是单文件）**：`static/index.html` 里的样式与脚本拆到
+  `web/app.css`、`web/app.js`，HTML 模板放在 `web/index.html`；`scripts/build_ui.py`
+  逐字节重建 `static/index.html`，`--check` 进 CI 硬门禁。页面行为与字节内容不变
+  （657,592 字节逐字节一致），网关仍不需要 StaticFiles，也不会多一次请求。
+  5 条用例锁住“源文件可重建、模板标记、生成物无标记、无外链 CSS/JS”。
+- **真引擎冒烟脚本**：`scripts/smoke_e2e.py --kernel|--gen|--score`。本轮实测：
+  4 步小样 50.1 秒出 7.13MB WAV；8 秒 mp3 出谱返回 193 字符 ABC；跑完显存回到 535MB。
+- 全量回归 **874 条通过（1 skip）**；测试期间 8080/7863 无监听（未拉起引擎）。
+
+### 用户体验与可靠性（issue #6-#9）
+- **#6 推荐参数 toast 只在用户主动操作时弹**：以前切页/刷新只要路过 ⑨ 换声页就会弹
+  「已按推荐参数填入旋钮」——用户没碰任何控件却被"通知"了一头雾水。现在自动路径
+  （renderRvc/切页/轮询）一律静默填参，只有**用户换音色下拉**或**点「一键套用推荐」**
+  才提示；「一键套用」按钮文案随之区分两种模式。契约测试锁住三处调用签名。
+- **#7 首次使用默认草稿档**：新用户打开 ② 生成页，默认是 full/32 的成曲档——在 6GB
+  显卡上要等 60-90 分钟，第一首歌直接劝退。现在 `<select id="cot">` 的 selected 落在
+  off、步数默认 8（草稿档）；**已保存过选择的用户不受影响**（localStorage 优先级高于
+  默认值，原有恢复逻辑不动）。契约测试锁住 HTML 里的 selected 位与 steps 默认值。
+- **#8 显式「送到下一环节」按钮**：①→②/⑤、③→④/⑤、④→⑤、谱编辑→⑤ 共 5 个按钮，
+  把"复制粘贴换个页"的手动接力变成一键直达。这是页面独立性规矩的**唯一显式例外**：
+  仅用户点击触发（切页/刷新绝不代填）、目标页有不同内容时先 confirm、空或相同则静默写入。
+  `PageIndependence` 契约测试新增防退化断言（switchTab 内不得出现接力调用），
+  README「页面之间不代填」一节同步写明例外的三个条件。
+- **#9 换声队列落盘 + 重启恢复**：`_RVC_QUEUE/_RVC_JOBS` 以前纯内存，网关被看门狗杀掉
+  或手动重启后，排队中的任务无声消失（用户明明看到"已加入队列第 N 位"）。现在非终态
+  条目实时落盘 `runtime/rvc/queue_state.json`（终态即摘除，成品归档仍以 output/meta.json
+  为权威）；启动自恢复 `_rvc_boot_resume()` 分四路：pending 重校验（音色/源文件还在）后
+  排回、running 如实归档「服务重启，任务中断」（不自动重跑——推理子进程随网关一起死了，
+  半截 converted.wav 不可信）、缺件判死留痕、崩溃循环保护（600 秒窗口内复活超 3 次停手，
+  沿用批量队列的 `_REVIVE_MAX` 口径）。job 新增 `src_file` 字段解决上传扩展名不定
+  （src.mp3 等）重启后找不回源文件的问题。新增 `tests/test_rvc_queue_persist.py` 10 条用例
+  （替身 worker + 沙箱落盘，全程不碰 GPU/子进程）。
+- **有窗口浏览器肉眼验收又抓到两处**（纯 DOM 断言抓不到的）：其一，恢复上次表单后
+  档位高亮停在「草稿」而字段值已是 full/32——`applyConfig` 直写 value 不派发事件，
+  恢复 IIFE 里补一句 `syncGenPresetFromFields()`；其二，⑨ 页「诚实说明」还是落盘
+  之前的旧文案（"排队条目会丢"），已改写为与 #9 实际行为一致。两处均有契约测试锁定。
+- 全量回归 **924 条通过（1 skip）**；`build_ui.py --check` 通过。
+
 ## [v10.24.1] - 2026-10-24
 
 ### 修复：双击「启动音乐工作台.bat」毫无反应（窗口一闪而过，什么都不启动）

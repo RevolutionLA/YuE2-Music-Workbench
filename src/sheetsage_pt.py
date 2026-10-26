@@ -111,11 +111,17 @@ def get_model() -> Any:
     from transformers import AutoModel
 
     _device = "cuda" if torch.cuda.is_available() else "cpu"
+    # 显式 cache_dir：LRC/FunASR 可能先把 transformers 导入并把 TRANSFORMERS_CACHE
+    # 常量冻结在别的目录；只改环境变量对已导入的库无效，MERT 父模型会去错误缓存里找，
+    # 然后报“本地缓存不完整 / 连不上 huggingface”。cache_dir 会由自定义加载器原样
+    # 传给 MERT-v2 父模型，不依赖任何全局常量。
+    hub_cache = hf_download_dir() / "hub"
     try:
         model = AutoModel.from_pretrained(
             str(ckpt),
             trust_remote_code=True,
             local_files_only=offline,
+            cache_dir=str(hub_cache),
         )
     except Exception as exc:
         if offline:

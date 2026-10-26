@@ -2,13 +2,14 @@
 
 只做静态解析，不需要浏览器、不提交 GPU 计算，可与真实任务并行跑。
 覆盖这些事：
-  1. 侧栏 13 个 data-tab 与 13 个 id="tab-X" 面板一一对应，无孤儿；
+  1. 侧栏 14 个 data-tab 与 14 个 id="tab-X" 面板一一对应，无孤儿；
   2. 静态 HTML 里 id 不重复（重复 id 会让 $("x") 拿到错的那个，是最难查的一类前端 bug）；
   3. 所有请求 URL 以 /api/ 开头，源码里不得出现硬编码的 /lab/api/（前缀由 LAB_BASE 猴补丁统一加）；
   4. 拆页共用件（#genForm / #abcBlock / #styleBox）的搬家用具在位，且每个页面进入时该刷新的都有刷新钩子；
   5. v2.1 新增：页签带圈序号、曲风输入框三页共用、④ 乐谱加工、⑩ 输出目录、⑫ 预设色板与关于页。
 """
 import io
+import json
 import os
 import re
 import unittest
@@ -16,30 +17,16 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INDEX = os.path.join(ROOT, "static", "index.html")
 DASH = os.path.join(ROOT, "dsh-plugin", "lib", "client.js")
+PAGES_MANIFEST = os.path.join(ROOT, "static", "pages.json")
 
-# v2.1 重排 ：data-tab 即 hash 与面板名。
-# 序号按"创作链路"的实际顺序（③ 提取 → ④ 加工 → ⑤ 按谱生成），
-# 所以 ④ 是乐谱加工、⑤ 才是乐谱生成歌曲 —— 与旧版把"乐谱生成歌曲"叫 ④ 不同。
-PAGES = {
-    "style": "① Style 设计",
-    "sing": "② 歌词+style生成歌曲",
-    "score": "③ 参考歌曲提取乐谱",
-    "scoreEdit": "④ 乐谱加工",
-    "scoreSing": "⑤ 歌词+style+乐谱生成歌曲",
-    "ailab": "⑥ 歌词曲风 AI 工作台",
-    "train": "⑦ 音色制作",
-    "voices": "⑧ 音色库",
-    "convert": "⑨ 歌曲换声",
-    "sep": "⑩ 人声伴奏分离",
-    "history": "⑪ 任务管理",
-    "settings": "⑫ 设置",
-    "about": "⑬ 关于",
-    "lrc": "⑭ 歌词时间轴",
-}
-# v1.x 的旧页签名必须还能路由（历史链接与 dsh 侧栏可能仍带着用）
-LEGACY = {"compose": "sing", "rvc": "convert", "rvcTrain": "train", "voice": "voices"}
+# 页面清单唯一真源：static/pages.json。HTML 侧栏、本测试、dsh 侧栏、README 表
+# 都由它派生；加页/改号只改这一处，再由 tests/test_pages_manifest.py 交叉核对。
+with io.open(PAGES_MANIFEST, encoding="utf-8") as _fh:
+    _MANIFEST = json.load(_fh)
 
-TAB_NUMBERS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫", "⑬", "⑭"]
+PAGES = {p["id"]: f'{p["no"]} {p["label"]}' for p in _MANIFEST["pages"]}
+LEGACY = dict(_MANIFEST["legacy"])
+TAB_NUMBERS = [p["no"] for p in _MANIFEST["pages"]]
 
 
 def read(path):
@@ -147,10 +134,17 @@ class PageContract(unittest.TestCase):
         self.assertIn('id="styleSlotGen"', self.html, "②⑤ 缺曲风输入框的落位槽")
 
     def test_score_page_only_copy_button(self):
-        """③ 只留「复制谱面」：MIDI / ABC 下载与「用这份谱生成歌曲」都已撤掉。"""
+        """③ 只留「复制谱面」＋两个显式接力按钮；MIDI/ABC 下载与旧的隐式「用这份谱生成歌曲」都已撤掉。
+
+        接力按钮（abcToEdit/abcToScoreSing）与旧的 toScoreSing2 的关键区别：toScoreSing2 会
+        在切页时自动把内容写进目标页；接力按钮只在用户点击、且经确认后才写入，目标为空或内容
+        相同不会打扰，不同才会 confirm。旧的隐式出口仍然禁止。
+        """
         for gone in ('id="abcExportMid"', 'id="abcExportAbc"', 'id="toScoreSing2"'):
             self.assertNotIn(gone, self.html, "%s 应已从 ③ 移除" % gone)
         self.assertIn('id="abcCopy"', self.html, "③ 必须保留复制按钮")
+        self.assertIn('id="abcToEdit"', self.html, "③ 缺「送去④加工」显式接力按钮")
+        self.assertIn('id="abcToScoreSing"', self.html, "③ 缺「去⑤按谱生成」显式接力按钮")
 
     def test_params_sections_not_collapsible(self):
         """模型与参数 / 批次必须常开：它们是每次生成前都要确认的，折叠只是藏起必看的东西。"""
@@ -180,10 +174,14 @@ class PageContract(unittest.TestCase):
             self.assertIn(m, modes, "④ 缺调式选项 %s" % m)
 
     def test_score_edit_has_no_carry_to_other_pages(self):
-        """④ 不许再读 ③ 的谱框、也不许把结果写进 ⑤ 的谱框：出路只有存库/复制/下载。"""
+        """④ 不许再读 ③ 的谱框、也不许把结果自动写进 ⑤ 的谱框：出路是存库/复制/下载，
+        外加一个「显式接力」按钮（seToScoreSing）——它只在用户点击、且经确认后才写入 ⑤，
+        与旧的隐式跨页搬运（seFromScore/seToGen/LabStore.）性质不同，仍被禁止。
+        """
         for gone in ('id="seFromScore"', 'id="seToGen"', "LabStore."):
             self.assertNotIn(gone, self.html, "④ 还留着跨页搬运的控件/写入：%s" % gone)
         self.assertIn("存入乐谱库", self.html, "④ 的结果应当存库，由 ⑤ 自己从库里挑")
+        self.assertIn('id="seToScoreSing"', self.html, "④ 缺「用于⑤生成」显式接力按钮")
 
     def test_separation_output_dir_wired(self):
         """⑩ 分离页的输出目录要真的提交给服务端，不是摆设。"""
@@ -216,6 +214,25 @@ class PageContract(unittest.TestCase):
                      'id="vSave"', 'id="vRefText"'):
             self.assertNotIn(gone, self.html, "%s 应已从 ⑧ 移除" % gone)
         self.assertIn('id="lyricFromAudio"', self.html, "「从参考音频识别歌词」应搬到 ② 的歌词区")
+
+    def test_rvc_auto_reco_is_silent(self):
+        """切页/刷新时自动套用推荐参数必须静默，只有用户主动换音色才提示「已填入」。
+
+        renderRvc() 会在进入 ⑧ 换声页时被 switchTab 调用；如果这里也弹「已按推荐参数
+        填入旋钮」，用户明明没有点任何按钮、只是切了一页，就会看到一条像是"操作成功"的
+        反馈——反馈与动作对不上，比不反馈更糟（历史 issue #6）。
+        """
+        # renderRvc 内部的自动调用必须显式传 announce=false（静默）
+        render_block_start = self.script.index("function renderRvc(")
+        render_block = self.script[render_block_start:render_block_start + 3000]
+        self.assertRegex(render_block, r'loadRvcReco\(true,\s*false\)',
+                         "renderRvc() 里自动套用推荐参数没有静默：切页会误弹「已填入」toast")
+        # 只有用户主动 onchange 换音色时才允许 announce=true
+        self.assertRegex(self.script, r'\$\("rvcModel"\)\.onchange[^\n]*loadRvcReco\(true,\s*true\)',
+                         "用户主动换音色时应当给出「已填入推荐参数」的反馈")
+        # 一键套用按钮不该被这次静默改动误伤：它本来就是用户主动点击，理应有反馈
+        self.assertIn('$("rvcApplyReco").onclick = () => applyRvcReco(false);', self.script,
+                      "「一键套用推荐参数」按钮的反馈被误改成静默了")
 
     def test_side_foot_only_health_and_theme(self):
         side = self.html[self.html.index('<div class="side-foot">'): self.html.index("</aside>")]
@@ -278,16 +295,85 @@ class PageContract(unittest.TestCase):
         dash = read(DASH)
         block = dash[dash.index("var LAB_TABS = ["): dash.index("];", dash.index("var LAB_TABS = ["))]
         ids = re.findall(r'\{ id: "([^"]+)"', block)
-        # ailab 只在独立访问时存在：dsh 壳本身就是 AI 工作台，侧栏再给入口会自嵌套
-        self.assertEqual(ids, [p for p in PAGES if p != "ailab"],
-                         "dsh 侧栏页签必须与 13 页去掉 ailab 后的 12 页一致")
+        # ailab 只在独立访问时存在：dsh 壳本身就是 AI 工作台，侧栏再给入口会自嵌套。
+        # 哪些页进 dsh 由 pages.json 的 dsh 字段决定，不再在测试里写死。
+        want = [p["id"] for p in _MANIFEST["pages"] if p["dsh"]]
+        self.assertEqual(ids, want,
+                         "dsh 侧栏页签必须与 pages.json 里 dsh=true 的页一致")
         self.assertNotIn('"compose"', dash, "dsh 侧栏仍在用旧页签名 compose")
+
+    def test_generation_presets_are_wired(self):
+        """三档预设只改 cot/steps，不自动提交；手改参数后高亮要跟着变。"""
+        for token in ('data-gen-preset="draft"', 'data-gen-preset="standard"',
+                      'data-gen-preset="final"', 'GEN_PRESETS', 'applyGenPreset',
+                      'syncGenPresetFromFields'):
+            self.assertIn(token, self.src)
+        self.assertRegex(self.script, r'draft:\s*\{[^}]*cot:\s*"off"[^}]*steps:\s*8')
+        self.assertRegex(self.script, r'standard:\s*\{[^}]*steps:\s*16')
+        self.assertRegex(self.script, r'final:\s*\{[^}]*steps:\s*32')
+        self.assertIn(".preset-row button.on", self.html)
+
+    def test_fresh_defaults_are_draft_preset(self):
+        """新用户第一首歌的默认档位必须是「草稿档」（cot=off / steps=8），不是成曲档。
+
+        成曲档（cot=full / steps=32）在 6GB 显卡上要跑 60-90 分钟，第一次玩的人不该被
+        默认值直接推进这个坑；已经调过参数并保存进 localStorage 的老用户不受影响，
+        因为 applyConfig() 会用保存值覆盖这里的静态默认值，这条测试只锁静态 HTML 那一层。
+        """
+        cot_block = self.html[self.html.index('id="cot"'):]
+        cot_block = cot_block[:cot_block.index("</select>")]
+        self.assertRegex(cot_block, r'<option value="off" selected>',
+                         "cot 的默认选中项不是 off（草稿档），新用户会被默认推进 full/成曲档")
+        self.assertNotRegex(cot_block, r'<option value="full" selected>',
+                            "cot 不该默认选中 full")
+        self.assertRegex(self.html, r'id="steps"[^>]*value="8"',
+                         "steps 的默认值不是 8（草稿档），新用户会被默认推进 32/成曲档")
+
+    def test_saved_form_restore_syncs_preset_highlight(self):
+        """老用户恢复存档表单后，档位高亮必须跟着实际 cot/steps 走。
+
+        applyConfig 是直写 value、不派发事件的，而高亮靠 cot/steps 的 change/input
+        事件同步——不补 syncGenPresetFromFields()，恢复出 full/32 的表单高亮却停在
+        「草稿」上（2026-10-26 有窗口浏览器截图实测抓到的）。
+        """
+        i = self.script.index('const KEY = "yue2_compose_form"')
+        block = self.script[i:i + 700]
+        self.assertIn("applyConfig(c)", block)
+        self.assertIn("syncGenPresetFromFields()", block,
+                      "恢复存档后没同步档位高亮：值与高亮会各说各话")
+
+    def test_rvc_queue_copy_matches_persisted_queue(self):
+        """⑨ 页的诚实说明必须与 #9 之后的真实行为一致：队列已落盘、重启会接回。
+
+        旧文案「网关重启后尚未开跑的排队条目会丢」在 queue_state.json 落盘之后就是
+        骗用户的反话——用户看到这句就不会指望重启后任务还在，而它其实还在。
+        """
+        self.assertNotIn("网关重启后尚未开跑的排队条目会丢", self.html,
+                         "⑨ 页还在用落盘之前的旧文案")
+        self.assertIn("重新校验再排回", self.html)
+        self.assertIn("服务重启，任务中断", self.html,
+                      "⑨ 页要如实告诉用户：重启时正在转换的任务不自动重跑")
 
     def test_new_pages_have_landmark_ids(self):
         for node in ('id="styleCopy"', 'id="sepFile"', 'id="sepGo"', 'id="sepResults"',
                      'id="sysInfo"', 'id="abcDrop"', 'id="abcCopy"', 'id="scorePick"',
-                     'id="batchFold"', 'id="lyricFromAudio"', 'id="seDownload"', 'id="lrcGo"'):
+                     'id="batchFold"', 'id="lyricFromAudio"', 'id="seDownload"', 'id="lrcGo"',
+                     'id="lrcPick"', 'id="abcPick"',
+                     'id="styleToSing"', 'id="styleToScoreSing"', 'id="abcToEdit"',
+                     'id="abcToScoreSing"', 'id="seToScoreSing"'):
             self.assertIn(node, self.html, "缺 %s：页面骨架控件不完整" % node)
+
+    def test_lrc_can_pick_server_song(self):
+        """⑭ 除了上传，还能直接点名服务器上已有的歌（页内自己取库，不跨页代填）。"""
+        self.assertIn('id="lrcPick"', self.html)
+        self.assertIn("loadLrcPicks", self.script)
+        self.assertIn('fd.append("rid"', self.script)
+
+    def test_score_can_pick_server_song(self):
+        """③ 除了拖文件，也能直接点名服务器上已有的歌（本页自己取库）。"""
+        self.assertIn('id="abcPick"', self.html)
+        self.assertIn("loadScorePicks", self.script)
+        self.assertIn('form.append("rid"', self.script)
 
     def test_tag_balance_inside_main(self):
         main = self.html[self.html.index("<main>"): self.html.index("</main>")]
@@ -304,7 +390,13 @@ class PageContract(unittest.TestCase):
 class PageIndependence(unittest.TestCase):
     """v10.12 的页面独立性契约：每个页面只从"用户自己填的 + 服务器自己的库"取输入。
 
-    判据只有一条：**没有任何页面的代码可以写另一个页面的控件**。
+    判据只有一条：**没有任何页面的代码可以"隐式"写另一个页面的控件**（切页、刷新、
+    进入钩子里顺手代填，用户没点任何按钮就发生）。
+    v10.26 起允许一种例外：用户主动点击「→ 用于X页」按钮时，代码可以把当前页的内容
+    写进目标页——但必须同时满足：①只有点击才触发，切页/刷新不会；②目标页已有不同
+    内容时必须 confirm 询问，不能静默覆盖；③目标为空或内容相同则不打扰。这类按钮
+    集中在 sendTextToTab()/gotoSharedScore()（见 test_score_edit_has_no_carry_to_other_pages、
+    test_score_page_only_copy_button），不在本类的"隐式搬运"黑名单里。
     带注释的历史说明会提到被删掉的名字，所以断言前先剥掉注释。
     """
 
@@ -336,6 +428,30 @@ class PageIndependence(unittest.TestCase):
                      'id="rvcSrcPick"', 'id="trainSrcPick"',
                      "function convertServerSong("):
             self.assertIn(need, self.src, "缺少独立性所需的部件：%s" % need)
+
+    def test_explicit_relay_is_click_gated_and_confirm_gated(self):
+        """「显式接力」按钮必须真的是显式的：只在点击时触发，且目标已有不同内容要先问。
+
+        这是页面独立性契约（见类文档）为 issue #8 开的唯一口子，口子的边界必须钉死：
+          1) sendTextToTab 内部必须先 confirm()（目标非空且内容不同）才写入；
+          2) switchTab() 本身绝不能调用 sendTextToTab/gotoSharedScore——否则就成了
+             "切页时代填"，与 seFromScore/seToGen 那批黑名单没有区别；
+          3) 每个接力按钮都必须绑定在 onclick 上，而不是在页面初始化/渲染函数里被调用。
+        """
+        i = self.code.index("function sendTextToTab(")
+        body = self.code[i:self.code.index("\nfunction ", i + 1)]
+        self.assertIn("confirm(", body, "sendTextToTab 缺确认步骤：目标已有不同内容会被静默覆盖")
+        self.assertIn("old !== text", body, "确认应当只在内容真的不同时才触发")
+
+        switch_start = self.code.index("function switchTab(name)")
+        switch_body = self.code[switch_start:self.code.index("\nfunction ", switch_start + 1)]
+        for banned in ("sendTextToTab(", "gotoSharedScore("):
+            self.assertNotIn(banned, switch_body,
+                             "switchTab() 内部调用了 %s：这就成了隐式跨页代填" % banned)
+
+        for btn in ("styleToSing", "styleToScoreSing", "abcToEdit", "abcToScoreSing", "seToScoreSing"):
+            self.assertRegex(self.code, r'\$\("%s"\)\.onclick' % btn,
+                             "%s 没有绑定在 onclick 上：不是用户点击触发就不是显式接力" % btn)
 
     def test_score_page_never_writes_generation_cot(self):
         """③ 转谱/回填不许写 ②⑤ 的「规划 CoT」下拉框。
@@ -483,6 +599,67 @@ class PageIndependence(unittest.TestCase):
         self.assertIn("/api/rvc/models", body, "官方推荐档应当来自服务端")
 
 
+
+class ScoreEditKeyMode(unittest.TestCase):
+    """④ 乐谱加工的调式识别必须与后端一致。
+
+    前端按 K: 行禁用不匹配的调式选项（对已是小调的谱就不该让人选"→同名大调"），
+    判错的后果是"能选的被藏起来 / 不能选的点了没反应"。旧实现
+    `/m(\\b|in|aj|$)/` 把 K:Gmaj 判成小调（m+aj 命中），K:Gmix 只是侥幸对了。
+    这里直接把页面里的 seKeyMode 抠出来丢进 node 跑，避免"改了 JS 没人管"。
+    """
+
+    CASES = {
+        # 调号 → 期望（None = 认不出，调用方不限制选项）
+        "Em": "minor", "Am": "minor", "Cm": "minor", "F#m": "minor",
+        "Bbm": "minor", "Amin": "minor", "Gmin": "minor", "Eminor": "minor",
+        "Am clef=bass": "minor",
+        "G": "major", "Bb": "major", "C": "major", "Eb": "major",
+        "Gmaj": "major", "Gmix": "major", "Ddor": "major",
+        "none": None, "": None,
+    }
+
+    def _node(self):
+        for cand in (
+            os.path.join(os.path.expanduser("~"), ".workbuddy", "binaries", "node",
+                         "versions", "22.22.2-6", "node.exe"),
+            r"C:\Program Files\nodejs\node.exe",
+        ):
+            if os.path.exists(cand):
+                return cand
+        return None
+
+    def test_se_key_mode_matches_backend_rule(self):
+        with io.open(INDEX, encoding="utf-8") as fh:
+            html = fh.read()
+        m = re.search(r"function seKeyMode\(abc\) \{.*?\n\}", html, re.S)
+        self.assertIsNotNone(m, "页面里找不到 seKeyMode（改名了就要同步改本测试）")
+        node = self._node()
+        if not node:
+            self.skipTest("本机没有可用的 node，跳过前端行为校验")
+        script = (m.group(0)
+                  + "\nconst CASES = " + json.dumps(self.CASES) + ";\n"
+                  + "let bad = 0;\n"
+                  + "for (const k of Object.keys(CASES)) {\n"
+                  + "  const got = seKeyMode('X:1\\nK:' + k + '\\nC D E');\n"
+                  + "  if (got !== CASES[k]) { console.log('FAIL K:' + k + ' → ' + got"
+                  + " + '（应 ' + CASES[k] + '）'); bad++; }\n"
+                  + "}\n"
+                  + "process.exit(bad ? 1 : 0);\n")
+        import subprocess
+        import tempfile
+        fd, tmp = tempfile.mkstemp(suffix=".js")
+        os.close(fd)
+        try:
+            with io.open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(script)
+            r = subprocess.run([node, tmp], capture_output=True, text=True)
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        self.assertEqual(r.returncode, 0, "调式识别与后端不一致：\n" + (r.stdout or ""))
 
 
 if __name__ == "__main__":

@@ -34,7 +34,7 @@ class FakeResponse:
 
 
 class FakeClient:
-    """替掉 app.httpx.Client：记下请求体，回放预设响应。"""
+    """替掉 engine_client.run_task：记下请求体，回放预设响应。"""
     last = None
     reply = None
 
@@ -51,12 +51,17 @@ class FakeClient:
         FakeClient.last = {"path": path, "body": json}
         return FakeClient.reply
 
+    @classmethod
+    def run_task(cls, body, seconds=None):
+        cls.last = {"path": "/v1/tasks/run", "body": body}
+        return cls.reply
+
 
 class Sandbox(unittest.TestCase):
     def setUp(self):
-        self._httpx = app.httpx
+        self._engine = app.engine_client
         self._ensure = app._ensure_backend
-        app.httpx = type("H", (), {"Client": FakeClient})
+        app.engine_client = FakeClient
         app._ensure_backend = lambda *a, **kw: None
         FakeClient.last = None
         FakeClient.reply = FakeResponse({
@@ -67,7 +72,7 @@ class Sandbox(unittest.TestCase):
         })
 
     def tearDown(self):
-        app.httpx = self._httpx
+        app.engine_client = self._engine
         app._ensure_backend = self._ensure
 
     def opts(self):

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import aiofiles
 import json
 import os
 import sys
@@ -39,7 +40,7 @@ for _pk in ("NO_PROXY", "no_proxy"):
 import uvicorn
 from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 import httpx
 
@@ -49,6 +50,10 @@ import voices
 import asr
 import denoise
 import lrc as lrc_mod
+import engine_client
+import lan_auth
+import audio_io
+import json_store
 
 # 强制对齐（已知歌词 → 精确时间轴）：可选依赖，缺失时自动退回 lrc_mod 旧链路
 try:
@@ -193,12 +198,17 @@ def _resolve_lan_mode(bind_host: str) -> bool:
 
 LAN_MODE = _resolve_lan_mode(str(getattr(settings, "app_host", "") or ""))
 LAN_HOSTS = _lan_host_allowlist(str(getattr(settings, "app_host", "") or ""))
+# 可选网关令牌：只在 LAN 模式下对“非回环直连”生效；回环（本机 UI / dsh 反代）永远免令牌。
+ACCESS_TOKEN = (os.environ.get("YUE2_ACCESS_TOKEN") or "").strip()
 # 可内嵌本工作台 UI 的来源：回环两向 + LAN 白名单（未开 LAN 时后者为空，行为不变）。
 # 注意 frame-ancestors 的 'self' 不含跨端口，所以 dsh(3081) 内嵌 网关(7863) 必须逐个列出。
 _FRAME_HOSTS = ["127.0.0.1", "localhost"] + sorted(LAN_HOSTS - {"127.0.0.1", "localhost"})
 if LAN_MODE:
+    _auth_note = ("已启用 YUE2_ACCESS_TOKEN：非回环直连需令牌；回环免令牌"
+                  if ACCESS_TOKEN else
+                  "未设 YUE2_ACCESS_TOKEN：直连网关端口无鉴权（建议只经 dsh 3081 访问，或设令牌）")
     print(f"[guard] ⚠ YUE2_ALLOW_LAN 已开启：网关绑定 {settings.app_host}，"
-          f"只认主机名 {sorted(LAN_HOSTS)}；同网段设备均可调用接口（无鉴权），"
+          f"只认主机名 {sorted(LAN_HOSTS)}；{_auth_note}；"
           "开 LAN 请同时假定 stderr 原文里的绝对路径/账号名会被同网段看到（Y2），"
           "并务必在前面加反代与鉴权，勿暴露公网", flush=True)
     # 评审复查补充：dsh 代理硬编码连 127.0.0.1:<gw>（ui-panel.mjs LAB_HOST）。
@@ -256,6 +266,29 @@ def _origin_in_allowlist(value: str) -> bool:
     return u.port in (None, _P_GW, _P_DSH)
 
 
+def _security_headers(response):
+    # 蓝军 Y4：任何网页都能把 127.0.0.1 iframe 进自己页面做点击劫持（诱导用户点"生成/删除"）。
+    # 工作台 UI 确实要被 dsh(3081) 内嵌，所以不能一刀切 X-Frame-Options，改用 CSP 的
+    # frame-ancestors 白名单——只放行本机回环与 LAN 主机名白名单里的那些来源。
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "frame-ancestors 'self' " + " ".join(
+            f"http://{_h}:{_p}" for _h in _FRAME_HOSTS for _p in (_P_GW, _P_DSH)),
+    )
+    return response
+
+
+def _auth_cookie(response):
+    response.set_cookie(
+        lan_auth.COOKIE_NAME, ACCESS_TOKEN,
+        max_age=lan_auth.COOKIE_MAX_AGE,
+        httponly=True, samesite="lax", path="/",
+    )
+    return response
+
+
 @app.middleware("http")
 async def _guard_local_only(request, call_next):
     host = request.headers.get("host", "")
@@ -267,6 +300,26 @@ async def _guard_local_only(request, call_next):
             return JSONResponse(status_code=403, content={"detail": "主机名不在局域网白名单内"})
     elif not _host_is_loop(host):
         return JSONResponse(status_code=403, content={"detail": "只接受面向本机回环地址的请求"})
+    auth_via_query = False
+    if ACCESS_TOKEN and not lan_auth.client_is_loopback(
+            request.client.host if request.client else None):
+        # 直连网关端口（不是经 dsh 反代）的 LAN 请求必须带令牌。回环永远放行，
+        # 否则本机 UI 和 dsh 代理会先被自己锁死。
+        if not lan_auth.request_has_token(request, ACCESS_TOKEN):
+            return _security_headers(JSONResponse(
+                status_code=401,
+                content={"detail": "局域网直连需要令牌：用 ?token=... 打开页面，或带 X-Yue2-Token 头"},
+                headers={"WWW-Authenticate": "Bearer"},
+            ))
+        if lan_auth.token_from_query(request, ACCESS_TOKEN):
+            # 用一次 ?token= 就换成 cookie；HTML 页顺手把 token 从地址栏去掉，
+            # 避免它留在浏览历史/截图里。API 调用继续执行，只是顺手种 cookie。
+            if request.method == "GET" and not request.url.path.startswith("/api/"):
+                redirect = RedirectResponse(
+                    lan_auth.strip_token(str(request.url)), status_code=303)
+                _auth_cookie(redirect)
+                return _security_headers(redirect)
+            auth_via_query = True
     if request.method.upper() in _WRITE_METHODS:
         origin = request.headers.get("origin") or request.headers.get("referer") or ""
         # 浏览器同源 POST 也会带 Origin，所以放行条件是"本机/白名单"，而不是"没带 Origin 就放过"。
@@ -277,16 +330,9 @@ async def _guard_local_only(request, call_next):
                            or (_origin_in_allowlist(origin) if LAN_MODE else False)):
             return JSONResponse(status_code=403, content={"detail": "跨站请求被拒绝"})
     response = await call_next(request)
-    # 蓝军 Y4：任何网页都能把 127.0.0.1 iframe 进自己页面做点击劫持（诱导用户点"生成/删除"）。
-    # 工作台 UI 确实要被 dsh(3081) 内嵌，所以不能一刀切 X-Frame-Options，改用 CSP 的
-    # frame-ancestors 白名单——只放行本机回环与 LAN 主机名白名单里的那些来源。
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("Referrer-Policy", "no-referrer")
-    response.headers.setdefault(
-        "Content-Security-Policy",
-        "frame-ancestors 'self' " + " ".join(
-            f"http://{_h}:{_p}" for _h in _FRAME_HOSTS for _p in (_P_GW, _P_DSH)),
-    )
+    _security_headers(response)
+    if auth_via_query:
+        _auth_cookie(response)
     return response
 
 
@@ -611,6 +657,7 @@ def _hide_engine_windows_once() -> None:
 
 
 _ENGINE_STARTED_AT = 0.0   # 本网关最后一次拉起引擎的时刻（排障用）
+_ENGINE_PROC: subprocess.Popen | None = None  # 本网关拉起的引擎句柄（只杀自己这一只）
 # 引擎是否"脏"（跑过任务、进程里还压着权重/图缓冲/未归还的分配）。
 # 初值 True：网关重启后不知道上一任留下的引擎是什么状态，第一首也清一次。
 # 用途见 _gen_run 开跑前的判断——连续快速失败的任务不会因为"刚重启过"就跳过清理。
@@ -683,18 +730,11 @@ def _restart_audiocpp(server_json_path: str, backend: str | None = None) -> None
     cwd 必须是 cpp\\ ：后端以工作目录为基准解析模型相对路径。
     backend 参数可临时覆盖本次启动的后端（cpu/cuda），不改变持久化模式。
     """
-    global _ENGINE_STARTED_AT, _ENGINE_DIRTY
+    global _ENGINE_STARTED_AT, _ENGINE_DIRTY, _ENGINE_PROC
     # 引擎二进制可能刚被「一键补齐运行件」替换过，重启前先丢掉旧的能力缓存，
     # 否则这一次重启还会按上一次（可能是"只有 cpu"）的判断传 --backend（issue #4-6）。
     _invalidate_engine_backends()
-    if os.name == "nt":
-        subprocess.run(
-            ["taskkill", "/IM", "audiocpp_server.exe", "/F"],
-            capture_output=True,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    else:
-        subprocess.run(["pkill", "-f", "audiocpp_server"], capture_output=True)
+    _stop_current_engine()
     time.sleep(1.0)
     if _audiocpp_alive():
         # taskkill 没杀掉（权限/僵尸端口）时，新进程抢不到 :8080，_wait_backend_ready
@@ -716,257 +756,79 @@ def _restart_audiocpp(server_json_path: str, backend: str | None = None) -> None
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     workdir = str(AUDIOCPP_BIN.parent)
     if creationflags:
-        subprocess.Popen(args, cwd=workdir, creationflags=creationflags)
+        _ENGINE_PROC = subprocess.Popen(args, cwd=workdir, creationflags=creationflags)
     else:
-        subprocess.Popen(args, cwd=workdir)
+        _ENGINE_PROC = subprocess.Popen(args, cwd=workdir)
     _ENGINE_STARTED_AT = time.time()
     _ENGINE_DIRTY = False
     _hide_engine_windows_once()  # 引擎若被外部机制带出控制台窗口，立即压下
 
 
-@router.get("/models/list")
-def models_list():
-    return {"models": available_models()}
+# --------------------------------------------------------------------------- #
+# 系统域路由（模型清单 / 能力 / 设置 / 后端模式 / VAE 窗口 / 系统信息）
+# 已拆到 src/routers/system.py；host 传本模块，路由在请求时解析依赖，
+# 因此对 app._active_vae_config 等名字的 patch 仍生效。
+# --------------------------------------------------------------------------- #
+from routers import system as _system_routes  # noqa: E402
+
+router.include_router(_system_routes.build_router(host=sys.modules[__name__]))
 
 
-@router.get("/models/current")
-def models_current():
-    """返回当前 server.json 生效的模型（相对 cpp/model 的路径，供前端下拉回显）。"""
-    try:
-        cfg = _read_server_json()
-        p = (cfg.get("models") or [{}])[0].get("path", "")
-    except Exception:
-        p = ""
-    p = (p or "").replace("\\", "/")
-    if p.startswith("model/"):
-        p = p[len("model/"):]
-    return {"path": p}
+def system_info():
+    return _system_routes.system_info(sys.modules[__name__])
 
 
 # --------------------------------------------------------------------------- #
-# 模型完整性校验 + 局部修复（借鉴 YuE2-Studio：目录存在 ≠ 模型可用）
-# 逐文件校验期望文件（主模型/VAE/sidecar/SheetSage2 权重）的最小字节数与
-# GGUF magic；缺哪个修哪个，避免整包重下。
+# 模型完整性校验 + 局部修复（已拆到 src/routers/model_files.py）
 # --------------------------------------------------------------------------- #
-_GGUF_MAGIC = b"GGUF"
-# (仓库, 仓库内路径, 落地相对路径(相对 ROOT), 最小字节数, 是否 GGUF)
-_MODEL_MANIFEST_MAIN = [
-    ("ngquocvinh/YuE2-3B-GGUF", "yue2-3b-q4_k_m.gguf", "cpp/model/yue2-q4_k_m/yue2-3b-q4_k_m.gguf", 2_000_000_000, True),
-    ("audio-cpp/Yue2-3B-GGUF", "yue2-vae-f16.gguf", "cpp/model/yue2-q4_k_m/yue2-vae-f16.gguf", 100_000_000, True),
-    ("ngquocvinh/YuE2-3B-GGUF", "sidecars/yue2-model-config.json", "cpp/model/yue2-q4_k_m/sidecars/yue2-model-config.json", 10, False),
-    ("ngquocvinh/YuE2-3B-GGUF", "sidecars/yue2-generation-config.json", "cpp/model/yue2-q4_k_m/sidecars/yue2-generation-config.json", 10, False),
-    ("ngquocvinh/YuE2-3B-GGUF", "sidecars/yue2-qwen.tiktoken", "cpp/model/yue2-q4_k_m/sidecars/yue2-qwen.tiktoken", 100_000, False),
-    ("ngquocvinh/YuE2-3B-GGUF", "sidecars/yue2-vae-config.json", "cpp/model/yue2-q4_k_m/sidecars/yue2-vae-config.json", 10, False),
-    ("m-a-p/SheetSage2", "model.safetensors", "checkpoints/model.safetensors", 100_000_000, False),
-]
-_REPAIR_LOCK = threading.Lock()
-_REPAIR_STATE: dict = {"running": False, "ts": None, "repaired": [], "failed": [], "message": ""}
+from routers import model_files as _model_files  # noqa: E402
+
+_MODEL_MANIFEST_MAIN = _model_files.MODEL_MANIFEST_MAIN
+_SIDECAR_MIN = _model_files.SIDECAR_MIN
+_QUANT_REMOTE = _model_files.QUANT_REMOTE
+_GGUF_MAGIC = _model_files.GGUF_MAGIC
+_REPAIR_LOCK = _model_files.REPAIR_LOCK
+_REPAIR_STATE = _model_files.REPAIR_STATE
 
 
 def _model_verify_one(rel: str, min_size: int, is_gguf: bool) -> tuple[bool, str]:
-    """校验单个文件：存在 + 字节数达标 +（GGUF 时）头部 magic 正确。"""
-    p = ROOT / rel
-    if not p.is_file():
-        return False, "缺失"
-    size = p.stat().st_size
-    if size < min_size:
-        return False, f"不完整（{size} 字节 < 期望 ≥{min_size}）"
-    if is_gguf:
-        try:
-            with open(p, "rb") as f:
-                if f.read(4) != _GGUF_MAGIC:
-                    return False, "GGUF 头无效"
-        except OSError as e:
-            return False, f"读取失败：{e}"
-    return True, "ok"
+    return _model_files.verify_one(rel, min_size, is_gguf, root=ROOT)
 
 
-@router.get("/models/verify")
+def _active_model_manifest():
+    return _model_files.active_manifest(
+        root=ROOT, model_dir=MODEL_DIR,
+        read_server_json=_read_server_json,
+        engine_config_report=_engine_config_report)
+
+
 def models_verify():
-    """逐文件校验模型完整性，返回各文件状态与整体结论。"""
-    files = []
-    ok_all = True
-    for repo, rel_remote, rel, min_size, is_gguf in _MODEL_MANIFEST_MAIN:
-        ok, reason = _model_verify_one(rel, min_size, is_gguf)
-        ok_all = ok_all and ok
-        files.append({"repo": repo, "remote": rel_remote, "path": rel,
-                      "name": Path(rel).name, "ok": ok, "reason": reason})
-    return {"ok": ok_all, "files": files,
-            "repair_running": _REPAIR_STATE.get("running", False)}
+    manifest, source = _active_model_manifest()
+    return _model_files.verify_payload(
+        manifest, source, root=ROOT,
+        repair_running=_REPAIR_STATE.get("running", False))
 
 
-@router.post("/models/repair")
 def models_repair():
-    """局部修复：只重下校验失败的文件（断点续传，多镜像回退）。"""
-    with _REPAIR_LOCK:
-        if _REPAIR_STATE.get("running"):
-            raise HTTPException(status_code=409, detail="修复已在进行中")
-        _REPAIR_STATE.update({"running": True, "ts": time.time(),
-                              "repaired": [], "failed": [], "message": "校验中…"})
-    threading.Thread(target=_model_repair_run, daemon=True).start()
-    return {"ok": True, "message": "修复已开始（只补缺失/损坏的文件），可稍后刷新查看。"}
+    return _model_files.start_repair(
+        root=ROOT, manifest_fn=_active_model_manifest,
+        state=_REPAIR_STATE, lock=_REPAIR_LOCK)
 
 
-def _model_repair_run():
-    sys.path.insert(0, str(ROOT / "scripts"))
-    try:
-        from download_models import download_one, mirrors  # 复用下载脚本的镜像/续传逻辑
-    except Exception as e:
-        with _REPAIR_LOCK:
-            _REPAIR_STATE.update({"running": False, "message": f"加载下载模块失败：{e}"})
-        return
-    repaired, failed = [], []
-    try:
-        for repo, rel_remote, rel, min_size, is_gguf in _MODEL_MANIFEST_MAIN:
-            ok, reason = _model_verify_one(rel, min_size, is_gguf)
-            if ok:
-                continue
-            dest = ROOT / rel
-            with _REPAIR_LOCK:
-                _REPAIR_STATE["message"] = f"修复 {Path(rel).name} …"
-            try:
-                # 只清损坏的主文件；.part 保留给断点续传（download_one 基于其字节数发 Range）
-                dest.unlink(missing_ok=True)
-            except OSError:
-                pass
-            if download_one(repo, rel_remote, dest):
-                ok2, reason2 = _model_verify_one(rel, min_size, is_gguf)
-                (repaired if ok2 else failed).append({"name": Path(rel).name, "reason": reason2})
-            else:
-                failed.append({"name": Path(rel).name, "reason": "全部镜像下载失败"})
-    finally:
-        with _REPAIR_LOCK:
-            _REPAIR_STATE.update({
-                "running": False,
-                "repaired": repaired, "failed": failed,
-                "message": ("修复完成" if not failed and repaired else
-                            "模型本就完整" if not repaired and not failed else
-                            f"完成，{len(failed)} 个文件仍失败") ,
-            })
-
-
-@router.get("/models/repair/status")
 def models_repair_status():
     return _REPAIR_STATE
 
 
+router.include_router(_model_files.build_router(
+    root=ROOT, model_dir=MODEL_DIR,
+    read_server_json=_read_server_json,
+    engine_config_report=_engine_config_report,
+    state=_REPAIR_STATE, lock=_REPAIR_LOCK))
+
+
 # --------------------------------------------------------------------------- #
-# 引擎后端模式（cuda / cpu 兜底）
+# 引擎后端模式（cuda / cpu 兜底）—— 路由见 src/routers/system.py
 # --------------------------------------------------------------------------- #
-@router.get("/capabilities")
-def capabilities():
-    """本机当前真正能用/不能用的功能清单（不依赖 VAE 的功能也要让人看见）。"""
-    feats: list[dict] = []
-
-    def add(label: str, ok: bool, note: str = "") -> None:
-        feats.append({"label": label, "ok": bool(ok), "note": note})
-
-    add("歌词 TXT 导出", True, "不需要 GPU/VAE；歌词框和任务卡都能下载")
-    add("LRC / 逐字 eLRC", lrc_align_mod is not None,
-        "需要音频时间轴；已有音频时不用重新生成歌曲" if lrc_align_mod is not None
-        else "缺强制对齐依赖（funasr/模型），当前只有旧链路")
-    add("乐谱提取 / 转谱", (ROOT / "checkpoints" / "model.safetensors").is_file(),
-        "SheetSage2/MERT；不依赖 VAE")
-    sep_ok, sep_why = _sep_available()
-    add("人声/伴奏分离", sep_ok, "" if sep_ok else sep_why)
-    rvc_ok = RVC_PY.is_file() and (RVC_DIR / "infer" / "cli.py").is_file()
-    add("换声 / 音色制作", rvc_ok, "RVC runtime" if rvc_ok else "runtime/rvc 缺 infer/cli.py")
-    add("AI 写词", _deepseek_key_set(), "需在 ⑫ 设置里填 DeepSeek Key" if not _deepseek_key_set() else "")
-    gen_ok = AUDIOCPP_BIN.is_file() and SERVER_JSON.is_file()
-    add("歌曲生成（AR/NAR/VAE）", gen_ok,
-        "VAE 阶段受显存限制；长歌会在开跑前被预检拦下，不会白等"
-        if gen_ok else "缺 audio.cpp 引擎或 cpp/server.json")
-    return {"features": feats}
-
-
-@router.get("/settings")
-def settings_get():
-    return {"cpu_fallback_allowed": _cpu_fallback_allowed(),
-            "cpu_fallback_source": _cpu_fallback_source(),
-            "deepseek_api_key_set": _deepseek_key_set(),
-            # 来源必须可见：env 来源时本页清除不掉，前端据此换文案（issue #4-2）
-            "deepseek_key_source": _deepseek_key_source()}
-
-
-@router.post("/settings")
-def settings_set(payload: dict):
-    messages: list[str] = []
-    if "cpu_fallback_allowed" in payload:
-        if not isinstance(payload.get("cpu_fallback_allowed"), bool):
-            raise HTTPException(status_code=400,
-                                detail="cpu_fallback_allowed 必须是 true/false")
-        _settings_write({"cpu_fallback_allowed": payload["cpu_fallback_allowed"]})
-        messages.append("已允许 GPU 分配失败时自动降级到 CPU：会整首重算，核显上可能慢十几倍。"
-                        if payload["cpu_fallback_allowed"] else
-                        "已禁止自动降级 CPU：GPU 分配失败会直接报错，AR 检查点会保留，可稍后重试。")
-    if "deepseek_api_key" in payload:
-        key = payload.get("deepseek_api_key")
-        if not isinstance(key, str) or len(key) > 500:
-            raise HTTPException(status_code=400, detail="deepseek_api_key 必须是字符串（≤500 字符）")
-        overridden = _deepseek_key_source() == "env"
-        _deepseek_key_write(key)
-        if key.strip():
-            messages.append("DeepSeek Key 已保存到 secrets/deepseek_api_key.txt"
-                            + ("（但" + _deepseek_env_note() + "）" if overridden else ""))
-        else:
-            messages.append("DeepSeek Key 文件已清除")
-    if payload.get("deepseek_api_key_clear") is True:
-        _deepseek_key_write("")
-        # 清掉文件后还要看 env：是 env 在撑着"已配置"，就不能只报"已清除"
-        if _deepseek_key_source() == "env":
-            messages.append("已删除本页保存的 Key，但" + _deepseek_env_note())
-        else:
-            messages.append("DeepSeek Key 已清除")
-    if not messages:
-        raise HTTPException(status_code=400, detail="没有可保存的设置")
-    return {"ok": True,
-            "cpu_fallback_allowed": _cpu_fallback_allowed(),
-            "deepseek_api_key_set": _deepseek_key_set(),
-            "deepseek_key_source": _deepseek_key_source(),
-            "message": "；".join(messages)}
-
-
-@router.get("/backend/mode")
-def backend_mode_get():
-    ok, free = _vram_ok_for_gpu()
-    return {
-        "mode": backend_mode(),
-        # 前端据此决定"切GPU"该提交 cuda 还是 vulkan：核显机器上 GPU≠CUDA
-        "available": engine_backends(),
-        "cpu_fallback_allowed": _cpu_fallback_allowed(),
-        "vram_free_mb": free,
-        "vram_ok": ok,
-        "headroom_mb": _VRAM_HEADROOM_MB,
-    }
-
-
-@router.post("/backend/mode")
-def backend_mode_set(payload: dict):
-    want = (payload.get("mode") or "").strip().lower()
-    have = engine_backends()
-    if want not in ("cuda", "cpu", "vulkan"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"mode must be one of: cuda, cpu, vulkan（本机引擎构建支持：{','.join(have)}）",
-        )
-    # "GPU" 落到这份构建真能跑的后端：CUDA 构建→cuda，Vulkan 构建→vulkan，
-    # 两者都没有就只能在 CPU 上跑，并把原因写进回包（前端会原样弹出来）。
-    mode, note = resolve_backend(want)
-    if mode == backend_mode():
-        return {"ok": True, "mode": mode, "message": note or f"引擎已是 {mode} 模式",
-                "available": have}
-    _engine_state_write({"backend": mode})
-    _restart_audiocpp(str(SERVER_JSON))
-    base = ("已切换 CPU 模式：显存不足也能出结果，但速度慢约 5-10 倍"
-            if mode == "cpu" else
-            "已切到 Vulkan（集显/核显）模式：没有 N 卡时通常比 CPU 快一个数量级"
-            if mode == "vulkan" else "已切回 GPU（CUDA）模式")
-    return {
-        "ok": True,
-        "mode": mode,
-        "message": f"{note}；{base}" if note else base,
-        "available": have,
-    }
 
 
 # --------------------------------------------------------------------------- #
@@ -983,199 +845,44 @@ def backend_mode_set(payload: dict):
 # 时读它，所以必须重启引擎才生效——与 backend/mode、models/switch 同一个重启
 # 函数 _restart_audiocpp。
 # --------------------------------------------------------------------------- #
-_VAE_WINDOW_SUFFIX = ".bak-vae-window"      # 与 set_vae_window.py 的备份后缀一致
-_VAE_WINDOW_CHOICES = (512, 1024)           # UI 两档；脚本层的完整区间是 16~4096 的 8 倍数
-_VAE_SIDECAR_NAME = "yue2-vae-config.json"
+import vae_window as _vae_window  # noqa: E402
+
+_VAE_WINDOW_SUFFIX = _vae_window.SUFFIX      # 与 set_vae_window.py 的备份后缀一致
+_VAE_WINDOW_CHOICES = _vae_window.CHOICES    # UI 两档；脚本层完整区间是 16~4096 的 8 倍数
+_VAE_SIDECAR_NAME = _vae_window.SIDECAR_NAME
 
 
+# 以下薄包装保留 app 级名字：测试会 patch `app._active_vae_config`，
+# 预检与设置页也都按这些名字取，实现见 src/vae_window.py。
 def _rel(p: Path) -> str:
-    """仓库内路径→相对 posix 路径；不是仓库内（测试里的假路径）就原样给，绝不抛。"""
-    try:
-        return p.relative_to(ROOT).as_posix()
-    except ValueError:
-        return p.as_posix()
+    return _vae_window.rel(p, ROOT)
 
 
 def _active_model_gguf() -> Path | None:
-    """引擎**接下来会加载**的权重文件（绝对路径）；读不到配置就返回 None。
-
-    权威是 `cpp/server.json` 的 `models[].session_options["yue2.model_gguf"]`
-    （缺了用 `models[].path` 的 basename）。不用 `runtime/data/engine_state.json`：
-    那是"上次真的加载了什么"，用户切了量化档但引擎没重启时它是旧值，而这里要回答的
-    是"点开关时引擎会去读哪份 sidecar"——必须按配置走。
-    """
-    try:
-        cfg = json.loads((ROOT / "cpp" / "server.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    entries = cfg.get("models") or []
-    if not isinstance(entries, list) or not entries or not isinstance(entries[0], dict):
-        return None
-    entry = entries[0]
-    rel = str(entry.get("path") or "").strip().replace("\\", "/")
-    so = entry.get("session_options") or {}
-    name = str(so.get("yue2.model_gguf") or "").strip().replace("\\", "/")
-    if not name and rel:
-        name = rel.rsplit("/", 1)[-1]       # 没有 session_options 的老配置，退回 path 的文件名
-    if not name:
-        return None
-    # model_gguf 只是文件名；**目录以 path 为准**（path 相对 cpp/），否则换档后会去找错目录。
-    parent = (ROOT / "cpp" / rel).parent if "/" in rel else (ROOT / "cpp" / "model")
-    return parent / name
+    return _vae_window.active_model_gguf(ROOT)
 
 
 def _vae_sidecar_dir_of(model_file: Path) -> Path:
-    """引擎在**模型同目录**的 sidecars/ 下找 VAE sidecar（engine_state 的 loaded_vae_from=同目录）。"""
-    return model_file.parent / "sidecars"
+    return _vae_window.sidecar_dir_of(model_file)
 
 
 def _active_vae_config() -> Path | None:
-    """当前在用模型对应的 VAE sidecar；定位不到返回 None（不猜，也不拿别的档顶替）。"""
-    model = _active_model_gguf()
-    if model is None:
-        return None
-    sidecar = _vae_sidecar_dir_of(model) / _VAE_SIDECAR_NAME
-    return sidecar if sidecar.is_file() else None
+    return _vae_window.active_config(ROOT)
 
 
 def _vae_window_configs() -> list[Path]:
-    """所有 VAE sidecar 配置，**当前在用那份永远排第一**（现取不缓存：可能刚下完新模型）。
-
-    两种模型布局都得认（issue #4-1：老代码只 glob `*/sidecars/…`，扁平布局一份都匹配不到）：
-      * 扁平：权重摊在 `cpp/model/` 下 → sidecar 在 `cpp/model/sidecars/`
-      * 分子目录：`cpp/model/<quant>/<x>.gguf` → sidecar 在 `cpp/model/<quant>/sidecars/`
-    排序第一的会被当成"引擎实际会读的那份"报给开关和显存预检，所以 active 必须排头。
-    """
-    model_dir = ROOT / "cpp" / "model"
-    found: list[Path] = []
-    active = _active_vae_config()
-    if active is not None:
-        found.append(active)
-    candidates = [model_dir / "sidecars" / _VAE_SIDECAR_NAME]
-    candidates += sorted(model_dir.glob(f"*/sidecars/{_VAE_SIDECAR_NAME}"))
-    for p in candidates:
-        if p.is_file() and p not in found:
-            found.append(p)
-    return found
+    return _vae_window.configs(ROOT)
 
 
 def _vae_window_of(path: Path) -> int:
-    """一份 sidecar 当前的 decode_core_frames；读不出来按官方默认 1024 计。"""
-    try:
-        cfg = json.loads(path.read_text(encoding="utf-8"))
-        return int(cfg.get("decode_core_frames") or 1024)
-    except (OSError, ValueError, TypeError, AttributeError):
-        return 1024
+    return _vae_window.window_of(path)
 
 
 def _vae_window_patch(path: Path, frames: int) -> tuple[int, int]:
-    """把一份 sidecar 改成目标窗口，返回 (old, new)。
-
-    与 set_vae_window.py.patch_file 同约定：同值直接返回、不动文件；只有第一次
-    改动前留 .bak-vae-window 备份；先写临时文件再 os.replace，避免半份配置。
-    """
-    data = json.loads(path.read_text(encoding="utf-8"))
-    old = int(data.get("decode_core_frames") or 0)
-    if old == frames:
-        return old, old
-    bak = path.with_name(path.name + _VAE_WINDOW_SUFFIX)
-    if not bak.exists():
-        shutil.copy2(path, bak)
-    data["decode_core_frames"] = frames
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
-    return old, frames
+    return _vae_window.patch_window(path, frames, _VAE_WINDOW_SUFFIX)
 
 
-@router.get("/vae/window")
-def vae_window_get():
-    """设置页开关的当前状态：**引擎实际会读到的**那份 sidecar 的窗口值 + 各文件明细。
-
-    `active` 是"当前加载模型对应的那份"，`configs[].active` 逐条标记；定位不到时
-    active=None 并在 note 里说清（不拿别的量化档顶替，那正是 issue #4-1 的病根）。
-    """
-    configs = _vae_window_configs()
-    if not configs:
-        raise HTTPException(
-            status_code=404,
-            detail="没找到 VAE sidecar 配置（cpp/model/sidecars/yue2-vae-config.json 或 "
-                   "cpp/model/*/sidecars/yue2-vae-config.json）；"
-                   "请先运行「一键补齐运行件.bat」把模型下载完",
-        )
-    active = _active_vae_config()
-    if active is not None and active not in configs:
-        active = None
-    per = [{"path": _rel(p), "frames": _vae_window_of(p),
-            "active": p == active} for p in configs]
-    head = next((c for c in per if c["active"]), per[0])
-    model = _active_model_gguf()
-    out = {"frames": head["frames"], "choices": list(_VAE_WINDOW_CHOICES),
-           "configs": per,
-           "active": head["path"] if head["active"] else None,
-           "model": model.name if model is not None else ""}
-    if active is None:
-        out["note"] = (f"定位不到当前加载模型的 sidecar（cpp/server.json 缺 models[].path 或"
-                       f"该目录下没有 sidecars/），开关只能改全部 {len(per)} 份；多档不一致时"
-                       f"可能改不到引擎真正读的那份。")
-    # 多份不一致时把差异挑明：开关只报当前那份，别的档差着值是正常的（用户可能故意分开设）
-    others = [c for c in per if not c["active"] and c["frames"] != head["frames"]]
-    if others:
-        out["mismatch"] = [c["path"] for c in others]
-    return out
-
-
-@router.post("/vae/window")
-def vae_window_set(payload: dict):
-    """切换 VAE 解码窗口并重启引擎。frames 只接受 512 / 1024（UI 两档）。
-
-    默认**只改当前加载模型那一份**（`all: true` 才批量改全部）：老代码改全部分，
-    而扁平布局下那句 glob 一份都匹配不到，于是出现"页面显示 512、引擎读的仍是 1024"。
-    """
-    try:
-        frames = int(payload.get("frames"))
-    except (TypeError, ValueError):
-        frames = -1
-    if frames not in _VAE_WINDOW_CHOICES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"frames 只支持 {list(_VAE_WINDOW_CHOICES)}"
-                   "（512=低显存约 1.95GB，1024=官方默认约 3.89GB）",
-        )
-    configs = _vae_window_configs()
-    if not configs:
-        raise HTTPException(status_code=404, detail="没找到 VAE sidecar 配置，无法切换窗口")
-    active = _active_vae_config()
-    if active is None or active not in configs:
-        # 定位不到在用那份：只能全改（旧行为），但必须说清，不能让用户以为只改了一份
-        active = None
-        targets = configs
-        scope = f"定位不到当前加载模型，已改全部 {len(configs)} 份"
-    elif payload.get("all") is True:
-        targets = configs
-        scope = f"已改全部 {len(configs)} 份"
-    else:
-        targets = [active]
-        scope = "只改当前加载的那份"
-    changed: list[dict] = []
-    for p in targets:
-        old, new = _vae_window_patch(p, frames)
-        changed.append({"path": _rel(p), "old": old, "new": new,
-                        "active": p == active})
-    touched = [c for c in changed if c["new"] != c["old"]]
-    if not touched:
-        return {"ok": True, "frames": frames, "restarted": False, "changed": [],
-                "active": _rel(active) if active else None,
-                "message": f"VAE 窗口已是 {frames} 帧，无需切换（引擎未重启）"}
-    _restart_audiocpp(str(SERVER_JSON))
-    where = "、".join(f"{c['path']}（{c['old']} → {c['new']}）" for c in touched)
-    note = ("；512 窗口显存约 1.95GB、长歌更稳，但切片变多接缝略明显，请完整试听一首"
-            if frames == 512 else
-            "；1024 为官方默认、速度略快，但 16GB 内存机器跑长歌可能 OutOfDeviceMemory")
-    print(f"[vae/window] {scope} → {frames} 帧：{where}", flush=True)
-    return {"ok": True, "frames": frames, "restarted": True, "changed": touched,
-            "active": _rel(active) if active else None,
-            "message": f"已切换 VAE 窗口（{scope}）：{where}；引擎正在重启，约半分钟后生效{note}"}
+# 路由（GET/POST /vae/window）已拆到 src/routers/system.py，依赖上面的薄包装。
 
 
 # --------------------------------------------------------------------------- #
@@ -1187,124 +894,30 @@ def vae_window_set(payload: dict):
 # 本端点是普通 def（FastAPI 丢线程池跑）：里面全是 nvidia-smi 子进程、socket 探测
 # 与磁盘 stat 这类会阻塞的活，写成 async def 会把整个网关钉住（3081 假死）。
 # --------------------------------------------------------------------------- #
+import system_probe as _system_probe  # noqa: E402
+
+
 def _version_from_changelog() -> str:
-    """版本号：CHANGELOG 顶部条目（该文件自己声明"宣传文案里要写的版本号从本文件顶部条目取"）。
-    真源是 git 附注标签，但网关不该为读一个版本号去起 git 子进程。"""
-    try:
-        with (ROOT / "CHANGELOG.md").open(encoding="utf-8", errors="replace") as fh:
-            head = fh.read(8192)
-        m = re.search(r"^## \[(v[^\]]+)\]", head, re.M)
-        if m:
-            return m.group(1)
-    except Exception as e:
-        print(f"[system/info] CHANGELOG 版本号读取失败：{e}", flush=True)
-    return "unknown"
+    return _system_probe.version_from_changelog(ROOT)
 
 
 def _tcp_open(host: str, port: int, timeout: float = 1.0) -> bool:
-    """端口是否有人监听（只做 connect 探测，不发消息、不拉起任何进程）。"""
-    import socket
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
+    return _system_probe.tcp_open(host, port, timeout)
 
 
 def _sheetsage_ready() -> bool:
-    """SheetSage2 权重是否就绪（与 /api/score/status 同一判据，不另立一套）。"""
-    try:
-        import sheetsage_pt
-        return bool(sheetsage_pt.mert_cached() or sheetsage_pt.resolve_checkpoint().is_dir())
-    except FileNotFoundError:
-        return False          # 未下载权重是新装环境常态，不是错误
-    except Exception as e:
-        print(f"[system/info] SheetSage2 就绪探测异常：{e}", flush=True)
-        return False
+    return _system_probe.sheetsage_ready()
 
 
 def _ai_ready() -> dict:
-    """AI 工作台就绪：只报布尔与模型名，密钥本身绝不出现在返回值里。"""
-    out = {"ready": False, "key_configured": False, "runner_exists": False,
-           "model": "", "dsh_listening": False}
-    try:
-        import ai_lab
-        import ai_router
-        out["key_configured"] = bool(ai_lab.ai_key())
-        out["ready"] = bool(ai_lab.ai_ready())
-        out["model"] = ai_lab.MODEL
-        out["runner_exists"] = ai_router.DSH_RUNNER.is_file()
-    except Exception as e:
-        out["error"] = f"AI 工作台状态探测失败：{type(e).__name__}: {str(e)[:120]}"
-        print(out["error"], flush=True)
-    out["dsh_listening"] = _tcp_open("127.0.0.1", settings.dsh_port)
-    return out
+    return _system_probe.ai_ready(settings.dsh_port)
 
 
 def _gateway_kernel() -> dict:
-    """网关内核来自哪：编译的 `.pyd` 还是仓库里的 `main.py`（开源 shim）。
-
-    CPython 的扩展模块优先于同名 `.py`，而 `main.cp312-win_amd64.pyd` 在 .gitignore
-    里、老安装机器上普遍存在 —— 于是**同一版本两台机器可能走不同内核**：pyd 是编译版，
-    不启用开源网关"按 spec 白名单筛字段 + 丢弃键写日志"那套。以前这件事在任何界面
-    和日志里都看不出来（issue #4-7）。
-    """
-    f = Path(str(getattr(main, "__file__", "") or ""))
-    kind = "pyd" if f.suffix.lower() == ".pyd" else "shim"
-    note = ("编译版内核（*.pyd）：不启用开源网关的字段白名单/丢弃键日志，"
-            "要换成开源网关请把同目录的 main.cp312-win_amd64.pyd 移走"
-            if kind == "pyd" else
-            "开源网关 shim（main.py）：按 spec 白名单筛字段，被丢弃的键写日志")
-    return {"kind": kind, "path": str(f), "note": note}
+    return _system_probe.gateway_kernel(main)
 
 
-@router.get("/system/info")
-def system_info():
-    """版本号 / 端口 / 目录 / 磁盘 / 显存 / 引擎就绪——全本地，不联网，不回密钥。"""
-    import ports as _ports
-    p = _ports.load()
-    vram_total = _gpu_total_mb()
-    vram_free = _gpu_free_mb()
-    out_dir = Path(OUTPUT_DIR)
-    return {
-        "version": _version_from_changelog(),
-        # 走的是 pyd 还是 shim：同版本两台机器内核可能不同，必须能查出来（issue #4-7）
-        "gateway_kernel": _gateway_kernel(),
-        "ports": {"gateway": p.get("gateway"), "dsh": p.get("dsh"),
-                  "audiocpp": p.get("audiocpp"), "ports_file": str(_ports.PORTS_FILE),
-                  "ports_file_exists": _ports.PORTS_FILE.is_file()},
-        "paths": {"root": str(ROOT), "output_dir": str(out_dir),
-                  "runtime_dir": str(ROOT / "runtime"),
-                  "scores_dir": str(SCORES_DIR), "records_dir": str(HIST_DIR),
-                  "rvc_weights_dir": str(RVC_MODELS_DIR),
-                  "model_dir": str(MODEL_DIR),
-                  "log_dir": str(ROOT / "runtime" / "data" / "logs")},
-        "disk": {"output_free_mb": _free_bytes(out_dir) // (1024 * 1024),
-                 "output_total_mb": _disk_total_bytes(out_dir) // (1024 * 1024),
-                 "output_files": _output_file_count(out_dir),
-                 "upload_floor_mb": _DISK_FLOOR_BYTES // (1024 * 1024)},
-        "gpu": {"mode": backend_mode(), "total_mb": vram_total, "free_mb": vram_free,
-                "used_mb": (None if vram_total is None or vram_free is None
-                            else max(0, vram_total - vram_free)),
-                "headroom_mb": _VRAM_HEADROOM_MB,
-                "query_failed": vram_total is None and vram_free is None},
-        "engines": {
-            "audiocpp_alive": _audiocpp_alive(),
-            # 现在到底加载着哪一套权重。vae 那一栏会写清是"同目录"还是"公共退回"——
-            # 退回公共 vae 等于换了配对，出图的音质与显存峰值都可能不同，
-            # 以前这件事在 ⑬ 完全查不到（切换消息里也只报主模型名）。
-            # ★ 值必须来自 server.json（后端真正读的那份），不能来自 engine_state 的自述：
-            #   本轮评审实测到状态文件里写着 yue2-q4.gguf，而 cpp/model 下没有这个文件。
-            "loaded_main": _loaded_main_label(),
-            "loaded_vae": _loaded_vae_label(),
-            "loaded_lora": _loaded_lora_label(),
-            "vocal_separation_ready": _sep_available()[0],
-            "sheetsage2_ready": _sheetsage_ready(),
-            "ai_workbench": _ai_ready(),
-        },
-        "read_only": ("端口/输出目录/并发策略在本页只读展示，不支持在线修改："
-                      "改了会与启动脚本和看门狗各持一套口径，风险大于收益（规划 §十-5）"),
-    }
+# 路由与实现已拆到 src/routers/system.py（本文件只留 `system_info()` 兼容别名）。
 
 
 # ---------- 谱面提取（SheetSage2 音频 → ABC 记谱，供"改词翻唱"工作流） ----------
@@ -1346,94 +959,37 @@ def _new_id() -> str:
     raise HTTPException(status_code=503, detail="任务 ID 连续冲突，请稍后重试")
 
 
-def _score_archive_dir(score_id: str) -> Path:
-    """转谱中间产物归档目录：runtime/data/scores/<score_id>/（与 <score_id>.json 同层同名）。
+from routers import score as _score_routes  # noqa: E402
 
-    score_id 一律来自 _new_id 或服务端 basename 校验，这里再自查一次形状，
-    免得日后有人拿它拼 URL 参数直接传进来。"""
-    sid = os.path.basename(str(score_id or "").strip().replace("\\", "/"))
-    if not re.fullmatch(r"\d{8}_\d{6}_[0-9a-f]{8}|[A-Za-z0-9_\-]{1,64}", sid):
-        raise HTTPException(status_code=400, detail=f"非法乐谱 ID：{score_id!r}")
-    return SCORES_DIR / sid
+_SCORE_JOBS = _score_routes.SCORE_JOBS
+_SCORE_LOCK = _score_routes.SCORE_LOCK
+_SCORE_ENGINE_LOCK = _score_routes.SCORE_ENGINE_LOCK
+
+
+def _score_archive_dir(score_id: str) -> Path:
+    return _score_routes.score_archive_dir(score_id, SCORES_DIR)
 
 
 def _score_save(job_id: str, abc: str, artifacts: list[str] | None = None,
                 title: str | None = None) -> dict:
-    """乐谱入库（JSON 文件），返回记录（含 id、时间、ABC、分析摘要、已归档产物清单）。
-
-    artifacts 是这一首歌在 data/scores/<id>/ 里归档到的文件名（MIDI/lab/events.json…）；
-    空列表就是真的没归档（老记录或上游没产出）——导出接口据此回明确错误，不返回 200 空体。
-    title 是「另存为」时给的名字（如『+5 半音 G 大调』）；老记录没有，列表就退化用 time+preview。"""
-    SCORES_DIR.mkdir(parents=True, exist_ok=True)
-    rec = {"id": job_id, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-           "abc": abc, "analysis": _abc_analyze(abc),
-           "artifacts": sorted(artifacts or [])}
-    if title:
-        rec["title"] = title.strip()[:80]
-    (SCORES_DIR / f"{job_id}.json").write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
-    return rec
+    return _score_routes.score_save(
+        job_id, abc, artifacts, title, scores_dir=SCORES_DIR,
+        analyze_abc=lambda s: _abc_analyze(s))
 
 
-# ---------- ABC 乐谱分析（调性 / 拍号 / BPM / 曲式 / 音域，借鉴 YuE2-Studio 转谱分析） ----------
-_KEY_MAP = {"C": "C 大调", "G": "G 大调", "D": "D 大调", "A": "A 大调", "E": "E 大调", "B": "B 大调",
-            "F#": "升 F 大调", "C#": "升 C 大调", "F": "F 大调", "Bb": "降 B 大调", "Eb": "降 E 大调",
-            "Ab": "降 A 大调", "Db": "降 D 大调", "Gb": "降 G 大调",
-            "Am": "A 小调", "Em": "E 小调", "Bm": "B 小调", "F#m": "升 F 小调", "C#m": "升 C 小调",
-            "G#m": "升 G 小调", "Dm": "D 小调", "Gm": "G 小调", "Cm": "C 小调", "Fm": "F 小调",
-            "Bbm": "降 B 小调", "Ebm": "降 E 小调"}
-_PITCH_SEMITONE = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
-_SECTION_RE = re.compile(r"^\[([^\]\r\n]{1,32})\]", re.M)
-_VOICE_RE = re.compile(r"^V:\s*([A-Za-z0-9_\-]+)", re.M)
-# YuE2 原生引号和弦词汇（大三和弦无后缀，故根音可单独成词）+ 可选斜杠低音。
-# 只认这套闭集：C:maj、Cmaj9、C13、A7alt 都不是原生记号，不该被当成和弦。
-_ABC_QUALITIES = ("maj7", "m(maj7)", "m7b5", "7sus4", "dim7", "sus4", "sus2",
-                  "aug", "dim", "maj", "min", "m6", "m7", "m", "6", "7")
-_CHORD_RE = re.compile(
-    r'"[A-G](?:##|bb|[b#])?(?:'
-    + "|".join(re.escape(q) for q in _ABC_QUALITIES)
-    + r')?(?:/[A-G](?:##|bb|[b#])?)?"')
-# 「谱面上有没有和弦记号」用宽松式：ABC 正文里被双引号包住、以音名开头的记号就是和弦。
-# 上面那份闭集是**记号表能被改写/转调**的范围，不是"存在性"的范围——拿闭集判存在会把
-# "C9" "Cadd9" "G13" "Fm9" "Csus" 判成无和弦，进而把该走 full 的谱错路由到 melody。
-_CHORD_RE_LOOSE = re.compile(
-    r'"[A-G](?:##|bb|[b#])?([A-Za-z0-9()#\-]*)(?:/[A-G](?:##|bb|[b#])?)?"')
-# 根音之后允许出现的记号字符：数字、升降、括号/连字符，以及和弦后缀用到的字母
-# （maj min dim aug sus add m M 七九十一十三 等）。故意做成"字母白名单"而不是
-# [A-Za-z] 全放开——全放开会把正文里任何引号住的英文单词（"Chorus"）当成和弦，
-# 纯旋律谱就此被误判成带和弦、改走 full，那是把没和弦的谱硬塞给和弦路线。
-_CHORD_TAIL_CHARS = set("0123456789#()-+/.majinsdugMAJINSDG")
-_CHORD_TAIL_WORDS = ("alt", "add", "dim", "aug", "sus", "maj", "min", "no", "A7", "b5")
+def _score_record(score_id: str) -> dict:
+    return _score_routes.score_record(score_id, SCORES_DIR)
 
 
-def _is_chord_token(text: str) -> bool:
-    """宽松式命中后的一遍词形校验：排除"以 A–G 开头的普通英文单词"这类假阳性。"""
-    rest = text
-    for word in _CHORD_TAIL_WORDS:
-        rest = rest.replace(word, "")
-    return all(ch in _CHORD_TAIL_CHARS for ch in rest)
+def _score_run(job_id: str, src: Path, melody_only: bool) -> None:
+    return _score_routes.score_run(
+        job_id, src, melody_only, scores_dir=lambda: SCORES_DIR,
+        jobs=_SCORE_JOBS, lock=_SCORE_LOCK, engine_lock=_SCORE_ENGINE_LOCK,
+        analyze_abc=lambda s: _abc_analyze(s),
+        toast=lambda *a, **k: _win_toast(*a, **k))
 
 
-def _abc_chord_tokens(abc: str, loose: bool = True) -> list[str]:
-    """正文小节里的和弦记号列表（loose=存在性判定，strict=记号表可改写范围）。"""
-    # 只在正文小节里找：X:/T:/K:/V: 这类信息行、% 开头的注释行里引号包住的标题
-    # 文字不算和弦记号
-    body = "\n".join(l for l in abc.splitlines()
-                     if not re.match(r"^[A-Za-z]:", l.strip())
-                     and not l.lstrip().startswith("%"))
-    if not loose:
-        return _CHORD_RE.findall(body)
-    out = []
-    for tail in _CHORD_RE_LOOSE.findall(body):
-        if _is_chord_token(tail):
-            out.append(tail)
-    return out
-
-
-def _abc_has_chords(abc: str) -> bool:
-    """谱面是否带和弦声部/和弦记号（决定 YuE2 该走 full 还是 melody 路线）。"""
-    if any("chord" in v for v in (name.lower() for name in _VOICE_RE.findall(abc))):
-        return True
-    return bool(_abc_chord_tokens(abc))
+from abc_analysis import analyze as _abc_analyze, has_chords as _abc_has_chords  # noqa: E402
 
 
 # 用户输入长度上限。以前超 4000 字是**静默截断**：歌词被切掉的后果是强制对齐拿到的
@@ -1505,73 +1061,6 @@ def _resolve_cot(cot: str, abc: str) -> tuple[str, str]:
                  "（melody 不会自动删掉和弦记号，口径不符谱面条件会走偏）")
 
 
-def _abc_analyze(abc: str) -> dict:
-    """从 ABC 文本提取调性/拍号/默认速度/曲式段落/音域，供前端展示摘要。"""
-    out: dict = {}
-    m = re.search(r"^K:\s*(\S+)", abc, re.M)
-    if m:
-        raw = m.group(1).strip()
-        out["key_raw"] = raw
-        out["key"] = _KEY_MAP.get(raw, _KEY_MAP.get(raw.rstrip("m").strip() + "m", raw))
-    m = re.search(r"^M:\s*(\S+)", abc, re.M)
-    if m:
-        out["meter"] = m.group(1)
-    m = re.search(r"^Q:\s*(?:\"[^\"]*\"|'[^']*')?\s*(?:\d+\s*/\s*\d+)?\s*=\s*(\d+)", abc, re.M)
-    if m:
-        try:
-            out["bpm"] = int(m.group(1))
-        except ValueError:
-            pass
-    # 曲式：取行首 [xxx] 段落标记，去重保序（Verse/Chorus/Bridge…）
-    sections, seen = [], set()
-    for sm in _SECTION_RE.finditer(abc):
-        name = sm.group(1).strip()
-        if name and name.lower() not in seen:
-            seen.add(name.lower())
-            sections.append(name)
-    if sections:
-        out["sections"] = sections
-    # 音域：V: 声部内的音名。ABC 记谱：大写 A-G=中音区，小写=高八度；
-    # 数字跟在音名后是时值（如 C2=四分音符），八度只用 , 和 ' 表示。
-    pitches: list[int] = []
-    in_music = False
-    for line in abc.splitlines():
-        s = line.strip()
-        if s.startswith(("K:", "M:", "Q:", "L:", "T:", "C:", "W:", "w:", "%%", "X:")):
-            continue
-        if s.upper().startswith("V:") or (s and not s[:1].isalpha()):
-            in_music = True
-        if s.upper().startswith("V:"):
-            continue  # 声部头只有 clef/name 等指令，里面的字母不是音（"Vocal" 会被读成 c、a）
-        if in_music:
-            # 和弦记号（"Am7"）里的字母不是唱出来的音，先摘掉再统计音域
-            for pm in re.finditer(r"(_|\^|=)?([A-Ga-g])([',]*)", re.sub(r'"[^"]*"', " ", s)):
-                acc, letter, octs = pm.groups()
-                semi = _PITCH_SEMITONE[letter.upper()] + ({"_": -1, "^": 1}.get(acc, 0))
-                if letter.islower():
-                    semi += 12  # 小写 = 高八度
-                for ch in octs:
-                    semi += 12 if ch == "'" else -12
-                pitches.append(semi)
-    out["note_count"] = len(pitches)
-    if pitches:
-        names_sharp = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-        lo, hi = min(pitches), max(pitches)
-        def name(s: int) -> str:
-            # 基准：未加八度记号的大写音 = 第四八度（C4=中央 C），与 ABC 惯例一致
-            return names_sharp[s % 12] + str(s // 12 + 4)
-        out["range"] = f"{name(lo)} → {name(hi)}（{hi - lo} 个半音）"
-    voices = list(dict.fromkeys(_VOICE_RE.findall(abc)))
-    if voices:
-        out["voices"] = voices
-    tokens = _abc_chord_tokens(abc)
-    chords = bool(tokens) or _abc_has_chords(abc)
-    out["has_chords"] = chords
-    out["chord_count"] = len(tokens)
-    out["cot_suggested"] = "full" if chords else "melody"
-    return out
-
-
 @router.get("/abc/analyze")
 def abc_analyze(abc: str = ""):
     """对任意 ABC 文本做分析（前端输入乐谱框的实时摘要）。"""
@@ -1599,7 +1088,11 @@ def abc_edit(payload: dict):
 
     诚实边界：和弦记号只在"移调"时跟着走（根音挪半音）。调式转换不动原有和弦——
     重新配和声是作曲决策，不是符号变换，做不了就说做不了；想要和弦一起变，
-    先勾「去掉和弦记号」，让模型在 full 路线下按新调重新规划。"""
+    先勾「去掉和弦记号」，让模型在 full 路线下按新调重新规划。
+
+    另一个诚实边界：所选调式操作与谱面本身的调式不匹配时（对已是小调的谱选
+    「→同名大调」），结果必须是原样返回 + mode_noop=true。只改 K: 行而旋律不动，
+    等于把同一串裸音塞进另一个调号里，整曲会凭空升降半音——这比不做更糟。"""
     import abc_edit
     abc = payload.get("abc") or ""
     if not abc.strip():
@@ -1643,7 +1136,8 @@ def abc_edit(payload: dict):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     out = {"ok": True, "abc": res["abc"], "changed": res["changed"], "note": res["note"],
-           "key": res["key"], "analysis": _abc_analyze(res["abc"][:200_000])}
+           "key": res["key"], "mode_noop": bool(res.get("mode_noop")),
+           "analysis": _abc_analyze(res["abc"][:200_000])}
     if payload.get("save"):
         sid = _new_id()
         rec = _score_save(sid, res["abc"], [], title=payload.get("name"))
@@ -1652,211 +1146,15 @@ def abc_edit(payload: dict):
     return out
 
 
-@router.get("/score/status")
-def score_status():
-    """SheetSage2 就绪状态（权重/HF 缓存是否已下载），供前端决定是否显示入口。"""
-    import sheetsage_pt
-    try:
-        ready = bool(sheetsage_pt.mert_cached() or sheetsage_pt.resolve_checkpoint().is_dir())
-    except FileNotFoundError:
-        ready = False  # 权重未下载是新装环境常态，返回未就绪而非 500
-    return {"ready": ready}
-
-
-def _score_run(job_id: str, src: Path, melody_only: bool):
-    """后台线程：执行转谱并写回任务表。"""
-    started = time.time()
-    try:
-        import sheetsage_pt
-        with _SCORE_ENGINE_LOCK:
-            # 归档必须与转谱同一段锁内完成：上游把所有中间产物写死在共享目录
-            # sheetsage2-output/，锁一放的下一次转谱就把这一首的 MIDI/lab 覆盖掉了
-            archive = _score_archive_dir(job_id)
-            abc = sheetsage_pt.transcribe_abc(str(src), melody_only=melody_only,
-                                              archive_dir=str(archive))
-            archived = sorted(p.name for p in archive.iterdir() if p.is_file()) \
-                if archive.is_dir() else []
-        rec = _score_save(job_id, abc, archived)  # 落盘：刷新/重启不丢，可复用回填
-        with _SCORE_LOCK:
-            _SCORE_JOBS[job_id].update({"done": True, "abc": abc,
-                                        "analysis": rec.get("analysis"), "score_id": rec["id"],
-                                        "artifacts": archived})
-        _win_toast(f"{src.stem} 乐谱提取成功",
-                   f"耗时 {int(time.time()-started)//60} 分 {int(time.time()-started)%60} 秒，已入库可回填")
-    except Exception as e:
-        with _SCORE_LOCK:
-            _SCORE_JOBS[job_id].update({"done": True, "error": str(e)[:300]})
-        _win_toast(f"{src.stem} 乐谱提取失败", str(e)[:120])
-    finally:
-        try:
-            src.unlink(missing_ok=True)
-        except Exception:
-            pass
-        # 任务表只保留最近 20 条，防内存累积
-        with _SCORE_LOCK:
-            if len(_SCORE_JOBS) > 20:
-                for k in sorted(_SCORE_JOBS.keys())[:-20]:
-                    _SCORE_JOBS.pop(k, None)
-
-
-@router.post("/score")
-async def score_submit(audio: UploadFile = File(...), melody_only: str = Form("true")):
-    """提交转谱任务，立即返回 job_id（前端轮询 /api/score/result）。"""
-    ext = Path(audio.filename or "in.wav").suffix.lower()
-    if ext not in (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".wma"):
-        ext = ".wav"
-    tmp_dir = ROOT / "tmp" / "score"  # 绝对路径：不依赖进程 CWD
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    job_id = _new_id()
-    src = tmp_dir / f"score_{job_id}{ext}"
-    await _stream_upload_to(audio, src, 200 * 1024 * 1024, "音频")
-    with _SCORE_LOCK:
-        _SCORE_JOBS[job_id] = {"done": False, "ts": time.time()}
-    threading.Thread(target=_score_run, args=(job_id, src, melody_only != "false"), daemon=True).start()
-    return {"job_id": job_id}
-
-
-@router.get("/score/result")
-def score_result(job_id: str):
-    job_id = os.path.basename(job_id.replace("\\", "/"))  # 防路径穿越
-    with _SCORE_LOCK:
-        job = _SCORE_JOBS.get(job_id)
-    if not job:
-        # 持久化回退：服务重启后内存任务表已清空，但已完成的结果仍落盘在 SCORES_DIR
-        p = SCORES_DIR / f"{job_id}.json"
-        if p.is_file():
-            try:
-                rec = json.loads(p.read_text(encoding="utf-8"))
-                return {"done": True, "abc": rec.get("abc"), "error": None,
-                        "analysis": rec.get("analysis"),
-                        "score_id": rec.get("id") or job_id}
-            except Exception:
-                pass
-        raise HTTPException(status_code=404, detail="任务不存在或已过期")
-    return {"done": job["done"], "abc": job.get("abc"), "error": job.get("error"),
-            "analysis": job.get("analysis"),
-            "score_id": job.get("score_id")}
-
-
-@router.get("/scores")
-def scores_list():
-    """已保存乐谱列表（新→旧），供创作页回填复用。"""
-    if not SCORES_DIR.is_dir():
-        return []
-    out = []
-    for p in SCORES_DIR.glob("*.json"):
-        try:
-            rec = json.loads(p.read_text(encoding="utf-8"))
-            an = rec.get("analysis") or {}
-            arts = rec.get("artifacts") or []
-            out.append({"id": rec.get("id"), "time": rec.get("time"),
-                        "title": rec.get("title") or "",
-                        "cot": an.get("cot_suggested"),
-                        "abc_preview": (rec.get("abc") or "")[:120],
-                        # 前端据此决定导出按钮给不给（没有归档的 MIDI 就点了也是错）
-                        "artifacts": arts, "has_midi": any(
-                            str(a).lower().endswith(".mid") for a in arts)})
-        except Exception:
-            continue
-    out.sort(key=lambda r: r.get("id") or "", reverse=True)
-    return out
-
-
-@router.get("/scores/{score_id}")
-def scores_get(score_id: str):
-    # 路径穿越防护：只允许纯文件名（Windows 下反斜杠不分段，必须显式 basename）
-    score_id = os.path.basename(score_id.replace("\\", "/"))
-    p = (SCORES_DIR / f"{score_id}.json").resolve()
-    if p.parent != SCORES_DIR.resolve() or not p.is_file():
-        raise HTTPException(status_code=404, detail="乐谱不存在")
-    return json.loads(p.read_text(encoding="utf-8"))
-
-
-# 乐谱导出（v2.0 §六 P1）：只做 mid 与 abc，MusicXML 本期不做（规划 §十-4）。
-_SCORE_EXPORT_FORMATS = ("mid", "abc")
-# format=mid 时的取用优先级：整曲谱 > 主旋律 > 和弦轨
-_SCORE_MIDI_PREFERRED = ("transcription.mid", "melody.mid", "chords.mid",
-                         "melody_vocal.mid", "melody_instrumental.mid")
-
-
-def _score_record(score_id: str) -> dict:
-    score_id = os.path.basename(str(score_id or "").replace("\\", "/"))
-    p = (SCORES_DIR / f"{score_id}.json").resolve()
-    if p.parent != SCORES_DIR.resolve() or not p.is_file():
-        raise HTTPException(status_code=404, detail="乐谱不存在")
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"乐谱记录读不出来：{e}")
-
-
-@router.get("/scores/{score_id}/export")
-def scores_export(score_id: str, format: str = "mid"):
-    """下载转谱归档产物：format=mid|abc。
-
-    abc 有记录里的字符串兜底（转谱成功就一定有谱）；mid 只认转谱时归档到
-    data/scores/<id>/ 的文件——没归档就明确报错，绝不 200 空体，也不回读
-    sheetsage2-output/ 那个共享目录（里面很可能是别人那首歌的 MIDI）。"""
-    if format not in _SCORE_EXPORT_FORMATS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"不支持的导出格式：{format}（本期只做 {', '.join(_SCORE_EXPORT_FORMATS)}；"
-                   "MusicXML/PDF 谱面不在 v2.0 范围）")
-    rec = _score_record(score_id)
-    sid = os.path.basename(str(rec.get("id") or ""))
-    if format == "abc":
-        archived = _score_archive_dir(sid) / "score.abc"
-        if archived.is_file():
-            return FileResponse(str(archived), media_type="text/plain; charset=utf-8",
-                                filename=f"{sid}.abc")
-        abc = str(rec.get("abc") or "")
-        if not abc.strip():
-            raise HTTPException(status_code=404, detail="该乐谱没有 ABC 内容，无法导出")
-        return Response(content=abc.encode("utf-8"),
-                        media_type="text/plain; charset=utf-8",
-                        headers={"Content-Disposition": f'attachment; filename="{sid}.abc"'})
-    # MIDI：只在归档目录里找，且必须是记录里登记过的那个名字
-    arts = {str(a) for a in (rec.get("artifacts") or [])}
-    archive = _score_archive_dir(sid)
-    if not archive.is_dir() or not arts:
-        raise HTTPException(
-            status_code=404,
-            detail="该乐谱没有归档 MIDI（转谱时未归档，或它早于归档功能上线）——"
-                   "请对该歌曲重新转谱一次，新的转谱会把 MIDI 一起存进 data/scores/<id>/")
-    for name in _SCORE_MIDI_PREFERRED:
-        if name not in arts:
-            continue
-        f = (archive / name).resolve()
-        if f.parent != archive.resolve():
-            raise HTTPException(status_code=400, detail="非法归档路径")
-        if f.is_file() and f.stat().st_size > 0:
-            return FileResponse(str(f), media_type="audio/midi", filename=f"{sid}_{name}")
-    got = sorted(n for n in arts if str(n).lower().endswith(".mid"))
-    raise HTTPException(
-        status_code=404,
-        detail=("归档里没有可用 MIDI（存在但为空的文件不算）；已归档的 MIDI："
-                + (", ".join(got) if got else "无") + "——重新转谱一次可补齐"))
-
-
-@router.delete("/scores/{score_id}")
-def scores_delete(score_id: str):
-    score_id = os.path.basename(score_id.replace("\\", "/"))
-    p = (SCORES_DIR / f"{score_id}.json").resolve()
-    removed: list[str] = []
-    if p.parent == SCORES_DIR.resolve() and p.is_file():
-        p.unlink()
-        removed.append(f"{score_id}.json")
-    # 归档目录跟着乐谱一起走：只删 .json 会把 MIDI/lab/events.json 全留在盘上，
-    # 而且下次同名（不可能，但目录孤儿会一路攒下去）就是几十个没人认领的谱面目录
-    if re.fullmatch(r"\d{8}_\d{6}_[0-9a-f]{8}|[A-Za-z0-9_\-]{1,64}", score_id):
-        d = _score_archive_dir(score_id)
-        try:
-            if d.is_dir() and d.resolve().parent == SCORES_DIR.resolve():
-                shutil.rmtree(str(d))
-                removed.append(d.name + "/")
-        except OSError as e:
-            print(f"[scores] {score_id} 归档目录清理失败（记录已删，目录留着）：{e}", flush=True)
-    return {"ok": True, "removed": removed}
+router.include_router(_score_routes.build_router(
+    root=ROOT,
+    scores_dir=lambda: SCORES_DIR,
+    new_id=_new_id,
+    stream_upload=lambda *a, **k: _stream_upload_to(*a, **k),
+    toast=lambda *a, **k: _win_toast(*a, **k),
+    analyze_abc=_abc_analyze,
+    resolve_server_audio=lambda rid: _server_audio_path(rid),
+))
 
 
 # --------------------------------------------------------------------------- #
@@ -1878,14 +1176,24 @@ def _hist_read() -> list[dict]:
 
 
 def _hist_write(items: list[dict]) -> None:
-    HIST_JSON.write_text(
-        json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    json_store.atomic_write_json(HIST_JSON, items)
 
 
-@router.get("/history")
-def history_list():
-    return {"items": _hist_read()}
+from routers import history as _history_routes  # noqa: E402
+
+router.include_router(_history_routes.build_router(
+    hist_dir=lambda: HIST_DIR,
+    hist_read=_hist_read,
+    hist_write=_hist_write,
+    stream_upload=lambda *a, **k: _stream_upload_to(*a, **k),
+    new_id=_new_id,
+    limit_text=_limit_text,
+    max_style=_MAX_STYLE,
+    max_lyrics=_MAX_LYRICS,
+    max_abc=_MAX_ABC,
+    hist_keep=HIST_KEEP,
+    output_purge=lambda rid: _output_purge(rid),
+))
 
 
 @router.get("/history/active")
@@ -2154,14 +1462,14 @@ async def _stream_upload_to(file: UploadFile, dest: Path, limit: int,
     tmp = dest.with_suffix(dest.suffix + ".part")
     total = 0
     try:
-        with open(tmp, "wb") as fh:
+        async with aiofiles.open(tmp, "wb") as fh:
             while chunk := await file.read(1024 * 1024):
                 total += len(chunk)
                 if total > limit:
                     raise HTTPException(
                         status_code=413,
                         detail=f"{label}超过 {limit // (1024*1024)}MB 上限，请先剪辑或压缩（5 分钟 wav 约 50MB）")
-                fh.write(chunk)
+                await fh.write(chunk)
         if total == 0:
             raise HTTPException(status_code=400, detail="上传音频为空")
         os.replace(tmp, dest)
@@ -2171,105 +1479,6 @@ async def _stream_upload_to(file: UploadFile, dest: Path, limit: int,
         tmp.unlink(missing_ok=True)
         raise
     return total
-
-
-@router.post("/history")
-async def history_add(audio: UploadFile = File(...), meta: str = Form("{}")):
-    HIST_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        m = json.loads(meta or "{}")
-    except Exception:
-        m = {}
-    if not isinstance(m, dict):
-        m = {}
-    now = datetime.now()
-    # 先校验再落盘：顺序反过来会让一次被判 400 的上传在磁盘上留下没人认领的 wav。
-    style_s = _limit_text("曲风描述", m.get("style"), _MAX_STYLE)
-    lyrics_s = _limit_text("歌词", m.get("lyrics"), _MAX_LYRICS)
-    abc_s = _limit_text("乐谱", m.get("abc"), _MAX_ABC)
-    rid = _new_id()
-    fn = rid + ".wav"
-    size = await _stream_upload_to(audio, HIST_DIR / fn, 200 * 1024 * 1024, "音频")
-    item = {
-        "id": rid,
-        "ts": now.isoformat(timespec="seconds"),
-        "file": fn,
-        "bytes": size,
-        # 与生成入口同一套上限和同一条"过长即报错"口径：历史里存的那份词谱，
-        # 必须和当初真正喂给引擎的那份一字不差，否则复用记录=复用半首歌。
-        "style": style_s,
-        "lyrics": lyrics_s,
-        "cot": m.get("cot", "full"),
-        "abc": abc_s,
-        "seed": m.get("seed"),
-        "cfg": m.get("cfg_scale"),
-        "steps": m.get("num_inference_steps"),
-        "sec": m.get("sec"),
-        "seed_actual": m.get("seed_actual"),
-        "model": m.get("model_used", ""),
-    }
-    items = [item] + _hist_read()
-    # 只保留最近 HIST_KEEP 条，同时删除落盘的旧音频
-    for gone in items[HIST_KEEP:]:
-        # 文件名取自 history.json，不能当可信输入直接 unlink：这个库是被本机各写入方
-        # 轮流维护的，一旦某条记录里混进 "../x.wav"（手工编辑、旧版本、或将来某个没
-        # 消毒的写入口），轮转就会删到 HIST_DIR 外面去。先取 basename 再验落点。
-        name = Path(str(gone.get("file") or "")).name
-        if not name:
-            continue
-        victim = (HIST_DIR / name).resolve()
-        try:
-            victim.relative_to(HIST_DIR.resolve())
-        except ValueError:
-            continue
-        victim.unlink(missing_ok=True)
-    items = items[:HIST_KEEP]
-    _hist_write(items)
-    return {"ok": True, "item": item}
-
-
-@router.get("/history/{rid}/audio")
-def history_audio(rid: str):
-    rid = os.path.basename(rid)
-    fn = next((i["file"] for i in _hist_read() if i["id"] == rid), None)
-    if not fn:
-        raise HTTPException(status_code=404, detail="not found")
-    fp = HIST_DIR / fn
-    if not fp.is_file():
-        raise HTTPException(status_code=404, detail="audio file missing")
-    # FileResponse 流式返回 + 自带 Range 支持（审计 P-1：整文件读内存有并发峰值）
-    return FileResponse(str(fp), media_type="audio/wav")
-
-
-@router.delete("/history/clear")
-def history_clear():
-    for i in _hist_read():
-        # 审计 S-3：history.json 可被篡改，file 字段需 containment 校验，防删任意文件
-        fn = os.path.basename(str(i.get("file", "")).replace("\\", "/"))
-        fp = (HIST_DIR / fn).resolve()
-        if fn and fp.parent == HIST_DIR.resolve() and fp.is_file():
-            fp.unlink(missing_ok=True)
-    _hist_write([])
-    return {"ok": True}
-
-
-@router.delete("/history/{rid}")
-def history_delete(rid: str):
-    rid = os.path.basename(rid)
-    items = _hist_read()
-    keep = [i for i in items if i["id"] != rid]
-    if len(keep) == len(items):
-        raise HTTPException(status_code=404, detail="not found")
-    for gone in items:
-        if gone["id"] == rid:
-            # 审计 S-3：与 clear 同样的 containment 校验
-            fn = os.path.basename(str(gone.get("file", "")).replace("\\", "/"))
-            fp = (HIST_DIR / fn).resolve()
-            if fn and fp.parent == HIST_DIR.resolve() and fp.is_file():
-                fp.unlink(missing_ok=True)
-    _output_purge(rid)   # 逐字歌词 .lrc/.elrc 与歌词 txt 落在 output/，不清就是孤儿
-    _hist_write(keep)
-    return {"ok": True}
 
 
 @router.post("/models/switch")
@@ -2614,7 +1823,7 @@ def _lrc_build_async(rid: str) -> None:
 # --------------------------------------------------------------------------- #
 LRC_STANDALONE_DIR = ROOT / "runtime" / "data" / "lrc_jobs"
 _LRC_STANDALONE_LOCK = threading.Lock()
-_LRC_AUDIO_EXTS = {".wav", ".flac", ".ogg", ".mp3", ".m4a"}
+_LRC_AUDIO_EXTS = set(audio_io.AUDIO_EXTS)
 _LRC_MAX_BYTES = 300 * 1024 * 1024
 
 
@@ -2672,112 +1881,23 @@ def _lrc_sa_worker(rid: str, src: Path, lyrics: str, name: str) -> None:
             _lrc_sa_write(rid, {"status": "error", "step": "失败", "error": str(e)[:500]})
 
 
-@router.post("/lrc/start")
-async def lrc_start(file: UploadFile = File(...), lyrics: str = Form(""),
-                    task_name: str = Form("")):
-    text = str(lyrics or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="歌词不能为空")
-    _limit_text("歌词", text, _MAX_LYRICS)
-    if lrc_align_mod is None and lrc_mod is None:
-        raise HTTPException(status_code=400, detail="本机缺少歌词对齐引擎")
-    suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in _LRC_AUDIO_EXTS:
-        raise HTTPException(status_code=400,
-                            detail="音频格式只支持 " + "、".join(sorted(_LRC_AUDIO_EXTS)))
-    rid = _new_id()
-    d = _lrc_sa_dir(rid)
-    d.mkdir(parents=True, exist_ok=True)
-    src = d / ("src" + suffix)
-    size = 0
-    try:
-        with src.open("wb") as fh:
-            while True:
-                chunk = await file.read(1 << 20)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > _LRC_MAX_BYTES:
-                    raise HTTPException(status_code=413, detail="音频超过 300MB 上限")
-                fh.write(chunk)
-    except HTTPException:
-        shutil.rmtree(d, ignore_errors=True)
-        raise
-    except Exception as e:  # noqa: BLE001
-        shutil.rmtree(d, ignore_errors=True)
-        raise HTTPException(status_code=400, detail=f"音频保存失败：{e}") from e
-    name_ = (str(task_name or "").strip() or Path(file.filename or "歌词").stem)[:100]
-    _lrc_sa_write(rid, {"id": rid, "status": "running", "step": "排队对齐",
-                        "name": name_, "file": file.filename or src.name,
-                        "bytes": size, "ts": datetime.now().isoformat(timespec="seconds"),
-                        "_started": time.time()})
-    threading.Thread(target=_lrc_sa_worker, args=(rid, src, text, name_), daemon=True).start()
-    return {"ok": True, "id": rid, "status": "running"}
+from routers import lrc as _lrc_routes  # noqa: E402
 
-
-@router.get("/lrc/list")
-def lrc_list(limit: int = 20):
-    limit = max(1, min(int(limit or 20), 100))
-    items = []
-    if LRC_STANDALONE_DIR.is_dir():
-        for p in LRC_STANDALONE_DIR.iterdir():
-            if p.is_dir():
-                st = _lrc_sa_read(p.name)
-                if st:
-                    st.pop("_started", None)
-                    items.append(st)
-    items.sort(key=lambda x: str(x.get("ts") or ""), reverse=True)
-    return {"items": items[:limit]}
-
-
-def _lrc_sa_artifact(rid: str, fmt: str) -> Path | None:
-    d = _lrc_sa_dir(rid)
-    name = "lyrics.elrc" if fmt == "elrc" else "lyrics.lrc"
-    fp = d / name
-    return fp if fp.is_file() else None
-
-
-@router.get("/lrc/status/{rid}")
-def lrc_status(rid: str):
-    rid = os.path.basename(rid)
-    st = _lrc_sa_read(rid)
-    if not st:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    st = dict(st)
-    st.pop("_started", None)
-    fp = _lrc_sa_artifact(rid, "lrc")
-    if fp and fp.is_file():
-        st["lrc"] = fp.read_text(encoding="utf-8", errors="replace")
-    ep = _lrc_sa_artifact(rid, "elrc")
-    st["has_elrc"] = bool(ep)
-    if ep and ep.is_file():
-        st["elrc"] = ep.read_text(encoding="utf-8", errors="replace")
-    return st
-
-
-@router.get("/lrc/download/{rid}")
-def lrc_download(rid: str, fmt: str = "lrc"):
-    rid = os.path.basename(rid)
-    fmt = "elrc" if (fmt or "").lower() == "elrc" else "lrc"
-    fp = _lrc_sa_artifact(rid, fmt)
-    if not fp:
-        raise HTTPException(status_code=404, detail=f"{fmt} 文件不存在")
-    st = _lrc_sa_read(rid) or {}
-    base = re.sub(r'[\\/:*?"<>|]+', "_", str(st.get("name") or rid))[:80]
-    return FileResponse(str(fp), media_type="text/plain; charset=utf-8",
-                        filename=f"{base}.{fmt}")
-
-
-@router.delete("/lrc/{rid}")
-def lrc_delete(rid: str):
-    rid = os.path.basename(rid)
-    st = _lrc_sa_read(rid)
-    if not st:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    if st.get("status") == "running":
-        raise HTTPException(status_code=409, detail="任务进行中，不能删除")
-    shutil.rmtree(_lrc_sa_dir(rid), ignore_errors=True)
-    return {"ok": True}
+router.include_router(_lrc_routes.build_router(
+    standalone_dir=lambda: LRC_STANDALONE_DIR,
+    new_id=_new_id,
+    sa_dir=_lrc_sa_dir,
+    sa_read=_lrc_sa_read,
+    sa_write=_lrc_sa_write,
+    start_worker=_lrc_sa_worker,
+    audio_exts=_LRC_AUDIO_EXTS,
+    max_bytes=_LRC_MAX_BYTES,
+    max_lyrics=_MAX_LYRICS,
+    limit_text=_limit_text,
+    engine_ready=lambda: lrc_align_mod is not None or lrc_mod is not None,
+    resolve_server_audio=lambda rid: _server_audio_path(rid),
+    server_name=lambda rid: str((_output_read_meta(rid) or {}).get("task_name") or ""),
+))
 
 
 def _lyrics_clean(text: str) -> str:
@@ -2998,18 +2118,110 @@ def _clear_stop_flags() -> None:
 
 
 def _kill_audiocpp_now() -> None:
-    """强杀引擎进程以立即中断推理（连接断开即刻失败），下次生成前 _ensure_backend 会自动重启。"""
+    """强杀本网关拥有的引擎以立即中断推理，下次生成前 _ensure_backend 会自动重启。
+
+    绝不能按镜像名 taskkill /IM：本机可能还开着别的工作台实例，连坐会误杀别人的引擎。
+    """
     def _kill():
         try:
-            if os.name == "nt":
-                subprocess.run(["taskkill", "/IM", "audiocpp_server.exe", "/F"],
-                               capture_output=True,
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            else:
-                subprocess.run(["pkill", "-f", "audiocpp_server"], capture_output=True)
+            _stop_current_engine()
         except Exception:
             pass
     threading.Thread(target=_kill, daemon=True).start()
+
+
+def _tracked_engine_pid() -> int | None:
+    """优先用本进程拉起/接管的引擎句柄；shim 自启的那只挂在 main 上。"""
+    for proc in (_ENGINE_PROC, getattr(main, "_AUDIOCPP_PROC", None)):
+        if proc is None:
+            continue
+        try:
+            if proc.poll() is None:
+                return int(proc.pid)
+        except Exception:
+            continue
+    return None
+
+
+def _pid_listening_on(port: int) -> int | None:
+    """按端口找监听 PID；只认本机地址，避开 portproxy 的 svchost 转发项。"""
+    if os.name != "nt":
+        return None
+    try:
+        out = subprocess.run(
+            ["netstat", "-ano", "-p", "TCP"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).stdout
+    except Exception:
+        return None
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 5 or parts[0].upper() != "TCP" or parts[3].upper() != "LISTENING":
+            continue
+        local = parts[1]
+        if not local.endswith(f":{port}"):
+            continue
+        host = local.rsplit(":", 1)[0].strip("[]")
+        if host not in ("127.0.0.1", "0.0.0.0", "::1", "::"):
+            continue
+        try:
+            pid = int(parts[4])
+        except ValueError:
+            continue
+        if pid > 4:
+            return pid
+    return None
+
+
+def _is_audiocpp_pid(pid: int) -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).stdout.lower()
+    except Exception:
+        return False
+    return "audiocpp_server.exe" in out
+
+
+def _stop_current_engine() -> int | None:
+    """只停本网关拥有的引擎，返回被停掉的 PID（没停到则为 None）。
+
+    句柄丢了才退回按端口找；找到后还要核对镜像名，防止把 portproxy/别的服务误杀。
+    测试进程（YUE2_TESTING=1）没有自己的句柄时一律不动手——跑回归不能连坐开发机的引擎。
+    """
+    pid = _tracked_engine_pid()
+    if pid is None:
+        if os.environ.get("YUE2_TESTING") == "1":
+            return None
+        try:
+            port = int(settings.audiocpp_base_url.rsplit(":", 1)[1].strip("/"))
+        except (ValueError, IndexError):
+            return None
+        candidate = _pid_listening_on(port)
+        pid = candidate if candidate and _is_audiocpp_pid(candidate) else None
+    if pid is None:
+        return None
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        else:
+            os.kill(pid, 9)
+    except Exception:
+        return None
+    return pid
 
 
 def _is_vram_error(msg: str) -> bool:
@@ -3141,30 +2353,62 @@ def _engine_progress(log_path: Path | None = None, seed=None) -> dict | None:
     return result
 
 
+def _run_coro_sync(coro):
+    """在同步 worker 里跑协程；若本线程已有事件循环，就换一个独立线程跑。"""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    box: dict = {}
+
+    def _run():
+        box["value"] = asyncio.run(coro)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join()
+    if "value" not in box:
+        raise RuntimeError("进程内生成线程没有返回结果")
+    return box["value"]
+
+
 def _gen_run_once(payload: dict) -> tuple[int, str, bytes, dict]:
-    """调用一次 /api/music/generate，返回 (status_code, detail, content, headers)。
+    """调用一次生成，返回 (status_code, detail, content, headers)。
+
+    直接走 `main.generate_response`（进程内），不再 HTTP 打自己的 /api/music/generate：
+    少一跳网络、少一个端口依赖，也避免反向请求被本机守卫拦下这类怪故障。
+    两阶段 AR 检查点等逻辑仍只在 main.py 一处，不在网关层复制第二份。
 
     整个调用期间按住"别进睡眠"。2026-10-21 凌晨实测：系统在新式待机里把在跑的 AR
     解码冻住过（02:27 / 03:12 / 04:52 多次），一首歌被拖长、且引擎是靠运气没崩。
     RVC 训练早有 _rvc_keep_awake，出歌这条路原来没有——一跑就是几小时，更需要。
     SetThreadExecutionState 按线程生效：这里开/关都在本线程，不会误关训练那边的声明。
     """
+    from fastapi import HTTPException as _HTTPException
+
     _rvc_keep_awake(True)
     try:
-        with httpx.Client(
-            base_url=f"http://127.0.0.1:{settings.app_port}",
-            timeout=settings.audiocpp_timeout_sec,
-            trust_env=False,
-        ) as client:
-            r = client.post("/api/music/generate", json=payload)
+        async def _call():
+            try:
+                return await main.generate_response(payload)
+            except _HTTPException as exc:
+                return exc
+
+        resp = _run_coro_sync(_call())
+    except Exception as e:  # noqa: BLE001
+        return 0, f"{type(e).__name__}: {e}"[:800], b"", {}
     finally:
         _rvc_keep_awake(False)
-    detail = r.text[:800]
-    try:
-        detail = json.loads(detail).get("detail", detail)
-    except Exception:
-        pass
-    return r.status_code, detail, r.content, dict(r.headers)
+
+    if isinstance(resp, _HTTPException):
+        detail = resp.detail
+        if not isinstance(detail, str):
+            try:
+                detail = json.dumps(detail, ensure_ascii=False)
+            except Exception:
+                detail = str(detail)
+        return int(resp.status_code), str(detail)[:800], b"", {}
+    return resp.status_code, "", bytes(resp.body), dict(resp.headers)
 
 
 def _vram_ok_for_gpu() -> tuple[bool, int | None]:
@@ -3184,10 +2428,9 @@ def _audiocpp_cuda_ready() -> bool:
     约 10 小时。"空闲低"恰恰是我们自己的引擎占的，这种时候该问引擎，不该问空闲量。
     """
     try:
-        r = httpx.get(settings.audiocpp_base_url + "/health", timeout=2.0)
-        if r.status_code != 200:
+        d = engine_client.get_json("/health", 2.0)
+        if d is None:
             return False
-        d = r.json()
     except Exception:
         return False
     models = d.get("models")
@@ -3200,11 +2443,8 @@ def _audiocpp_cuda_ready() -> bool:
 
 def _audiocpp_alive() -> bool:
     """后端健康探测（1s 超时，任何异常视为掉线）。"""
-    try:
-        r = httpx.get(settings.audiocpp_base_url + "/health", timeout=1.0)
-        return r.status_code < 500
-    except Exception:
-        return False
+    code = engine_client.status_code("/health", 1.0)
+    return code is not None and code < 500
 
 
 def _commit_free_mb() -> int | None:
@@ -3284,6 +2524,8 @@ def _task_label(job: dict, fallback: str = "任务") -> str:
 
 def _win_toast(title: str, body: str) -> None:
     """Windows 系统通知（浏览器最小化/后台也可见）。fire-and-forget，失败静默。"""
+    if os.environ.get("YUE2_TESTING") == "1":
+        return
     try:
         # 文本经 base64 传入，杜绝 $/引号/反引号 破坏 PowerShell 表达式
         tb64 = base64.b64encode(title.encode("utf-8")).decode("ascii")
@@ -3782,13 +3024,8 @@ def _wait_backend_ready(timeout: float = 300.0) -> bool:
     """等待 audio.cpp 后端 /health 恢复（模型加载可能要 1-2 分钟）。"""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        try:
-            with httpx.Client(base_url=settings.audiocpp_base_url,
-                              timeout=5.0, trust_env=False) as c:
-                if c.get("/health").status_code == 200:
-                    return True
-        except Exception:
-            pass
+        if engine_client.status_code("/health", 5.0) == 200:
+            return True
         time.sleep(2.0)
     return False
 
@@ -3830,9 +3067,7 @@ def generate_plan_abc(payload: dict):
     def _call() -> dict:
         _ensure_backend()
         with _GPU_SEM:      # 与生成/批量/换声/训练互斥，防止并发打满显存
-            with httpx.Client(base_url=settings.audiocpp_base_url,
-                              timeout=1800.0, trust_env=False) as c:
-                r = c.post("/v1/tasks/run", json=body)
+            r = engine_client.run_task(body, 1800.0)
         if r.status_code >= 400:
             try:
                 detail = r.json()
@@ -4868,6 +4103,50 @@ RVC_MODELS_DIR = RVC_DIR / "assets" / "weights"
 RVC_JOB_DIR = RVC_DIR / "jobs"
 _RVC_LOCK = threading.Lock()
 _RVC_JOBS: dict[str, dict] = {}  # rid -> {id,status,error,sec,model,...}
+
+# 换声待跑队列落盘（issue #9）：_RVC_QUEUE/_RVC_JOBS 都是纯内存，网关被看门狗重启
+# 或用户手动重启后，排队中的换声任务会无声消失——用户提交时明明看到"已加入队列，排在
+# 第 N 位"，回来却发现列表里从来没有这一条，也没有任何报错。这里只落盘"还没到终态"
+# 的条目（pending/running）：done/error/cancelled 一到终态就从文件里摘掉，成品的归档
+# 记录本来就有 output/meta.json 这一份权威来源，不需要队列文件再留一份历史。
+_RVC_QUEUE_STATE = RVC_DIR / "queue_state.json"
+_RVC_STATE_LOCK = threading.Lock()
+
+
+def _rvc_state_read() -> dict:
+    try:
+        return json.loads(_RVC_QUEUE_STATE.read_text(encoding="utf-8"))
+    except Exception:
+        return {"items": []}
+
+
+def _rvc_state_write(state: dict) -> None:
+    json_store.atomic_write_json(_RVC_QUEUE_STATE, state)
+
+
+def _rvc_state_upsert(item: dict) -> None:
+    """按 id 插入或更新一条持久化队列记录（锁内重读、只改自己那一格，同 _batch_store 口径）。"""
+    with _RVC_STATE_LOCK:
+        state = _rvc_state_read()
+        items = state.setdefault("items", [])
+        for i, it in enumerate(items):
+            if it.get("id") == item.get("id"):
+                items[i] = item
+                break
+        else:
+            items.append(item)
+        _rvc_state_write(state)
+
+
+def _rvc_state_remove(rid: str) -> None:
+    """任务到终态（done/error/cancelled）时从持久化队列摘除。"""
+    with _RVC_STATE_LOCK:
+        state = _rvc_state_read()
+        items = state.get("items", [])
+        new_items = [it for it in items if it.get("id") != rid]
+        if len(new_items) != len(items):
+            state["items"] = new_items
+            _rvc_state_write(state)
 
 _RVC_ENV_MISSING = ("换声/训练运行件未安装：缺 py312/python.exe 或 runtime/rvc/infer/cli.py。"
                     "请双击「一键补齐运行件.bat」装好后再试；其余功能不受影响。")
@@ -6734,8 +6013,13 @@ def _rvc_mark_running(rid: str, job: dict) -> None:
         cur = _RVC_JOBS.get(rid) or job
         if cur.get("status") == "running":
             return                      # 分离阶段已经起过表，推理不再重算
-        _RVC_JOBS[rid] = {**cur, "status": "running", "queue_pos": 0, "step": "",
-                          "started_ts": datetime.now().isoformat(timespec="seconds")}
+        new = {**cur, "status": "running", "queue_pos": 0, "step": "",
+               "started_ts": datetime.now().isoformat(timespec="seconds")}
+        _RVC_JOBS[rid] = new
+    # 持久化队列同步标 running：网关若在这之后被杀，_rvc_boot_resume 重启时靠这份
+    # 标记认出"它已经开算了"，从而如实写"服务重启，任务中断"，而不是当成还没排到
+    # 的 pending 又重跑一遍（issue #9）。
+    _rvc_state_upsert({"id": rid, "status": "running", "job": new})
 
 
 def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
@@ -6987,6 +6271,9 @@ def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
                               # 用户于是分不清"电音"是原曲带的还是这个音色加重的
                               "quality": meta.get("quality"),
                               "acc_pitch": acc_info or None}
+        # 终态了，从持久化队列摘除：output/meta.json 才是这条换声结果的权威归档，
+        # queue_state.json 只负责"还没跑完的东西别在重启后丢了"（issue #9）。
+        _rvc_state_remove(rid)
         _win_toast(f"{_task_label({'src_name': (_RVC_JOBS.get(rid) or {}).get('src_name'), 'model': model})} 成功",
                    f"耗时 {meta['sec']} 秒，已保存到 output/")
     except Exception as e:
@@ -6994,6 +6281,7 @@ def _rvc_convert_worker(rid: str, job: dict, src: Path, in_dir: Path,
             _RVC_JOBS[rid] = {**_RVC_JOBS.get(rid, job),
                               "status": "error", "error": str(e)[:500],
                               "sec": _elapsed()}
+        _rvc_state_remove(rid)
         _win_toast(f"{_task_label({'src_name': (_RVC_JOBS.get(rid) or {}).get('src_name'), 'model': model})} 失败",
                    str(e)[:120])
 
@@ -7063,12 +6351,105 @@ def _rvc_submit(args: tuple) -> int:
 
 def _rvc_cancel(rid: str) -> bool:
     """把还没开跑的任务从队列摘掉；已在执行的返回 False——推理进程不可半途终止。"""
+    found = False
     with _RVC_QUEUE_LOCK:
         for i, args in enumerate(_RVC_QUEUE):
             if args[0] == rid:
                 _RVC_QUEUE.pop(i)
-                return True
-    return False
+                found = True
+                break
+    if found:
+        # 取消是终态：持久化队列文件里也要同步摘掉，否则网关下次重启会把它当成
+        # "还没跑完的 pending"重新排回去（issue #9：cancelled 不许复活）。
+        _rvc_state_remove(rid)
+    return found
+
+
+def _rvc_boot_resume() -> dict:
+    """网关启动时把被"进程被杀"打断的换声队列接回（issue #9）。
+
+    - pending：轻量重校验（音色模型还在库、jobs/<rid>/ 下的源文件还在）通过才经
+      _rvc_submit 重新入队；校验不过就落 error 写清原因，绝不静默丢弃——静默丢弃
+      正是这条 issue 要修的原症状。
+    - running：中断时它正在算，推理子进程随网关一起死了，converted.wav 可能是半截，
+      不可信。不自动重跑，只如实落一份"服务重启，任务中断"的 error 记录到 output/
+      meta.json（历史页能看到这次中断，与训练任务同一口径，见 _orphan_cleanup_on_startup
+      第 2 步），然后从队列文件摘除。
+    - 崩溃循环保护与批量队列共用同一套判据（_REVIVE_WINDOW_SEC / _REVIVE_MAX）：
+      同一条目在窗口内被自愈复活超过上限，就停在 error 等人工，不再陪着它一遍遍重启。
+    """
+    state = _rvc_state_read()
+    items = state.get("items", [])
+    if not items:
+        return {"restored": 0, "judged_dead": 0, "interrupted": 0}
+    now_ts = datetime.now()
+    kept: list[dict] = []
+    restored = judged_dead = interrupted = 0
+
+    def _mark_dead(job: dict, error: str) -> None:
+        """判死也要留痕：写进 output/meta.json，历史页能看到这条中断/失败，而不是凭空消失。"""
+        try:
+            _output_write_meta({**job, "status": "error", "error": error[:500],
+                                "kind": "rvc", "sec": 0})
+        except Exception:
+            pass
+
+    for it in items:
+        rid = it.get("id")
+        status = it.get("status")
+        job = it.get("job") or {}
+        if status == "running":
+            interrupted += 1
+            _mark_dead(job, "服务重启，任务中断")
+            continue
+        if status != "pending":
+            # cancelled/done/error 本不该还留在文件里（终态时已 _rvc_state_remove），
+            # 兜底忽略，绝不复活。
+            continue
+        prev = None
+        try:
+            prev = datetime.fromisoformat(str(it.get("revive_ts"))) if it.get("revive_ts") else None
+        except ValueError:
+            prev = None
+        rapid = prev is not None and (now_ts - prev).total_seconds() < _REVIVE_WINDOW_SEC
+        n = int(it.get("revive_n") or 0) + 1 if rapid else 1
+        if n > _REVIVE_MAX:
+            judged_dead += 1
+            _mark_dead(job, f"连续 {n} 次在排队中被服务重启打断（{_REVIVE_WINDOW_SEC} 秒内），"
+                            "已停止自动重排：请手动重新提交这条换声")
+            continue
+        model = job.get("model")
+        if model not in _rvc_models():
+            judged_dead += 1
+            _mark_dead(job, f"服务重启后音色模型「{model}」已不在库中，无法续跑")
+            continue
+        in_dir = RVC_JOB_DIR / rid
+        src = in_dir / str(job.get("src_file") or "src.wav")
+        if not in_dir.is_dir() or not src.is_file():
+            judged_dead += 1
+            _mark_dead(job, "服务重启后任务工作目录或源音频已丢失，无法续跑")
+            continue
+        new_job = {**job, "status": "pending", "step": "排队中", "queue_pos": 0}
+        args = (rid, new_job, src, in_dir, model, job.get("pitch", 0),
+                job.get("f0_method", "rmvpe"), job.get("index_rate", 0.5),
+                job.get("protect", 0.33), job.get("rms_mix_rate", 0.25),
+                bool(job.get("separate_vocal")), bool(job.get("gate")),
+                bool(job.get("strip_harmony")), job.get("filter_radius", 3),
+                job.get("resample_sr", 0))
+        with _RVC_LOCK:
+            _RVC_JOBS[rid] = new_job
+        it["revive_ts"] = now_ts.isoformat(timespec="seconds")
+        it["revive_n"] = n
+        it["job"] = new_job
+        it["status"] = "pending"
+        kept.append(it)
+        _rvc_submit(args)
+        restored += 1
+
+    with _RVC_STATE_LOCK:
+        state["items"] = kept
+        _rvc_state_write(state)
+    return {"restored": restored, "judged_dead": judged_dead, "interrupted": interrupted}
 
 
 def _rvc_live(job: dict) -> dict:
@@ -7169,9 +6550,7 @@ async def rvc_convert(
     # 服务器素材在建目录之前就解析完（含 kind=rvc 与存在性检查）：一次注定失败的调用
     # 不该在 jobs/ 下留下半成品目录——与 POST /api/rvc/convert/{rid} 的入队前拦截同口径。
     server_src = _server_audio_path(spec) if spec else None
-    ext = Path(file.filename or "in.wav").suffix.lower() if file is not None else ".wav"
-    if ext not in (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".wma"):
-        ext = ".wav"
+    ext = audio_io.normalize_suffix(file.filename if file is not None else None, ".wav")
     rid = _new_id()
     in_dir = RVC_JOB_DIR / rid
     in_dir.mkdir(parents=True, exist_ok=True)
@@ -7202,6 +6581,9 @@ async def rvc_convert(
         "src_name": ((file.filename or "") if server_src is None
                      else f"服务器素材 {spec}")[:120],
         "src_size": src.stat().st_size, "src_duration": src_duration,
+        # 源文件在 jobs/<rid>/ 下的真实文件名：上传入口的扩展名随源音频而变（wav/mp3/…），
+        # 落盘队列要靠它才能在重启后原样找回这份源文件，不能写死 "src.wav"（issue #9）。
+        "src_file": src.name,
         # 前端要靠这个字段区分两套耗时口径：含分离的整条比只换声慢一个量级
         "separate_vocal": separate_vocal != "off",
         "gate": gate != "off", "strip_harmony": strip_harmony == "on",
@@ -7214,6 +6596,9 @@ async def rvc_convert(
     pos = _rvc_submit((rid, job, src, in_dir, model, pitch, f0_method, index_rate,
                        protect, rms_mix_rate, separate_vocal != "off", gate != "off",
                        strip_harmony == "on", filter_radius, resample_sr))
+    # 落盘队列跟着入队一起写：网关若在它开跑前被重启，_rvc_boot_resume 靠这份记录
+    # 把它重新排回去，而不是让它无声消失（issue #9）。
+    _rvc_state_upsert({"id": rid, "status": "pending", "job": job})
     # 位次在入队之后才知道；只补排队中的条目——万一已经轮到它开跑，
     # 这里整字典覆盖会把 running 状态打回 pending（队列就假死了）。
     with _RVC_LOCK:
@@ -7291,7 +6676,7 @@ def rvc_audio(rid: str, part: str = ""):
 # --------------------------------------------------------------------------- #
 _SEP_JOBS: dict[str, dict] = {}
 _SEP_LOCK = threading.Lock()
-_SEP_AUDIO_EXTS = (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".wma")
+_SEP_AUDIO_EXTS = audio_io.AUDIO_EXTS
 _SEP_MAX_BYTES = 200 * 1024 * 1024
 # 产物 part 白名单（闭集）：URL 里的 part 只认这三个，别的直接 400
 _SEP_PARTS = {"vocals": ("vocals", "人声-含和声"),
@@ -7559,6 +6944,15 @@ async def audio_separate_submit(audio: UploadFile = File(...),
     except BaseException:
         shutil.rmtree(work, ignore_errors=True)   # 校验/限额没过就别留残目录
         raise
+    # 分离链路里的 soundfile/PyMSS 对 m4a/aac/opus/webm/wma 不保证能读；统一转 WAV。
+    try:
+        wav_src = await run_in_threadpool(lambda: audio_io.ensure_wav(src))
+    except audio_io.AudioFormatError as e:
+        shutil.rmtree(work, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=str(e)[:300]) from e
+    if wav_src != src:
+        src.unlink(missing_ok=True)
+        src = wav_src
     _sep_write({
         "id": rid, "kind": "separate", "status": "pending",
         "ts": datetime.now().isoformat(timespec="seconds"),
@@ -9325,7 +8719,7 @@ def _rvc_train_worker(rid: str, name: str, epochs: int,
             RVC_TRAIN_JOBS[rid] = job
 
 
-_RVC_AUDIO_EXTS = (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".wma")
+_RVC_AUDIO_EXTS = audio_io.AUDIO_EXTS
 _RVC_SCAN_MAX_SEC = 600     # 单文件只分析前 10 分钟：更长的按抽样说话，别把网关内存吃爆
 _RVC_SILENCE_DB = -45.0     # 帧 RMS 低于此视为静音（干声口径）
 
@@ -9689,6 +9083,12 @@ async def rvc_train_check(files: list[UploadFile] | None = File(None),
     return {"ok": True, "id": rid, "report": report}
 
 
+def _dataset_files_stats(ds: Path) -> tuple[int, int]:
+    """素材目录的文件数与总字节；目录遍历可能上千个文件，必须丢线程池。"""
+    files = [p for p in ds.iterdir() if p.is_file()]
+    return len(files), sum(p.stat().st_size for p in files)
+
+
 @router.post("/rvc/train")
 async def rvc_train(
     files: list[UploadFile] | None = File(None),
@@ -9719,7 +9119,10 @@ async def rvc_train(
     if clean_tier not in ("off", "light", "medium"):
         raise HTTPException(status_code=400,
                             detail="净化档位须是 off/light/medium（轻=去混响+轻降噪；中=更重的净化模型）")
-    if RVC_MODELS_DIR.joinpath(f"{name}.pth").is_file() or any(RVC_MODELS_DIR.glob(f"{name}*.pth")):
+    name_taken = await run_in_threadpool(
+        lambda: RVC_MODELS_DIR.joinpath(f"{name}.pth").is_file()
+        or any(RVC_MODELS_DIR.glob(f"{name}*.pth")))
+    if name_taken:
         raise HTTPException(status_code=409, detail=f"音色名已存在：{name}")
     # 在训互斥：已有制作任务排队/运行中时拒绝，防双进程 CUDA OOM 与 logs/<name> 互写
     if _RVC_TRAIN_WORKER is not None and _RVC_TRAIN_WORKER.is_alive():
@@ -9736,10 +9139,9 @@ async def rvc_train(
         if not ds.is_dir():
             raise HTTPException(status_code=404,
                                 detail=f"体检记录不存在：{rid}（素材目录已被清理，请重新上传并体检）")
-        n_samples = sum(1 for p in ds.iterdir() if p.is_file())
+        n_samples, total = await run_in_threadpool(_dataset_files_stats, ds)
         if not n_samples:
             raise HTTPException(status_code=400, detail="体检记录里没有素材文件，请重新上传")
-        total = sum(p.stat().st_size for p in ds.iterdir() if p.is_file())
     elif specs:
         # 标识全部解析完再建目录：写错一条就让整条请求在落任何东西之前失败
         server_srcs = [_server_audio_path(s) for s in specs]
@@ -10083,6 +9485,7 @@ async def rvc_convert_by_rid(rid: str, payload: dict):
         "resample_sr": g_rsr,
         "src_name": f"历史歌曲 {rid}", "src_size": src.stat().st_size,
         "src_duration": src_duration, "src_rid": rid,
+        "src_file": src.name,
         "separate_vocal": bool(g_sep),
         "gate": g_gate,
         "strip_harmony": g_harmony,
@@ -10091,6 +9494,7 @@ async def rvc_convert_by_rid(rid: str, payload: dict):
         _RVC_JOBS[rid2] = job
     pos = _rvc_submit((rid2, job, src, in_dir, model, g_pitch, g_f0, g_index,
                        g_protect, g_rms, g_sep, g_gate, g_harmony, g_fr, g_rsr))
+    _rvc_state_upsert({"id": rid2, "status": "pending", "job": job})
     with _RVC_LOCK:
         cur = _RVC_JOBS.get(rid2)
         if cur is not None and cur.get("status") == "pending":
@@ -10100,170 +9504,50 @@ async def rvc_convert_by_rid(rid: str, payload: dict):
 
 
 # --------------------------------------------------------------------------- #
-# 音色库（参考音频 + 参考文本）
+# 音色库（参考音频 + 参考文本）—— 端点已拆到 src/routers/voices.py
 # --------------------------------------------------------------------------- #
-@router.get("/voices")
-def list_voices():
-    return {"voices": voices.list_voices()}
+from routers.voices import build_router as _build_voices_router  # noqa: E402
 
-
-@router.post("/voices")
-async def save_voice(
-    name: str = Form(...),
-    reference_text: str = Form(""),
-    audio: UploadFile = File(...),
-):
-    suffix = Path(audio.filename or "prompt.wav").suffix.lower() or ".wav"
-    # 走与其它上传同一个流式闸门：以前是 audio.file.read() 整读进内存且无上限，
-    # 一个大文件就能把网关顶到 OOM（还会顺带打死正在跑的训练）。
-    tmp = ROOT / "tmp" / "voices" / (datetime.now().strftime("%H%M%S_") + os.urandom(2).hex() + suffix)
-    try:
-        await _stream_upload_to(audio, tmp, 100 * 1024 * 1024, "音色参考音频")
-        data = await run_in_threadpool(tmp.read_bytes)
-    finally:
-        tmp.unlink(missing_ok=True)
-    # 音色建档要跑嵌入模型推理（秒级到十几秒）。以前直接在 async 处理器里同步跑，
-    # 整个事件循环被冻住 —— 表现是"面板所有请求一起转圈"（health/状态/列表全 pending），
-    # 而不是只有这个请求慢。凡是在 async def 里做重活，一律丢线程池。
-    item = await run_in_threadpool(voices.save_voice, name, reference_text, data, suffix)
-    return {"ok": True, "voice": item}
-
-
-@router.delete("/voices/{voice_id}")
-def delete_voice(voice_id: str):
-    voices.delete_voice(voice_id)
-    return {"ok": True}
-
-
-@router.post("/voices/transcribe")
-async def transcribe_voice(audio: UploadFile = File(...)):
-    """上传参考音频 -> 自动识别歌词/文本（ASR），用于翻唱工作流。"""
-    p = ROOT / "tmp" / "asr"
-    p.mkdir(parents=True, exist_ok=True)
-    ext = Path(audio.filename or "prompt.wav").suffix.lower()
-    if ext not in (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".wma"):
-        ext = ".wav"
-    f = p / (datetime.now().strftime("%H%M%S_") + os.urandom(2).hex() + ext)
-    await _stream_upload_to(audio, f, 200 * 1024 * 1024, "音频")
-    try:
-        # ASR 是分钟级重活，留在事件循环上会把整个网关冻住（见 save_voice 同处注释）
-        text = await run_in_threadpool(
-            lambda: asr.recognize_wav_bytes(f.read_bytes(), audio.filename or "prompt.wav"))
-    finally:
-        f.unlink(missing_ok=True)
-    return {"ok": True, "text": text}
-
-
-@router.post("/voices/denoise")
-async def denoise_voice(audio: UploadFile = File(...)):
-    """上传参考音频 -> 降噪后返回增强音频。"""
-    p = ROOT / "tmp" / "denoise"
-    p.mkdir(parents=True, exist_ok=True)
-    ext = Path(audio.filename or "ref.wav").suffix.lower()
-    if ext not in (".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac", ".wma"):
-        ext = ".wav"
-    f = p / (datetime.now().strftime("%H%M%S_") + os.urandom(2).hex() + ext)
-    await _stream_upload_to(audio, f, 200 * 1024 * 1024, "音频")
-    try:
-        # 净化（UVR 小模型）在 CUDA 上也要十几秒；同步跑在 async 处理器里 = 全网关冻结
-        out = await run_in_threadpool(
-            lambda: denoise.denoise_wav_bytes(f.read_bytes(), audio.filename or "ref.wav"))
-    finally:
-        f.unlink(missing_ok=True)
-    return Response(
-        content=out,
-        media_type="audio/wav",
-        headers={"Content-Disposition": 'attachment; filename="enh.wav"'},
-    )
+router.include_router(_build_voices_router(
+    stream_upload=_stream_upload_to,
+    root=ROOT,
+    voices_mod=voices,
+    asr_mod=asr,
+    denoise_mod=denoise,
+))
 
 
 # --------------------------------------------------------------------------- #
-# 歌词结构自检（前端「检查歌词结构」按钮用）
-# 真源只有一份：src/ai_tools.py::_validate_lyrics_impl —— 那是 AI 工作台工具
-# tool_validate_lyrics 走的同一套规则。页面复制一份 JS 规则迟早和后端漂移，
-# 所以这里只把后端的实现暴露成一个只读接口，不重新判定。
+# 歌词结构自检 + 模板管理 —— 端点已拆到 src/routers/content.py
 # --------------------------------------------------------------------------- #
-@router.post("/lyrics/validate")
-def validate_lyrics_endpoint(payload: dict):
-    from ai_tools import _validate_lyrics_impl
-    lyrics = payload.get("lyrics")
-    if not isinstance(lyrics, str):
-        raise HTTPException(status_code=400, detail="lyrics (string) is required")
-    # 只做长度保护，不截断：截断会让校验结果针对一份并不存在的歌词
-    lyrics = _limit_text("待校验歌词", lyrics, _MAX_LYRICS)
-    return _validate_lyrics_impl(lyrics)
+from routers import content as _content_routes  # noqa: E402
 
-
-# --------------------------------------------------------------------------- #
-# 模板管理（前后端均可使用；此处提供服务端持久化到本地 templates.json）
-# --------------------------------------------------------------------------- #
 _TEMPLATES_FILE = ROOT / "templates.json"
 
 
 def _load_templates() -> list[dict]:
-    if not _TEMPLATES_FILE.exists():
-        return []
-    try:
-        data = json.loads(_TEMPLATES_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
-    except json.JSONDecodeError:
-        return []
+    return _content_routes.load_templates(_TEMPLATES_FILE)
 
 
-@router.get("/templates")
-def list_templates():
-    return {"templates": _load_templates()}
-
-
-@router.post("/templates")
 def save_template(payload: dict):
-    name = (payload.get("name") or "").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="name is required")
-    tpl = {
-        "id": voices._SAFE.sub("-", name) + "-" + str(int(time.time() * 1000)),
-        "name": name[:60],
-        "created_at": datetime.now().isoformat(),
-    }
-    # 全量参数白名单，便于模板一键回填
-    # "asm" = 创作页曲风装配台的六要素配方（语种/曲风/情绪/人声音色/配器/节奏/补充）。
-    # 只存 style 文本的话，回填后六要素格子是空的，用户看不到这句话是怎么拼出来的，
-    # 也没法只改一个维度再装配 —— 所以配方本身要跟着模板走。
-    _CAPS = {"style": _MAX_STYLE, "lyrics": _MAX_LYRICS, "abc": _MAX_ABC}
-    for key in ("style", "lyrics", "cot", "abc", "seed", "cfg", "steps",
-                "gender", "abc_temperature", "abc_top_p", "abc_top_k",
-                "semantic_temperature", "semantic_top_p", "semantic_top_k",
-                "asm", "taskName"):
-        if key in payload and payload[key] is not None:
-            val = payload[key]
-            # 模板的三本文本用与生成入口相同的上限：以前统一砍到 4000 字符，
-            # 比 _MAX_ABC/_MAX_LYRICS 短，回填出的谱会比原稿少一截且不留痕迹。
-            if isinstance(val, str):
-                tpl[key] = _limit_text(f"模板字段 {key}", val, _CAPS.get(key, 4000))
-            elif isinstance(val, dict):
-                # 配方是前端受控的小对象；仍然按长度设上限，避免模板文件被塞成大杂烩
-                if len(json.dumps(val, ensure_ascii=False)) <= 8000:
-                    tpl[key] = val
-            else:
-                tpl[key] = val
-    items = _load_templates()
-    items.insert(0, tpl)
-    _TEMPLATES_FILE.write_text(
-        json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8"
+    """兼容包装：旧测试/调用方直接调 app.save_template，存储逻辑仍只有一份。"""
+    return _content_routes.save_template_impl(
+        payload,
+        templates_file=_TEMPLATES_FILE,
+        limit_text=_limit_text,
+        caps={"style": _MAX_STYLE, "lyrics": _MAX_LYRICS, "abc": _MAX_ABC},
+        voices_mod=voices,
     )
-    return {"ok": True, "template": tpl}
 
 
-@router.delete("/templates/{template_id}")
-def delete_template(template_id: str):
-    items = _load_templates()
-    kept = [t for t in items if t.get("id") != template_id]
-    if len(kept) == len(items):
-        raise HTTPException(status_code=404, detail="template not found")
-    _TEMPLATES_FILE.write_text(
-        json.dumps(kept, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    return {"ok": True}
+router.include_router(_content_routes.build_router(
+    templates_file=lambda: _TEMPLATES_FILE,
+    limit_text=_limit_text,
+    max_style=_MAX_STYLE,
+    max_lyrics=_MAX_LYRICS,
+    max_abc=_MAX_ABC,
+    voices_mod=voices,
+))
 
 
 # 将扩展路由挂载到编译网关
@@ -10438,7 +9722,18 @@ def _orphan_cleanup_on_startup() -> None:
         _batch_boot_resume()
     except Exception:
         pass  # 队列文件损坏时不应阻断启动；前端可手动重试
-    # 4) 音色训练自恢复：上面判为"服务重启，任务中断"且过了三道闸门的任务，这里接回
+    # 4) 换声队列自恢复（issue #9）：放在训练自恢复之前——训练那一步在
+    # auto_resume_enabled 为假时会 return 掉整个函数，若排在其后，换声队列能不能接回
+    # 就会取决于"这次重启前有没有正好在训练"，这是个说不通的耦合。
+    try:
+        rec = _rvc_boot_resume()
+        if rec.get("restored") or rec.get("interrupted") or rec.get("judged_dead"):
+            print(f"[启动自恢复] 换声队列：接回 {rec['restored']} 条排队中的任务，"
+                  f"{rec['interrupted']} 条标记为中断（不自动重跑），"
+                  f"{rec['judged_dead']} 条判死（原因见历史记录）", flush=True)
+    except Exception:
+        pass  # 队列文件损坏时不应阻断启动；前端可手动重新提交
+    # 5) 音色训练自恢复：上面判为"服务重启，任务中断"且过了三道闸门的任务，这里接回
     # 来继续跑。走的是用户点「↻ 续跑」的同一条路（rvc_train_resume）——检查点体检、
     # 死因归档进 last_error、暂停标志复位，一处逻辑不分两条。只接最近的那个：GPU 只有一
     # 张卡，多接等于排队时互相抢闸门。

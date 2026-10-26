@@ -68,16 +68,17 @@ v10.9 再补上 ⑫ 设置与 ⑬ 关于两页。侧栏分三组：
 
 | 组 | 页面 | 这一步在干什么 |
 |:---|:---|:---|
-| **创作** | ① Style 组装 | 点曲风配方与六要素，产出一段符合 YuE2 要求的 Style 文本（不生成、不播放） |
-| | ② 歌词生成歌曲 | Style + 歌词 → 歌曲（含连发与批量入队） |
-| | ③ 参考歌曲提取乐谱 | 上传一首歌 → ABC 乐谱，可编辑、可分析、可入库、可导出 MIDI |
-| | ④ 乐谱生成歌曲 | Style + 乐谱 + 歌词 → 按谱演唱（档位与谱型自动配对） |
+| **创作** | ① Style 设计 | 点曲风配方与六要素，产出一段符合 YuE2 要求的 Style 文本（不生成、不播放） |
+| | ② 歌词+style生成歌曲 | Style + 歌词 → 歌曲（含连发与批量入队） |
+| | ③ 参考歌曲提取乐谱 | 上传或从服务器选一首歌 → ABC 乐谱，可编辑、可分析、可入库、可导出 MIDI |
+| | ④ 乐谱加工 | ABC 移调/调式/速度/去和弦，改完可存库或送去 ⑤ |
+| | ⑤ 歌词+style+乐谱生成歌曲 | Style + 乐谱 + 歌词 → 按谱演唱（档位与谱型自动配对） |
 | | ⑥ 歌词曲风 AI 工作台 | DeepSeek 创作助手，对话与 9 个工具都跑在本机网关里；产出卡给「复制 Style / 复制 歌词」，带去哪儿由你定 |
-| **声音** | ⑤ 音色制作 | 上传素材 → 体检 → 训练 → 逐档试听 → 选点定稿 |
-| | ⑥ 音色库 | 参考音色（YuE2）与换声音色（RVC）两块库 + 导入 + 体检/音域/融合 |
-| | ⑪ 歌曲换声 | 选音色 + 变调 + 参数 → RVC 换声（唯一能保住原旋律原编曲的路线） |
-| | ⑦ 人声伴奏分离 | 上传歌曲 → 人声 / 去和声人声 / 伴奏，可下载、可送 ⑤⑪③ |
-| **系统** | ⑨ 任务管理 | 五类任务（生成/换声/训练/转谱/分离）的统一视图 + 队列 |
+| **声音** | ⑦ 音色制作 | 上传素材 → 体检 → 训练 → 逐档试听 → 选点定稿 |
+| | ⑧ 音色库 | 参考音色（YuE2）与换声音色（RVC）两块库 + 导入 + 体检/音域/融合 |
+| | ⑨ 歌曲换声 | 选音色 + 变调 + 参数 → RVC 换声（唯一能保住原旋律原编曲的路线） |
+| | ⑩ 人声伴奏分离 | 上传歌曲 → 人声 / 去和声人声 / 伴奏，可下载、可送下游 |
+| **系统** | ⑪ 任务管理 | 五类任务（生成/换声/训练/转谱/分离）的统一视图 + 队列 |
 | | ⑫ 设置 | 服务与模型校验、模型档位切换、引擎模式、外观主题色、维护（改配置仍建议改文件） |
 | | ⑬ 关于 | 系统信息（端口 / 目录 / 磁盘显存 / 引擎就绪，只读）+ 出处、许可与诚实声明 |
 | **工具** | ⑭ 歌词时间轴 | 上传歌曲音频 + 粘贴歌词 → LRC / 逐字 eLRC；独立任务，不依赖 VAE、不占生成队列 |
@@ -108,6 +109,12 @@ v10.12 起，**每个页面拿出来都能单独使用**。判据只有一条：
 ⑦ 的服务器素材多选、② 的「最近歌词」（取自 `/api/generate/list`）、⑧ 的音色列表。
 另有一处行为变化要说清：从 ⑪ 或 ② 发起换声，以前会读 ⑨ 页上当前的十个滑杆，
 现在改用**服务端为该音色推荐的官方档**——要自己细调档位，请到 ⑨ 页提交。
+
+**v10.26 起有唯一例外：用户点出来的显式接力。**「送到下一环节」按钮（①→②/⑤、③→④/⑤、
+④→⑤、谱编辑→⑤）允许把本页内容写进目标页，但必须同时满足三条：只在**用户点击**时发生
+（切页签、刷新、轮询一律不触发）；目标页已有**不同内容**时先弹 confirm，用户不点头就不写；
+目标为空或内容相同则直接写入、不打扰。显式接力≠隐式代填——被删掉的那些"点一下就悄悄
+改别的页"仍然被契约测试（`tests/test_page_contract.py`）判红。
 
 ## 🎬 界面预览
 
@@ -152,8 +159,11 @@ v10.12 起，**每个页面拿出来都能单独使用**。判据只有一条：
   人声分离——以前连点两次就是两份 BS-Roformer 同时进显存（分离跑在推理信号量之外），而第二
   条明明在等锁却显示"转换中"、画着进度条。现在分离也占一次 `_GPU_SEM`，队列里的换声不会
   撞上正在生成的歌曲；反过来占着 GPU 的活儿没干完时，排到队的换声仍然老实显示"等待本机空闲"，
-  不会提前给自己挂上"转换中"和进度条。队列在网关进程内，**重启后排队条目会丢**（产物只在
-  算完时落盘，所以不会留下半截文件）。
+  不会提前给自己挂上"转换中"和进度条。队列本身落盘在 `runtime/rvc/queue_state.json`
+  （v10.26 起，issue #9）：**网关重启后排队中（pending）的任务会重新校验再排回**——音色
+  模型与源音频都还在才接回，缺一样就如实判死并在历史页留一条失败记录；正在转换（running）
+  的任务不自动重跑（推理子进程随网关一起死了，半截的 converted.wav 不可信），归档成
+  「服务重启，任务中断」；已取消的任务永不复活。产物只在算完时落盘，不会留下半截文件。
 
 ### 🎨 音色制作（RVC 训练）的四条实测口径
 
@@ -225,17 +235,15 @@ git clone https://github.com/RevolutionLA/YuE2-Music-Workbench.git
 
 > ✅ **纯 clone 现在真的能跑起来了。** 两件最大的门槛已经拆掉：
 >
-> * **闭源网关内核不再是必需**：仓库自带开源兼容网关 `main.py`，它只做内核剩下的那几件事
+> * **闭源网关内核已退役，默认只跑开源 shim**：仓库自带开源兼容网关 `main.py`，它只做内核剩下的那几件事
 >   （提供 `app`/`settings`、`GET /api/health`、`POST /api/music/generate`、导入时拉起引擎）。
 >   13 页 UI 与 AI 写词本来就由开源层直出（`app.py` 的 `_INDEX_ROUTE` 覆盖了 `/`，
 >   `static/index.html` 是自包含单文件），所以不依赖 `main.cp312-win_amd64.pyd`。
->   如果你手上有那份 `.pyd`，把它放到仓库根即可——`import main` 会优先选中编译内核（同名同位置）。
->   **但两条路的能力不一样**：pyd 是编译版，**不**启用开源网关的"按 spec 白名单筛字段 + 丢弃的键写日志"，
->   于是同一版本两台机器可能内核不同、行为也不同。现在这件事在启动日志
->   （`[startup] 网关内核：pyd|shim（路径）—— …`）和 ⑬ 关于页的 `gateway_kernel` 里都能直接看见；
->   要切到开源网关，把同目录的 `main.cp312-win_amd64.pyd` 移走（反之想继续用编译版就留着它）。
+>   **不要再把 `.pyd` 放进仓库根**：它会让生产与测试走两条不同的代码路径（pyd 只有 23 个可转发字段，
+>   未知键静默丢弃），同一个版本在两台机器上行为不同。需要回滚时把旧 pyd 放到 `runtime/backup/`，
+>   并显式设 `YUE2_ALLOW_PYD=1`；默认配置下 `tests/test_kernel_hygiene.py` 会把"仓库根出现 pyd"判红。
 >   兼容性用例在 `tests/test_shim_main.py`（含"把 `request.options` 那层摘掉立刻变红"的变异验证）。
-> * **依赖清单进了仓库**：根 `requirements.txt` 是实测跑绿 756 条用例的那一对版本
+> * **依赖清单进了仓库**：根 `requirements.txt` 是实测跑绿 874 条用例的那一对版本
 >   （fastapi 0.115.12 + starlette 0.46.2；最新 FastAPI 会把"空 filename 的 file part"
 >   当成合法上传收下并真的入队跑 GPU，回归用例锁的是当场 422）。**注意这份文件必须存成
 >   UTF-8 with BOM**，否则中文 Windows 上 pip 按 cp936 解它，连清单都读不进来。
@@ -317,22 +325,29 @@ py312\python.exe scripts\download_models.py --q8     :: q8_0（约4GB，质量�
 |---|---|
 | `app.py` | 网关扩展路由：任务托管 / 批量排队 / 终止 / 模型切换 / 换声 / 歌词对齐 / 本机接口守卫 |
 | `main.py` | **开源兼容网关**（本仓库自带）：顶替闭源 `main.cp312-win_amd64.pyd` 剩下的那几件事——`app`/`settings`、`/api/health`、`/api/music/generate`、导入时拉起引擎。参数白名单运行时读 `cpp/model_specs/yue2.json`，不手抄常量；用例在 `tests/test_shim_main.py` |
-| `main.cp312-win_amd64.pyd` | 编译网关内核（不可改、不入库）。有它就优先用它（同名同位置）；没有也能靠上面的 `main.py` 跑起来 |
-| `requirements.txt` | 跑绿 756 条用例的那套依赖版本（**必须 UTF-8 with BOM**，见下方编码规矩） |
+| `main.cp312-win_amd64.pyd` | 编译网关内核——**已退役**：默认只跑 `main.py`，旧 pyd 放 `runtime/backup/` 回滚（需显式 `YUE2_ALLOW_PYD=1`） |
+| `requirements.txt` | 跑绿 874 条用例的那套依赖版本（**必须 UTF-8 with BOM**，见下方编码规矩） |
 | `server.json.example` | audio.cpp 引擎配置模板；`scripts/setup_runtime.py` 按硬件把它写成 `cpp/server.json`（`busy_timeout_ms` 必须是 0，否则引擎 5 分钟 busy 守卫会掐断长跑） |
 | `audiocpp.py` | 内核运行期真正依赖的推理引擎适配层（可改，改引擎调用参数在这里） |
 | `src/lrc_align.py` | 歌词强制对齐引擎（字/词级时间戳 → LRC + 增强 ELRC 卡拉OK逐字高亮） |
 | `src/ports.py` | 端口唯一真源（ports.json 读取 + 环境变量覆盖 + 缺失回退） |
 | `ports.json` | 服务端口配置（改端口只改这一处） |
-| `static/` | 工作台前端（14 个页面，明暗双主题，刷新不丢状态） |
+| `web/` | **前端源文件**：`index.html` 模板 + `app.css` + `app.js`；改完运行 `scripts/build_ui.py` 生成 `static/index.html` |
+| `static/` | 工作台前端**生成物**（14 个页面，明暗双主题，单文件自包含，网关不依赖 StaticFiles） |
 | `dsh-plugin/` | 曾经是 UI 入口与鉴权宿主；v10.14 起入口已收回 7863，这一坨只剩局域网兼容与历史包袱，正在摘除 |
 | `scripts/` | 启动/停止/一键补齐运行件/模型下载（单连接与多路分块两条）/dsh 工作台启动脚本、ASR 与降噪辅助 |
 | `watchdog.py` | 看门狗（网关 + 工作台双进程假死自愈，无窗口静默运行） |
 | `cpp/` | YuE2 GGUF 推理引擎（`audiocpp_server.exe` + `server.json`）与模型目录；**引擎与模型都不入库**，GGUF 模型可用 `scripts/download_models.py` 自动下载 |
 | `checkpoints/` | SheetSage2 乐谱提取（含上游许可；纯旋律谱 / 旋律+和弦完整谱两档） |
-| `tests/` | 回归用例（`py312\python.exe -m pytest tests -q`，纯本机文件/参数校验，不跑任何 GPU 计算） |
+| `tests/` | 回归用例（`py312\python.exe -m unittest discover -s tests -t .`；契约/状态机为主，不跑 GPU 计算） |
 | `LICENSE` | 分层许可声明：自研代码随上游 CC BY-NC 4.0，含第三方随仓资产清单 |
 | `pic/` | README 截图 |
+
+> 🧱 **改前端只改 `web/`**：`web/index.html` 是模板（含 `/*__APP_CSS__*/`、`/*__APP_JS__*/` 两个占位），
+> 样式与脚本分别在 `web/app.css`、`web/app.js`。改完运行
+> `py312\python.exe scripts\build_ui.py` 生成 `static/index.html`；`--check` 会逐字节比对，
+> CI 与发版清单都用它把关。**运行时仍然是单文件自包含**，不需要 StaticFiles，也不会多一次请求。
+> 直接改 `static/index.html` 会在下一次构建时被覆盖。
 
 ## 🧾 编码规矩（改脚本前先看，都是踩出来的）
 
@@ -399,9 +414,22 @@ py312\python.exe scripts\download_models.py --q8     :: q8_0（约4GB，质量�
 | `v10.14.0` | **入口收回网关 + AI 对话原生化**：上游把 dsh 门票打码导致双击启动连 24 轮 401，于是 `gateway_serve_ui=True`、工作台入口变为 `http://127.0.0.1:7863/`；⑥ 的 iframe 换成原生对话（`/api/ai/chat` → 网关内 `ai_lab.chat_turn`，不再 spawn node），启动脚本删掉验票逻辑；顺手修掉「会话 id 不回传导致每句都开新会话」；dsh 仍在（局域网/看门狗），摘除进行中 |
 **发版清单**（打 tag 前逐项过，缺一条就只能说"代码已改"，不能说"已生效"）：
 
-1. `py312\python.exe -m unittest discover -s tests` 全绿（当前 **756 条**；而且必须是在**装好运行件的机器**上跑——
-   `cpp/`、`runtime/`、`py312/` 都不入库，干净 clone 上会得到一批 `skipped` 而不是红，机制见下方「怎么跑回归测试」）；
-2. **重启网关后跑冒烟**——常驻进程不重启看不到新逻辑。冒烟三件：① 追加排队（新条目并入同一 `queue_id`，总数只增不减）；② 停止/取消（pending 转 `cancelled`，正在算的那条**不被轮询代写**"服务重启"）；③ 输入超上限回 400、跨站 Origin 回 403；
+1. `py312\python.exe -m unittest discover -s tests -t .` 全绿（当前 **874 条**；而且必须是在**装好运行件的机器**上跑——
+   `cpp/`、`runtime/`、`py312/` 都不入库，干净 clone 上会得到一批 `skipped` 而不是红，机制见下方「怎么跑回归测试」）。
+   `-t .` 让 `tests/` 成为包，`tests/_sandbox.py` 会先禁用引擎自启（`YUE2_NO_ENGINE_AUTOSTART=1`），
+   并在退出时还原被测试误写的真实 `cpp/server.json` / sidecar；跑完看到 `[test-sandbox] 已还原…` 就说明有用例漏了重定向。
+   测试环境对**有效生成请求**直接回 503（`main.generate_response` 顶部硬闸），防止手滑真跑 GPU；
+   需要真引擎的用例显式设 `YUE2_ALLOW_REAL_ENGINE=1`。
+   - 前端源文件同步：`py312\python.exe scripts\build_ui.py --check`（CI 同款硬门禁）
+   - 页面巡检：先启动工作台，再 `node scripts/ui_sweep.js --launch`（14 页可见性/横向溢出/JS 异常，
+     报告与截图在 `runtime/data/ui-sweep/<时间戳>/`；无引擎也能跑）
+   - 发布包卫生：在**干净导出目录**跑 `py312\python.exe scripts\check_release_hygiene.py --release`
+     （开发机直接跑会因 `secrets\local_env.bat` 存在而判红，这是预期行为）
+   - 打源码包：`py312\python.exe scripts\build_release.py --out dist`
+     （脚本按工作树收集文件、内含卫生检查，产出 `yue2-workbench-v<版本>.zip` 与 `.sha256`）
+2. **重启网关后跑真引擎冒烟**——常驻进程不重启看不到新逻辑：
+   `py312\python.exe scripts\smoke_e2e.py --gen`（极小 4 步生成，确认 shim→引擎→WAV 整链）；
+   显存 ≥8GB 再加 `--score`（mp3 出谱）；`--lrc` 用服务器上带歌词的歌跑一遍真实对齐（先跑过 LRC 再出谱也能验缓存隔离）；`--kernel` 只查内核与引擎状态。冒烟三件另外手测：① 追加排队（新条目并入同一 `queue_id`，总数只增不减）；② 停止/取消（pending 转 `cancelled`，正在算的那条**不被轮询代写**"服务重启"）；③ 输入超上限回 400、跨站 Origin 回 403；
 3. README 中英文与 `docs/PROMOTION.md` 的行为描述同步（本项目规矩：改行为必改 README）；
 4. `git tag -a v<主>.<日>.<序> -m "..."` 后推标签：`git -c http.proxy=http://127.0.0.1:7890 push origin --tags`。
 

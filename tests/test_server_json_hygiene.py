@@ -213,10 +213,11 @@ class GatewayKernelIsIdentifiable(unittest.TestCase):
 
     def test_system_info_exposes_the_kernel(self):
         """⑬ 必须能看到——只在启动日志打一行，用户依然分不清两台机器。"""
-        src = Path(app.__file__).read_text(encoding="utf-8", errors="replace")
-        i = src.index("def system_info()")
-        body = src[i:i + 900]
-        self.assertIn('"gateway_kernel": _gateway_kernel()', body)
+        src = (ROOT / "src" / "routers" / "system.py").read_text(
+            encoding="utf-8", errors="replace")
+        i = src.index("def system_info(")
+        body = src[i:i + 1500]
+        self.assertIn('"gateway_kernel": host._gateway_kernel()', body)
 
     def test_startup_prints_the_kernel(self):
         src = Path(app.__file__).read_text(encoding="utf-8", errors="replace")

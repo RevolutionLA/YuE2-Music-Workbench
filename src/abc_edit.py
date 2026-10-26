@@ -81,8 +81,11 @@ def _parse_key(k: str) -> tuple[int, bool, int]:
         pc = (pc + 1) % 12
     elif acc == "b":
         pc = (pc - 1) % 12
-    # 小调判定：m / min / minor（注意 "maj" 不能被当成 minor）
-    minor = bool(re.match(r"^(m|min|minor)\b", rest)) or rest.startswith("m") and not rest.startswith("maj")
+    # 小调判定：只认真正的 m / min / minor 后缀。
+    # 旧写法 `rest.startswith("m") and not rest.startswith("maj")` 会把
+    # `K:Gmix`（混合利底亚，三级是大三度）判成 G 小调，调式转换于是错动 3/6/7 级；
+    # `\b` 让 "m" 不能匹配 "mix"/"maj"，只匹配独立的 m。
+    minor = bool(re.match(r"^(m|min|minor)\b", rest))
     base = f"{letter}{acc}"
     sig = _KEY_SIG.get(base)
     if sig is None:
@@ -98,17 +101,36 @@ def _key_name(pc: int, minor: bool, pref: int) -> str:
 
 
 def _sig_of(tonic: int, minor: bool) -> int:
-    """调号升降数（正=升、负=降）。小调的调号等于它关系大调的调号，所以要 +3 再查表。"""
+    """调号升降数（正=升、负=降）。小调的调号等于它关系大调的调号，所以要 +3 再查表。
+
+    等音等价时取**升降号更少**的那个：C+1 是 Db（5 个降号）而不是 C#（7 个升号），
+    G#/Ab、D#/Eb、A#/Bb 同理。旧实现按字典顺序取第一个，于是 +1 一律写成 C#，
+    谱面 7 个升号，看着就像错调（同样的音高，读起来完全是另一回事）。"""
     ref = (tonic + 3) % 12 if minor else tonic % 12
+    best: Optional[int] = None
     for _name, (pcv, sgv) in _KEY_SIG.items():
-        if pcv == ref:
-            return sgv
-    return 0
+        if pcv == ref and (best is None or abs(sgv) < abs(best)):
+            best = sgv
+    return 0 if best is None else best
 
 
-def _pref_of(tonic: int, minor: bool) -> int:
-    """拼写倾向：降号调写 b、其余写 #。决定 Eb 而不是 D#、Ab 而不是 G#。"""
-    return -1 if _sig_of(tonic, minor) < 0 else 1
+def _declared_sig(key_text: str, tonic: int, minor: bool) -> int:
+    """按 K: 行**声明的写法**取调号（不做等音改选）。
+
+    输入侧必须这样算：谱面写 K:C# 就是 7 个升号，不能因为"Db 更省事"就按 5 个降号
+    去读，否则每个受调号影响的音都差半音——那正是这次要修的那类 bug。
+    只有写不出升降倾向（如 K:C）时才退回取最省的那个。"""
+    head = (key_text or "").strip()[:3]
+    acc = "#" if head[:2].endswith("#") else ("b" if head[:2].endswith("b") else "")
+    ref = (tonic + 3) % 12 if minor else tonic % 12
+    cands = [v[1] for v in _KEY_SIG.values() if v[0] == ref]
+    if not cands:
+        return 0
+    if acc == "#":
+        return max(cands)              # 声明的升号调
+    if acc == "b":
+        return min(cands)              # 声明的降号调
+    return min(cands, key=abs)          # 没写变音：取最省的那个
 
 
 # 升号 / 降号在五度圈上的字母顺序（调号按此累加）
@@ -131,21 +153,29 @@ def _key_accidentals(sig: int) -> dict[str, int]:
     return acc
 
 
+def _accidental_value(pre: str) -> Optional[int]:
+    """ABC 前缀变音 → 半音偏移；空前缀返回 None（表示沿用当前状态）。"""
+    if not pre:
+        return None
+    if pre == "=":
+        return 0
+    if pre in ("^", "^^"):
+        return len(pre)
+    if pre in ("_", "__"):
+        return -len(pre)
+    raise ValueError(f"不支持的 ABC 变音记号：{pre!r}")
+
+
 def _actual_pc(letter_upper: str, pre: str,
                key_acc: dict[str, int]) -> int:
     """字母在调号下的实际半音值（含显式记号与调号自动升降）。
-    ABC 变音记号只有前缀：^ 升 / _ 降 / = 还原；显式前缀覆盖调号，
-    无前缀才用调号自动升降。
-    （不存在"后缀 #b 变音"——`bb` 是 B B 两个音、`Bb` 是 B b 差八度两个音，
-    旧实现把后跟的 b 音吞成降号记号，丢音又错音高，2026-10-10 修。）"""
-    base = _PC[letter_upper]
-    if pre == "^":
-        return base + 1
-    if pre == "_":
-        return base - 1
-    if pre == "=":
-        return base
-    return base + key_acc.get(letter_upper, 0)
+    ABC 变音记号只有前缀：^/^^ 升、_/__ 降、= 还原；显式前缀覆盖调号，
+    无前缀才用调用方给出的当前变音状态。真正的逐音符加工还必须把上一音
+    留下的“小节内变音”合进 key_acc，不能只传调号（见 transform）。
+    """
+    explicit = _accidental_value(pre)
+    return _PC[letter_upper] + (key_acc.get(letter_upper, 0)
+                                if explicit is None else explicit)
 
 
 def _spell_in_key(target_pc: int, key_acc: dict[str, int],
@@ -187,7 +217,7 @@ _TOKEN = re.compile(
     r'|%[^\n]*'                     # 行注释
     r'|![^!]*!'                     # 装饰音 !trill!
     r'|\[[A-Za-z0-9#bn\' ,_^=|:]*\]'  # 连音块 [CEG] / [C E G]
-    r'|[_=^]?[A-Ga-g][\',]*'        # 音符（变音只认前缀 ^_=）
+    r'|[_=^]{0,2}[A-Ga-g][\',]*'    # 音符（变音只认前缀 ^_=，支持 ^^/__ 双重）
     r'|z[0-9/]*'                    # 休止
     r'|.',                          # 其他一律原样
     re.S,
@@ -230,47 +260,27 @@ def _set_header(headers: list[str], tag: str, value: str) -> list[str]:
 
 # ---------------------------------------------------------------- 变换内核
 
-def _shift_note(tok: str, delta: int, pref: int,
-                key_acc: dict[str, int] | None = None,
-                new_key_acc: dict[str, int] | None = None) -> str:
-    """单个音符 token 移调 delta 半音。
-
-    key_acc：原调号字母偏移；不传则按 C 大调（旧行为，仅给无调号场景兜底）。
-    new_key_acc：新调号字母偏移，移调后用它把音高写成调号自然记号（干净谱面）；
-                 不传则退回纯 pref 拼写（旧测试兼容）。
-
-    关键：算音高时必须把调号的自动升降叠进去——SheetSage2 输出的谱面不带显式升降号，
-    全靠 K: 行决定 F/C/G/D 等是不是升半音。漏叠会让 K:E 的 f（实为 F#）被当成 F，
-    移调后整条旋律偏低半音，听感上"调都变了"。
-    """
-    m = re.match(r"^([_=^]?)([A-Ga-g])([\',]*)$", tok)
-    if not m:
-        return tok
-    pre, letter, ticks = m.groups()
-    up = letter.islower()
-    pc = _actual_pc(letter.upper(), pre, key_acc or {})
-    octave = (1 if up else 0) + ticks.count("'") - ticks.count(",")
-    total = octave * 12 + pc + delta
-    o2, pc2 = divmod(total, 12)
-    l2, a2 = (_spell_in_key(pc2, new_key_acc, pref)
-              if new_key_acc is not None else _spell(pc2, pref))
-    return _render(l2, a2, o2)
-
-
 def _shift_chord(tok: str, delta: int, pref: int) -> str:
-    """和弦记号移调：只动根音字母，后缀（m7 / maj7 / sus4…）原样保留。"""
+    """和弦记号移调：根音与斜杠低音**一起**移，后缀（m7 / maj7 / sus4…）原样保留。
+
+    低音不移会出现"旋律整体走了、和声低音还留在原调"的错位
+    （"D7/C" +5 必须是 "G7/F"，旧实现只移根音产出 "G7/C"，生成必然打架）。
+    """
     inner = tok[1:-1]
-    m = re.match(r"^([A-G])([#b]?)", inner)
+    m = re.match(r"^([A-G][#b]?)([^/]*)(?:/([A-G][#b]?))?$", inner)
     if not m:
         return tok
-    letter, acc = m.groups()
-    pc = _PC[letter]
-    if acc == "#":
-        pc += 1
-    elif acc == "b":
-        pc -= 1
-    l2, a2 = _spell((pc + delta) % 12, pref)
-    return '"' + l2 + a2 + inner[m.end():] + '"'
+    root, qual, bass = m.groups()
+
+    def _mv(s: str) -> str:
+        pc = _PC[s[0]] + (1 if s.endswith("#") else -1 if s.endswith("b") else 0)
+        l, a = _spell((pc + delta) % 12, pref)
+        return l + a
+
+    new = _mv(root) + (qual or "")
+    if bass:
+        new += "/" + _mv(bass)
+    return '"' + new + '"'
 
 
 # 平行大小调要动的音级：大调降 3/6/7 度 → 自然小调；小调升 3/6/7 度 → 自然大调
@@ -278,63 +288,65 @@ _MAJOR_DEGREES = (4, 9, 11)     # 大三 / 大六 / 大七
 _MINOR_DEGREES = (3, 8, 10)     # 小三 / 小六 / 小七
 
 
-def _modal_note(tok: str, tonic: int, to_minor: bool, pref: int,
-                key_acc: dict[str, int] | None = None,
-                new_key_acc: dict[str, int] | None = None) -> str:
-    """平行大小调转换：按相对主音的音级升降，保持八度位置不变。
-
-    tonic 为实际主音半音值（_parse_key 已含本身变音记号）。
-    key_acc 原调号偏移、new_key_acc 新调号偏移：与 _shift_note 同理——
-    不叠调号会算错音级（G# 在 E 大调是 3 级，不叠调号会被当成 G 的 2 级），
-    并把目标音写回新调号的自然字母而不是显式升降号。
-    """
-    m = re.match(r"^([_=^]?)([A-Ga-g])([\',]*)$", tok)
-    if not m:
-        return tok
-    pre, letter, ticks = m.groups()
-    up = letter.islower()
-    pc = _actual_pc(letter.upper(), pre, key_acc or {})
-    octave = (1 if up else 0) + ticks.count("'") - ticks.count(",")
-    deg = (pc - tonic) % 12
-    if to_minor and deg in _MAJOR_DEGREES:
-        pc -= 1
-    elif not to_minor and deg in _MINOR_DEGREES:
-        pc += 1
-    total = octave * 12 + pc
-    o2, pc2 = divmod(total, 12)
-    l2, a2 = (_spell_in_key(pc2, new_key_acc, pref)
-              if new_key_acc is not None else _spell(pc2, pref))
-    return _render(l2, a2, o2)
-
-
 def _walk_body(body: str, fn_note, fn_chord, strip_chords: bool,
-               inline_key: Optional[str] = None) -> str:
+               fn_key=None,
+               measure: Optional[dict] = None) -> str:
     """正文变换。行级保护在 token 逻辑之前：inline 字段行（V:/K:/M:/L:/Q:/w: …）
     整行透传——`V: Vocal` 的 Vocal 是声部名不是音符，SheetSage2 每段都写，
-    被移调成 `V: Vofd'l` 后声部路由全乱。inline K: 行（谱中间变调）按
-    inline_key 重写为新调号；不给 inline_key 就原样透传（SheetSage2 不产
-    中途变调，这里只是兜底不破坏）。"""
+    被移调成 `V: Vofd'l` 后声部路由全乱。
+
+    谱中间的 `K:` 行（中途变调）走 fn_key：那一段必须按它**自己的调**算音高与调号。
+    旧实现把每一处 inline K: 都改写成文件头的新调名，一段 K:G→K:D 的曲子移调后
+    两个调号变成同一个，后半段整段跑调（真实语料里暂时没有中途变调，纯属兜底，
+    但错了就是整段错，所以按正确语义实现）。不传 fn_key 就原样透传。
+
+    measure：小节内变音状态 {"in":…, "out":…}，由调用方的闭包持有。
+    ABC 规则：显式变音记号（^/_/=/^^/__）一直有效到本小节结束，其后
+    **同字母同八度**的裸音全部继承它；小节线处清零。所以含 | 的 token（|、||、|]、
+    :|、[| …）和 inline 字段行都要清零状态；注释行里的 | 不算小节线。
+    漏掉这个状态是"逐音只看调号"的旧实现差半音的根因。"""
+    def _reset():
+        if measure is not None:
+            measure["in"].clear()
+            measure["out"].clear()
+
     out = []
     lines = body.split("\n")
     for idx, line in enumerate(lines):
         stripped = line.strip()
         if _HEADER.match(stripped):
-            out.append("K: " + inline_key
-                       if (inline_key and stripped.startswith("K:")) else line)
+            _reset()
+            m = re.match(r"^K:\s*(.*)$", stripped, re.S)
+            if fn_key is not None and m:
+                out.append("K: " + fn_key(m.group(1).strip()))
+            else:
+                out.append(line)
         else:
             for tok in _TOKEN.findall(line):
                 if strip_chords and tok.startswith('"') and tok.endswith('"') and len(tok) >= 2:
                     continue
                 if tok.startswith('"'):
                     out.append(fn_chord(tok))
+                elif re.match(r"^\[[A-Za-z]:", tok):
+                    # 行内字段（ABC 标准的 [K:G] 写法）：整块透传，只有 K: 要跟着变调。
+                    # 不拦住它的话会被下面"连音块"逻辑当成音符块，把调名里的字母
+                    # 当音符移调——K:C 升 1 半音本该写 [K:Db]，实际会写成一个非法调名。
+                    mf = re.match(r"^\[([A-Za-z]):\s*([^\]]*)\]$", tok)
+                    if mf and mf.group(1) in ("K", "k") and fn_key is not None:
+                        out.append("[K:" + fn_key(mf.group(2).strip()) + "]")
+                    else:
+                        out.append(tok)
                 elif re.match(r"^\[.*\]$", tok, re.S) and re.search(r"[A-Ga-g]", tok):
-                    # 连音块：括号留着，里面的音逐个移
+                    # 连音块：括号留着，里面的音逐个移（共享小节变音状态）
                     inner = tok[1:-1]
-                    out.append("[" + _walk_body(inner, fn_note, fn_chord, False) + "]")
-                elif re.match(r"^([_=^]?[A-Ga-g][\',]*)$", tok):
+                    out.append("[" + _walk_body(inner, fn_note, fn_chord, False,
+                                                None, measure) + "]")
+                elif re.match(r"^([_=^]{0,2}[A-Ga-g][\',]*)$", tok):
                     out.append(fn_note(tok))
                 else:
                     out.append(tok)
+                    if "|" in tok and not tok.startswith("%"):
+                        _reset()
         if idx < len(lines) - 1:
             out.append("\n")
     return "".join(out)
@@ -418,7 +430,11 @@ def _legacy_corruption(abc_text: str) -> list:
             problems.append(f"声部名 {name!r} 不在头部声明的 {sorted(declared)} 里，疑似被旧版移调破坏")
     # ② 音符后缀 # 变音记号：标准 ABC 的 # 只出现在引号和弦名里（如 "F#7"），
     #    音符后紧跟 # 一定是旧版 _render 的后缀写法残留（如 c#'2）。合并成一条。
-    bare = _QUOTED_STR.sub('""', re.sub(r"%[^\n]*", "", body))
+    #    正文里的字段行（中途变调 K: F#、行内 [K:Bb]）必须先摘掉：
+    #    调名里的 # 是合法的，不摘会把"谱子带了中途变调"误判成坏谱。
+    music = "\n".join(l for l in body_lines if not _HEADER.match(l.strip()))
+    music = re.sub(r"\[[A-Za-z]:[^\]]*\]", "", music)      # 行内字段 [K:G]
+    bare = _QUOTED_STR.sub('""', re.sub(r"%[^\n]*", "", music))
     n_sharp = len(re.findall(r"[_=^]?[A-Ga-g][\',]*#", bare))
     if n_sharp:
         problems.append(f"音符后缀 # 变音记号 ×{n_sharp} 处（如 c#'2）不是合法 ABC——旧版残留")
@@ -452,58 +468,144 @@ def transform(abc_text: str,
         )
     headers, body_lines = split_abc(text)
     key_raw = _get_header(headers, "K") or "C"
-    tonic, is_minor, pref = _parse_key(key_raw)
+    tonic, is_minor, _pref = _parse_key(key_raw)
     op = MODE_OPS.get(mode or "keep")
     if op is None:
         raise ValueError(f"未知的调式操作：{mode}")
-    tonic_shift, want_minor = op
-    modal = mode in ("major_to_minor", "minor_to_major")
+    tonic_shift, target_minor = op
     if mode == "keep":
-        want_minor = is_minor
+        target_minor = is_minor
+    # 源调式已经等于目标调式 → 这次"转换"必须什么都不做。
+    # 只改 K: 行、旋律不动，等于把同一串裸音放进了另一个调号里：
+    # K:E（4 升）的 `f` 是 F#，写成 K:G（1 升）后同一个 `f` 变成 F，全曲低半音。
+    # 用户听到的就是"调式转换之后很不正常"——所以这里直接按 no-op 处理。
+    noop_mode = mode != "keep" and target_minor == is_minor
+    if noop_mode:
+        tonic_shift = 0
+    want_minor = is_minor if noop_mode else target_minor
+    modal = mode in ("major_to_minor", "minor_to_major") and not noop_mode
 
     # 旋律只跟着 transpose 走；关系大小调额外挪的是主音，不是旋律
     shift = int(transpose or 0)
     new_tonic = (tonic + shift + (0 if modal else tonic_shift)) % 12
-    # 拼写倾向按新调的调号重新定：降号调里出现黑键必须写 b（Eb/Ab/Bb），
+    # 关系大小调**不换调号**：新调必须沿用源调的升降数。否则 C# 大调（7 升）的
+    # 关系小调会被"少用升降号"优化成 Bbm（5 降）——同一个 `f` 从 F# 变成 F，
+    # 整曲低半音，而这正是"关系调只改调号、旋律不动"最容易翻车的地方。
+    relative_keeps_sig = (mode in ("major_to_relative_minor", "minor_to_relative_major")
+                          and not noop_mode)
+    src_sig = _declared_sig(key_raw, tonic, is_minor)
+    new_sig = (src_sig if (relative_keeps_sig and not shift)
+               else _sig_of(new_tonic, want_minor))
+    # 拼写倾向由新调号决定：降号调里出现黑键必须写 b（Eb/Ab/Bb），
     # 否则会把 C 小调写成 D#/G#/A#——音高一样，谱面看着像错调。
-    new_pref = _pref_of(new_tonic, want_minor)
+    new_pref = 1 if new_sig >= 0 else -1
 
     # 调号字母偏移：算音高必须把 K: 行的自动升降叠进去（见 _actual_pc 注释）。
     # 旧测试全是 K:C（无升降）才漏到今天；SheetSage2 输出 K:E 等带号调必踩。
-    key_acc = _key_accidentals(_sig_of(tonic, is_minor))
-    new_key_acc = _key_accidentals(_sig_of(new_tonic, want_minor))
+    key_acc = _key_accidentals(src_sig)
+    new_key_acc = _key_accidentals(new_sig)
+
+    # 小节内变音状态：输入侧读继承（显式 ^/_/= 之后同小节同字母同八度的裸音全继承，
+    # 漏读会差半音）；输出侧管拼写——裸字母会继承输出小节里前一个显式变音，
+    # 必要时必须写 = 还原号抵消，否则读谱的人/引擎会听到另一个音。
+    measure = {"in": {}, "out": {}}
+    _NOTE_TOK = re.compile(r"^([_=^]{0,2})([A-Ga-g])([\',]*)$")
+    # "当前段落"的调性：文件头是一段，谱中间每遇到 K: 就换一段。
+    # 中途变调后音高必须按新段自己的调号算，不能沿用文件头（否则整段跑调）。
+    cur = {"in": key_acc, "out": new_key_acc, "pref": new_pref, "tonic": tonic}
+
+    def fn_key(value):
+        """谱中间的 K: 行：算出这一段的原调与新调，并切换当前段落状态。"""
+        if not value.strip():
+            return _key_name(cur["tonic"] + shift, want_minor, cur["pref"])
+        t_i, m_i, _p = _parse_key(value)
+        cur["in"] = _key_accidentals(_declared_sig(value, t_i, m_i))
+        cur["tonic"] = t_i
+        ni = (t_i + shift + (0 if modal else tonic_shift)) % 12
+        nm = m_i if (mode == "keep" or noop_mode) else want_minor
+        # 关系调保调号（见上面 relative_keeps_sig 的说明），本段按自己的调号算
+        sig_i = (_declared_sig(value, t_i, m_i)
+                 if (relative_keeps_sig and not shift) else _sig_of(ni, nm))
+        cur["out"] = _key_accidentals(sig_i)
+        cur["pref"] = 1 if sig_i >= 0 else -1
+        return _key_name(ni, nm, cur["pref"])
 
     def fn_note(tok):
-        m = re.match(r"^([_=^]?)([A-Ga-g])([\',]*)$", tok)
+        if not shift and not modal:
+            return tok  # 不动音高的加工对谱面必须是逐字节 no-op
+        m = _NOTE_TOK.match(tok)
         if not m:
             return tok
         pre, letter, ticks = m.groups()
-        up = letter.islower()
-        # 原实际音高（含原调号自动升降）
-        pc = _actual_pc(letter.upper(), pre, key_acc)
-        octave = (1 if up else 0) + ticks.count("'") - ticks.count(",")
+        lu = letter.upper()
+        octave = (1 if letter.islower() else 0) + ticks.count("'") - ticks.count(",")
+        try:
+            expl = _accidental_value(pre)
+        except ValueError:
+            return tok  # 不认识的变音组合，原样透传
+        # 输入实际音高：显式变音 > 小节内继承 > 调号自动升降。
+        # 继承范围是「同字母 + 同八度」——ABC 2.1 与 abcjs 都这么算：
+        # `^^C` 只影响本小节的其他 `C`，不影响 `c`/`c'`。按字母记状态会把
+        # 另一个八度的同名音也改掉（真实谱里出现过 `^A`，这类错差一个半音）。
+        slot = f"{lu}{octave}"
+        if expl is not None:
+            pc = _PC[lu] + expl
+            measure["in"][slot] = pc % 12
+        else:
+            pc = measure["in"].get(slot, _PC[lu] + cur["in"].get(lu, 0))
         # 移调与调式偏移一次性累加——避免"先 shift 再 modal"时中间调号失配
         if shift:
             pc += shift
         if modal:
-            # 音级相对新主音判定（new_tonic 已含 shift）
-            deg = (pc - new_tonic) % 12
+            # 音级相对本段主音判定（本段主音已含 shift）
+            deg = (pc - (cur["tonic"] + shift)) % 12
             if want_minor and deg in _MAJOR_DEGREES:
                 pc -= 1
             elif (not want_minor) and deg in _MINOR_DEGREES:
                 pc += 1
         total = octave * 12 + pc
         o2, pc2 = divmod(total, 12)
-        l2, a2 = _spell_in_key(pc2, new_key_acc, new_pref)
-        return _render(l2, a2, o2)
+        tp = pc2 % 12
+        l2, _ = _spell_in_key(pc2, cur["out"], cur["pref"])
+        # 输出拼写：不依赖"小节内继承"——需要变音的音一律重复写显式记号，
+        # 这样无论下游解析器实不实现继承规则，读到的音高都一致
+        # （继承写法 `=f' f'` 对不认继承的解析器就是 F# 错音）。
+        key_default = (_PC[l2] + cur["out"].get(l2, 0)) % 12
+        slot2 = f"{l2}{o2}"
+        inherited = measure["out"].get(slot2, key_default)
+        if key_default == tp and inherited == tp:
+            prefix = ""
+        else:
+            alter = tp - _PC[l2]
+            if alter not in (0, 1, -1):
+                # 防御：极端双重变音走通用黑键拼写（理论不可达，_spell_in_key
+                # 保证字母与目标距离 ≤1）
+                l2, a2 = _spell(tp, cur["pref"])
+                alter = {"#": 1, "b": -1}.get(a2, 0)
+            prefix = {0: "=", 1: "^", -1: "_"}[alter]
+        measure["out"][slot2] = tp
+        head = l2.lower() if o2 >= 1 else l2.upper()
+        tail = "'" * (o2 - 1) if o2 >= 1 else "," * (-o2)
+        return prefix + head + tail
+
+    # 调式转换与旧和弦必然冲突（如 C 大三和弦配 Cm 的 Eb 旋律），
+    # 平行/关系转换没有可靠的和弦重配算法——移除和弦走纯旋律路线，
+    # 明说而不是让引擎拿矛盾提示硬生成。
+    body_text = "\n".join(body_lines)
+    n_chords = len(re.findall(r'"[A-G][#b]?[^"]*"', body_text))
+    eff_strip = strip_chords or (modal and n_chords > 0)
 
     def fn_chord(tok):
-        return _shift_chord(tok, shift, new_pref) if shift else tok
+        return _shift_chord(tok, shift, cur["pref"]) if shift else tok
 
-    new_body = _walk_body("\n".join(body_lines), fn_note, fn_chord, strip_chords,
-                          inline_key=_key_name(new_tonic, want_minor, new_pref))
+    # 什么都不改的请求（含"调式操作 no-op"）必须逐字节不动：连 K: 行的
+    # 空白归一化都不做，否则"没变"却和源谱不相等，前端会误判成改过了。
+    rewrite_keys = bool(shift) or modal or (mode != "keep" and not noop_mode)
+    new_body = _walk_body(body_text, fn_note, fn_chord, eff_strip,
+                          fn_key=fn_key if rewrite_keys else None,
+                          measure=measure)
 
-    if mode != "keep" or shift:
+    if shift or (mode != "keep" and not noop_mode):
         headers = _set_header(headers, "K", _key_name(new_tonic, want_minor, new_pref))
 
     q = _get_header(headers, "Q")
@@ -513,7 +615,11 @@ def transform(abc_text: str,
     changed = []
     if shift:
         changed.append(f"移调 {shift:+d} 半音")
-    if mode == "major_to_minor":
+    if noop_mode:
+        changed.append(
+            f"原谱已经是{'小调' if is_minor else '大调'}（K:{key_raw}），"
+            "所选调式转换不改变任何音——谱面与调号原样保留")
+    elif mode == "major_to_minor":
         changed.append("大调 → 同名小调（3/6/7 音级降半音，旋律改音）")
     elif mode == "minor_to_major":
         changed.append("小调 → 同名大调（3/6/7 音级升半音，旋律改音）")
@@ -527,10 +633,14 @@ def transform(abc_text: str,
         changed.append(f"速度 ×{tempo_scale}")
     if strip_chords:
         changed.append("去掉和弦记号（谱子退回纯旋律路线）")
+    elif modal and n_chords:
+        changed.append(f"调式转换移除 {n_chords} 处和弦记号（原和声属于旧调式，"
+                       "沿用会与新旋律打架；需和声请在新调式下重新配）")
 
     out = "\n".join(headers)
     if new_body.strip():
         out = out + ("\n" if out else "") + new_body
     return {"abc": out, "changed": changed,
-            "key": _key_name(new_tonic, want_minor if mode != "keep" else is_minor, new_pref),
+            "key": _key_name(new_tonic, want_minor, new_pref),
+            "mode_noop": bool(noop_mode),
             "note": "、".join(changed) or "谱面未改动"}

@@ -597,6 +597,8 @@
   }
   .chip.tag-on { border-color: var(--acc); color: var(--acc-text); background: var(--acc-soft); }
   html[data-theme="dark"] .chip.tag-on { color: var(--acc-text); }
+  /* 生成档位：与快捷预设同一行盒规矩；激活态只换描边/底色，不抢主按钮 */
+  .preset-row button.on { border-color: var(--acc); color: var(--acc-text); background: var(--acc-soft); }
   /* 候选词芯片：中文是可见标签（点哪个词不用先翻译一遍），英文真值只在 title / aria 里，
      DOM 内不再挂 <i>。
      ★ 尺寸恒定是这条规矩的全部理由：以前 hover 会把英文从 display:none 翻成 inline，
@@ -1739,8 +1741,8 @@
           </div>
           <!-- ① 自己的曲风框。★ 它以前是 #styleBox —— 同一份 DOM 在 ①②⑤ 之间搬家，
                于是"在 ① 写了风格，点别的页面它还在那儿"。用户两次要求页面之间独立、
-               不要自动带内容，所以改成各页各一个框：① 的装配结果留在 ①，
-               要带去 ②⑤ 就点下面那颗「复制这段 Style」自己粘。 -->
+               不要自动带内容，所以改成各页各一个框：① 的装配结果留在 ①。
+               下方的「用于②/⑤」是显式接力，只有点击并确认后才写入目标页。 -->
           <div id="styleSlotAsm"><div id="styleBoxAsm">
             <label for="styleAsm" style="margin-top:0;">Style / 曲风描述（英文效果最佳 · 装配结果就在这）</label>
             <textarea id="styleAsm">English, warm piano pop, expressive female voice, acoustic piano, rounded bass and light drums, lyrical memorable melody, unhurried phrasing, 88 BPM</textarea>
@@ -1752,9 +1754,11 @@
         </div>
         <div class="pane-foot">
           <div class="actions">
-            <button class="primary" id="styleCopy" title="复制到剪贴板，贴去任何地方">⧉ 复制这段 Style</button>
+            <button class="primary" id="styleToSing" title="显式把左边这段 Style 带到②；②已有不同内容会先询问，不会自动提交">→ 用于②生成</button>
+            <button class="ghost" id="styleToScoreSing" title="显式把左边这段 Style 带到⑤；⑤已有不同内容会先询问，不会自动提交">→ 用于⑤按谱生成</button>
+            <button class="ghost" id="styleCopy" title="复制到剪贴板，贴去任何地方">⧉ 复制</button>
           </div>
-          <div class="hint-xs">复制后到「② 歌词+style生成歌曲」或「⑤ 歌词+style+乐谱生成歌曲」页粘贴即可 —— 那两页也各自留了曲风输入框，也可以直接在那里写，不必回到本页。</div>
+          <div class="hint-xs">「用于②/⑤」是显式接力：点击后才写入目标页，目标已有不同内容会先询问；普通切页或刷新不会自动带走内容。复制按钮仍可用于外部粘贴。</div>
         </div>
       </div>
 
@@ -1890,7 +1894,7 @@
             <label for="style" style="margin-top:0;">Style / 曲风描述（英文效果最佳 · 这里就是提交给模型的内容）</label>
             <textarea id="style"></textarea>
           </div></div>
-          <div class="hint-xs" style="margin-top:5px;" title="① 是另一个独立的框，不会自动流到这里 —— 想用它装配好的那句，点 ① 的「复制这段 Style」再粘进来。">英文效果最佳。这一页的曲风框是独立的：① 装配的结果不会自动带过来，要么用「① 复制这段 Style」贴进来，要么在这儿直接写。</div>
+          <div class="hint-xs" style="margin-top:5px;" title="① 是另一个独立的框，不会自动流到这里；想用它装配好的那句，点 ① 的「用于②生成」，或复制后粘贴。">英文效果最佳。这一页的曲风框是独立的：① 装配的结果不会自动带过来，可点 ① 的「用于②生成」显式接力，也可以在这里直接写。</div>
 
           <label for="taskName">任务名称（用于历史展示与下载命名）</label>
           <input id="taskName" placeholder="例如：稻香" maxlength="100" />
@@ -1963,7 +1967,7 @@ We will sing beyond the night</textarea>
             <button class="danger" id="stopGen" style="display:none">终止任务</button>
           </div>
           <div class="progress" id="progress"><div id="progressBar"></div></div>
-          <div class="status" id="status">填写风格和歌词后点击生成。本机完整歌曲约需 4-8 分钟。</div>
+          <div class="status" id="status">当前默认「草稿」档，约 1–2 分钟，适合先试听走向；满意后再切「标准」或「成曲」（成曲本机约 60–90 分钟）。填写曲风和歌词后点击生成。</div>
         </div>
       </div>
 
@@ -2008,16 +2012,26 @@ We will sing beyond the night</textarea>
           <div class="fold-body">
         <div class="model-now"><span class="mn-k">当前模型</span><b id="modelNow">—</b>
           <button class="ghost" id="toSettingsModel" title="量化档切换在 ⑫ 设置页，会重启音频引擎">去 ⑫ 切换</button></div>
+        <div class="preset-row" style="margin-top:10px;" role="group" aria-label="生成档位预设">
+          <span class="row-label">档位</span>
+          <button type="button" class="ghost btn-sm" data-gen-preset="draft"
+                  title="cot=off / 8 步：最快听旋律走向；填了乐谱时自动改用 melody">草稿</button>
+          <button type="button" class="ghost btn-sm" data-gen-preset="standard"
+                  title="cot=full / 16 步：速度与质量折中">标准</button>
+          <button type="button" class="ghost btn-sm" data-gen-preset="final"
+                  title="cot=full / 32 步：最终成曲档，本机可能 1 小时以上">成曲</button>
+        </div>
+        <div class="hint-xs" id="presetHint" style="margin-top:4px;">草稿：off · 8 步（有谱时 melody），最快 1-2 分钟</div>
         <div class="pgrid" style="margin-top:10px;">
           <div><label for="cot">规划 CoT<span class="hint-xs" style="margin-left:6px;">（有谱时按和弦自动定）</span></label>
             <select id="cot">
-              <option value="full" selected>full · 旋律+和弦</option>
+              <option value="full">full · 旋律+和弦</option>
               <option value="melody">melody · 只旋律</option>
-              <option value="off">off · 直接生成</option>
+              <option value="off" selected>off · 直接生成</option>
             </select>
           </div>
           <div><label for="seed">Seed（-1 随机）</label><div style="display:flex;gap:6px;align-items:center;"><input id="seed" type="number" value="-1" style="flex:1;min-width:0;" /><button class="ghost btn-sm" id="randSeed" title="生成一个随机种子" style="flex:none;">🎲</button></div></div>
-          <div><label for="steps">NAR Steps</label><input id="steps" type="number" value="32" min="1" /></div>
+          <div><label for="steps">NAR Steps</label><input id="steps" type="number" value="8" min="1" /></div>
           <div><label for="cfg">CFG Scale</label><input id="cfg" type="number" step="0.01" value="1.0" min="0" max="20" /></div>
         </div>
 
@@ -2091,6 +2105,9 @@ We will sing beyond the night</textarea>
       <div class="pane pane-in">
         <div class="pane-head"><b>① 上传参考歌曲</b><span class="hint-xs">SheetSage2 转谱 · 3 分钟歌约 1-2 分钟</span></div>
         <div class="pane-body">
+          <label for="abcPick">服务器上已有的歌（可选；生成成品或入库整曲）</label>
+          <select id="abcPick"><option value="">— 不选，使用下面的文件 —</option></select>
+          <div class="hint-xs" style="margin:6px 0;">也可以先选服务器上已有的歌；选了下拉就转它，忽略下面的文件。</div>
           <div class="drop" id="abcDrop" tabindex="0" role="button" aria-label="选择或拖入音频文件">
             <b>点选或拖入音频文件</b>
             <small>wav / mp3 / flac / m4a / ogg / opus / aac / wma — 选完即提交转谱</small>
@@ -2125,15 +2142,16 @@ We will sing beyond the night</textarea>
             <textarea id="abc" class="abc" placeholder="X:1&#10;M:4/4&#10;K:C&#10;V:Vocal&#10;C2 D2 E2 F2 |"></textarea>
             <div class="hint-xs" id="abcAnalysis" style="margin-top:6px;"></div>
           </div></div>
-          <!-- 只留「复制谱面」：MIDI / ABC 下载在这个环节没有出口价值——
-               谱就摆在眼前这个框里，复制走就能用；MIDI 也不是本工作台任何一页的输入
-               （⑪ 换声吃音频、⑤ 按谱生成吃 ABC），下载下来只会变成一个没人打开的附件。
-               要拿去加工（移调 / 大小调转换）就复制后去 ④ 乐谱加工。 -->
+          <!-- 复制仍是外部导出；另加两个显式接力按钮。
+               ③⑤共用同一份 #abcBlock，所以「去⑤生成」只定位这份共用谱框，不复制、不代填；
+               ④ 有独立的 #seSrc，因此带去④时才需要确认覆盖。两者都不会自动提交生成。 -->
           <div class="actions" style="margin-top:10px;">
             <button class="ghost" id="abcCopy" title="复制这份 ABC 源码">⧉ 复制谱面</button>
+            <button class="ghost" id="abcToEdit" title="显式把当前谱带到④加工；④已有不同原谱会先询问">→ 送去④加工</button>
+            <button class="primary" id="abcToScoreSing" title="切到⑤并定位这份共用谱框；不会自动提交">→ 去⑤按谱生成</button>
           </div>
           <div class="lint" id="abcIoStatus"></div>
-          <div class="hint-xs" style="margin-top:6px;">谱就在这个框里，复制即可带走；要移调或改大小调，复制后进「④ 乐谱加工」。</div>
+          <div class="hint-xs" style="margin-top:6px;">「送去④加工」只有点击后才写入④；「去⑤按谱生成」使用③⑤共用的同一份谱框。普通切页或刷新不会自动代填，也不会自动提交。</div>
         </div>
       </div>
 
@@ -2173,9 +2191,10 @@ We will sing beyond the night</textarea>
           <div class="actions">
             <button class="ghost" id="seCopy" title="复制加工后的 ABC">⧉ 复制结果</button>
             <button class="primary" id="seSave" title="另存一份进乐谱库（不覆盖原谱）；存完在 ⑤ 的乐谱库里挑这份就能按谱生成">💾 存入乐谱库</button>
+            <button class="ghost" id="seToScoreSing" title="显式把加工结果填进⑤的谱框；⑤已有不同谱会先询问，不会自动提交">→ 用于⑤生成</button>
             <button class="ghost" id="seDownload" title="下载 .abc 文本">⬇ ABC</button>
           </div>
-          <div class="hint-xs" id="seFootNote">加工结果只在这里和乐谱库里，原谱不会被覆盖。要按这份谱生成歌曲：存进乐谱库，再到 ⑤ 的「乐谱来源=乐谱库」里挑它——页面之间不代填。</div>
+          <div class="hint-xs" id="seFootNote">加工结果只在这里和乐谱库里，原谱不会被覆盖。「用于⑤生成」只有点击后才写入⑤，已有不同谱会先询问；也可以存进乐谱库后再去⑤选择。</div>
         </div>
       </div>
 
@@ -2548,7 +2567,7 @@ We will sing beyond the night</textarea>
         </div>
         <div class="progress" id="rvcProgress"><div id="rvcProgressBar"></div></div>
         <div class="status" id="rvcStatus">选择文件与音色后点击「开始换声」。转换在服务端进行，可离开页面；连点不会并行，会排成队一次只跑一个。</div>
-        <div class="hint-xs" style="margin-top:4px;">⚠ 诚实说明：排队位次存在网关内存里，<b>网关重启后尚未开跑的排队条目会丢</b>（已完成的产物落盘不受影响）。本页不承诺重启后继续排队，需要重跑请到 ⑪ 任务管理里看哪条没跑。</div>
+        <div class="hint-xs" style="margin-top:4px;">⚠ 诚实说明：排队位次会落盘（runtime/rvc/queue_state.json），<b>网关重启后尚未开跑的排队任务会重新校验再排回</b>（音色与源音频都还在才接回）。重启那一刻正在转换的任务不自动重跑（推理子进程随网关一起死了，半截结果不可信），会在历史页如实标成「服务重启，任务中断」；已取消的任务不复活。已完成的产物落盘不受影响。</div>
 
         <div class="sec"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 8.5l3.5 3.5L14 3.5"/></svg>转换结果</div>
         <div class="row-list cap" id="rvcList">
@@ -2909,17 +2928,19 @@ We will sing beyond the night</textarea>
       <div class="pane pane-in">
         <div class="pane-head"><b>输入</b><span class="hint-xs">音频 + 歌词</span></div>
         <div class="pane-body">
-          <label for="lrcAudio">歌曲音频（wav / flac / ogg；mp3 取决于本机解码器）</label>
+          <label for="lrcPick">服务器上已有的歌（可选；生成成品或入库整曲）</label>
+          <select id="lrcPick"><option value="">— 不选，使用下面上传的音频 —</option></select>
+          <label for="lrcAudio" style="margin-top:10px;">或上传音频（wav / flac / ogg / mp3 / m4a…）</label>
           <input id="lrcAudio" type="file" accept=".wav,.flac,.ogg,.mp3,.m4a,audio/*" />
           <label for="lrcName" style="margin-top:10px;">任务名（可选）</label>
           <input id="lrcName" placeholder="例如：等你回来" maxlength="100" />
           <label for="lrcLyrics" style="margin-top:10px;">歌词（保留 [Verse] / [Chorus] 段标；段标行不参与对齐）</label>
-          <textarea id="lrcLyrics" rows="14" placeholder="[Verse 1]&#10;城门外 风沙 起了又黄&#10;..."></textarea>
+          <textarea id="lrcLyrics" rows="12" placeholder="[Verse 1]&#10;城门外 风沙 起了又黄&#10;..."></textarea>
           <div class="actions" style="margin-top:10px;">
             <button class="primary" id="lrcGo">生成歌词时间轴</button>
             <button class="ghost" id="lrcRefresh">↻ 刷新任务列表</button>
           </div>
-          <div class="status" id="lrcStatus">选择音频并粘贴歌词后开始；对齐在后台执行，刷新页面不会丢任务。</div>
+          <div class="status" id="lrcStatus">选服务器歌曲或上传音频，粘贴歌词后开始；对齐在后台执行，刷新页面不会丢任务。</div>
         </div>
       </div>
       <div class="pane pane-out">
@@ -3222,6 +3243,36 @@ function copyOut(text, what) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(t).then(done, () => fallbackCopy(t, done));
   } else fallbackCopy(t, done);
+}
+// 显式创作接力：用户点按钮才把内容带到目标页。
+// 这不同于旧的隐式跨页覆盖——切页、刷新、后台渲染都不会触发；目标已有不同内容时必须确认。
+function sendTextToTab(value, destId, tab, what, destLabel, afterText) {
+  const text = String(value || "").trim();
+  if (!text) { toast(what + "是空的，没有可带过去的内容", "err"); return false; }
+  const dest = $(destId);
+  if (!dest) { toast("找不到目标输入框：" + destLabel, "err"); return false; }
+  const old = String(dest.value || "").trim();
+  if (old && old !== text && !confirm(
+    destLabel + "已有不同的" + what + "（" + old.length + " 字符）。\n"
+    + "用当前这份替换？点「取消」不会改动任何内容。")) return false;
+  if (old !== text) {
+    dest.value = text;
+    dest.dispatchEvent(new Event("input", { bubbles: true }));
+    dest.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  switchTab(tab);
+  reveal(dest, "center");
+  try { dest.focus({ preventScroll: true }); } catch { try { dest.focus(); } catch {} }
+  toast(afterText || ("已把" + what + "带到" + destLabel), "ok");
+  return true;
+}
+function gotoSharedScore() {
+  const text = ($("abc").value || "").trim();
+  if (!text) { toast("谱框是空的，没有可带过去的内容", "err"); return false; }
+  switchTab("scoreSing");
+  reveal($("abc"), "center");
+  toast("③⑤共用这份谱框：它已在⑤可见；填好 Style 与歌词后仍由你点击生成", "ok");
+  return true;
 }
 function fallbackCopy(text, done) {
   const ta = document.createElement("textarea");
@@ -3591,7 +3642,10 @@ function switchTab(name) {
   if (name === "ailab" && typeof loadAiSessions === "function") loadAiSessions();
   // 创作四页：曲风配方摘要 / 歌词候选 / 乐谱库与导出归档
   if (name === "style" && typeof updateAsmHint === "function") { updateAsmHint(); updateStyleChecks(); }
-  if (name === "score" && typeof loadScoreList === "function") loadScoreList();
+  if (name === "score") {
+    if (typeof loadScoreList === "function") loadScoreList();
+    if (typeof loadScorePicks === "function") loadScorePicks();
+  }
   if (name === "scoreSing" && typeof loadScorePicker === "function") loadScorePicker();
   // ④ 乐谱加工：进页面时按本页源谱的调号收窄调式选项（源谱是这一页自己载入或粘贴的）
   if (name === "scoreEdit" && typeof seSyncModeOptions === "function") seSyncModeOptions();
@@ -3609,7 +3663,10 @@ function switchTab(name) {
   }
   // ⑬ 关于：进页面刷新系统信息（独立页，只放只读信息）
   if (name === "about" && typeof loadSysInfo === "function") loadSysInfo();
-  if (name === "lrc" && typeof loadLrcList === "function") loadLrcList();
+  if (name === "lrc") {
+    if (typeof loadLrcList === "function") loadLrcList();
+    if (typeof loadLrcPicks === "function") loadLrcPicks();
+  }
   // 换页＝换一屏内容，必须回到顶部。以前进 ① 会直接停在页面最下面：
   // 底部那条粘底产出条撑长了文档，加上浏览器刷新时的滚动恢复，落点就跑到底了。
   // 不归零的话用户打开就看见"下半页"，而页面的标题和左右两栏的关系全在上方，第一眼看不懂。
@@ -4611,7 +4668,7 @@ function lintLines(v) {
   return lines;
 }
 // ---- 歌词的三道护栏：提交前自动校验 / 覆盖可撤销 / 没词时指路 ----
-// 为什么把校验挪到提交前：一次生成 4-8 分钟、6GB 显存全程占着，而"副歌没写全 /
+// 为什么把校验挪到提交前：一次完整生成 60-90 分钟（草稿档 1-2 分钟）、6GB 显存全程占着，而"副歌没写全 /
 // 某段只有 3 行"这类结构错原来只有用户自己想起去点「🔍」才会发现。
 // 校验接口挂了不拦路：拿不到结论就放行，但如实说一句本次没校验成（不静默降级）。
 async function validateLyricsNow() {
@@ -4755,6 +4812,7 @@ async function transcribeLyricAudio(file) {
     }
     // 翻唱走 melody（只规划旋律，伴奏由模型配），这是 YuE2 官方翻唱路线
     if ($("cot")) $("cot").value = "melody";
+    syncGenPresetFromFields();
     if (typeof checkLyrics === "function") checkLyrics();
     done("已识别并填入歌词（" + j.text.split("\n").filter(Boolean).length + " 行），CoT 已设为 melody", "ok");
   } catch (e) {
@@ -5349,6 +5407,9 @@ function lrcSay(msg, kind) {
   const el = $("lrcStatus");
   el.className = "status" + (kind === "ok" ? " ok" : kind === "err" ? " err" : "");
   el.textContent = msg;
+  // 新增“服务器歌曲”下拉后内容更高：提交/完成时把状态行滚进视野，
+  // 别让人点了按钮却看不到结果（其余页面的状态更新也都这么收口）。
+  if (typeof reveal === "function") reveal(el, "nearest");
 }
 function lrcShow(st) {
   lrcLast = st;
@@ -5393,16 +5454,58 @@ async function loadLrcList() {
     });
   } catch (e) { box.textContent = "任务列表读取失败：" + friendlyErr(e); }
 }
+async function loadServerAudioOptions() {
+  const out = [];
+  const seen = new Set();
+  try {
+    const g = await (await fetch("/api/generate/list?limit=100")).json();
+    for (const it of (g.items || [])) {
+      if (!it || !it.id || seen.has(it.id)) continue;
+      if (it.status && it.status !== "done") continue;
+      const kind = it.kind || "generate";
+      if (kind !== "generate" && kind !== "upload" && kind !== "history") continue;
+      seen.add(it.id);
+      const name = it.task_name || it.name || it.id;
+      out.push({ id: it.id, label: name + " · 生成" });
+    }
+  } catch { }
+  try {
+    const h = await (await fetch("/api/history")).json();
+    for (const it of (h.items || [])) {
+      if (!it || !it.id || seen.has(it.id)) continue;
+      seen.add(it.id);
+      out.push({ id: it.id, label: it.id + " · 入库" });
+    }
+  } catch { }
+  return out;
+}
+async function fillServerPick(selId, placeholder) {
+  const sel = $(selId);
+  if (!sel) return;
+  const cur = sel.value;
+  const opts = await loadServerAudioOptions();
+  sel.innerHTML = '<option value="">' + escapeHtml(placeholder) + '</option>' +
+    opts.map((o) => '<option value="' + escapeHtml(o.id) + '">' +
+      escapeHtml(o.label) + '</option>').join("");
+  if (cur && Array.from(sel.options).some((o) => o.value === cur)) sel.value = cur;
+}
+function loadLrcPicks() { fillServerPick("lrcPick", "— 不选，使用下面上传的音频 —"); }
+function loadScorePicks() {
+  fillServerPick("abcPick", "— 不选，使用下面的文件 —").then(() => {
+    if (($("abcPick") || {}).value && $("abcPick").onchange) $("abcPick").onchange();
+  });
+}
 $("lrcGo").onclick = async () => {
+  const rid = ($("lrcPick") && $("lrcPick").value || "").trim();
   const f = $("lrcAudio").files && $("lrcAudio").files[0];
   const lyrics = ($("lrcLyrics").value || "").trim();
-  if (!f) { toast("先选择歌曲音频", "err"); return; }
+  if (!rid && !f) { toast("先选服务器歌曲，或上传音频", "err"); return; }
   if (!lyrics) { toast("先粘贴歌词", "err"); return; }
   const btn = $("lrcGo"); btn.disabled = true;
-  lrcSay("上传并排队…", "");
+  lrcSay(rid ? "读取服务器歌曲并排队…" : "上传并排队…", "");
   try {
     const fd = new FormData();
-    fd.append("file", f);
+    if (rid) fd.append("rid", rid); else fd.append("file", f);
     fd.append("lyrics", lyrics);
     fd.append("task_name", ($("lrcName").value || "").trim());
     const r = await fetch("/api/lrc/start", { method: "POST", body: fd });
@@ -5431,7 +5534,7 @@ async function lrcDownload(fmt) {
 }
 $("lrcDownload").onclick = () => lrcDownload("lrc");
 $("lrcElrcDownload").onclick = () => lrcDownload("elrc");
-$("lrcRefresh").onclick = loadLrcList;
+$("lrcRefresh").onclick = () => { loadLrcList(); loadLrcPicks(); };
 async function loadModels() {
   try {
     const r = await fetch("/api/models/list");
@@ -5982,7 +6085,7 @@ $("go").onclick = async () => {
       "还差" + (!$("style").value.trim() ? "曲风（Style）" : "歌词") + "才能生成 —— 已跳到该填的地方。");
     return;
   }
-  // 护栏①：结构校验挪到提交前。一次生成 4-8 分钟、6GB 显存全程占着，
+  // 护栏①：结构校验挪到提交前。一次完整生成 60-90 分钟（草稿档 1-2 分钟）、6GB 显存全程占着，
   // 以前"副歌没写全 / 某段只有 3 行"要等歌出来才听出来，或者得自己记得点「🔍」。
   if (!(await guardThen($("go"), "go"))) return;
   const genCount = Math.max(1, Math.min(20, numOrNull("genCount") || 1));
@@ -6020,6 +6123,45 @@ $("go").onclick = async () => {
   }
 };
 $("randSeed").onclick = () => { $("seed").value = String(Math.floor(Math.random() * 2147483647)); };
+
+// 生成档位预设：只改两个成本参数，不自动提交。
+// 数字来自本机实测：cot=off + 8 步约 80 秒；full + 32 步 60-90 分钟（6GB 卡）。
+const GEN_PRESETS = {
+  draft:    { cot: "off",  steps: 8,  name: "草稿", hint: "草稿：off · 8 步（有谱时 melody），最快 1-2 分钟" },
+  standard: { cot: "full", steps: 16, name: "标准", hint: "标准：full · 16 步，速度与质量折中" },
+  final:    { cot: "full", steps: 32, name: "成曲", hint: "成曲：full · 32 步，本机可能 1 小时以上" },
+};
+function genPresetKey(cot, steps) {
+  const n = Number(steps);
+  if (n === 8 && (cot === "off" || cot === "melody")) return "draft";
+  if (n === 16 && cot === "full") return "standard";
+  if (n === 32 && cot === "full") return "final";
+  return null;
+}
+function syncGenPresetFromFields() {
+  const key = genPresetKey($("cot").value, $("steps").value);
+  document.querySelectorAll("[data-gen-preset]").forEach((b) => {
+    b.classList.toggle("on", b.dataset.genPreset === key);
+  });
+  const hint = $("presetHint");
+  if (hint) hint.textContent = key
+    ? GEN_PRESETS[key].hint
+    : "自定义：CoT " + $("cot").value + " / " + $("steps").value + " 步";
+}
+function applyGenPreset(key) {
+  const p = GEN_PRESETS[key];
+  if (!p) return;
+  const hasScore = abcForSubmit().trim().length > 0;
+  $("cot").value = (key === "draft" && hasScore) ? "melody" : p.cot;
+  $("steps").value = String(p.steps);
+  syncGenPresetFromFields();
+}
+document.querySelectorAll("[data-gen-preset]").forEach((b) => {
+  b.onclick = () => applyGenPreset(b.dataset.genPreset);
+});
+$("cot").addEventListener("change", syncGenPresetFromFields);
+$("steps").addEventListener("input", syncGenPresetFromFields);
+syncGenPresetFromFields();
 // 歌词 TXT 导出：纯前端，不依赖生成/VAE。LRC/eLRC 仍需音频时间轴，见历史页。
 $("exportLyricsTxt").onclick = () => {
   const text = ($("lyrics").value || "").trim();
@@ -6146,17 +6288,34 @@ $("cot").addEventListener("change", () => {
 // ---------- 从参考歌曲提取乐谱（SheetSage2：音频 → ABC，填入创作页直接改词翻唱） ----------
 // 异步任务模式：提交后立即拿 job_id，轮询取结果（真实歌曲转谱常超 1 分钟，
 // 长请求会被 dsh 反代超时掐断，故不用同步等待）。
-$("extractAbc").onclick = () => $("abcAudio").click();
-$("abcAudio").onchange = async () => {
-  const file = $("abcAudio").files[0];
-  if (!file) return;
+$("extractAbc").onclick = () => {
+  const rid = ($("abcPick") && $("abcPick").value || "").trim();
+  if (rid) submitScore(null, rid); else $("abcAudio").click();
+};
+$("abcAudio").onchange = () => {
+  const f = $("abcAudio").files[0];
+  if (!f) return;
+  // 明确拖/选文件时，服务器歌曲下拉让位，避免按钮文案与真正提交的东西不一致
+  if ($("abcPick")) $("abcPick").value = "";
+  $("extractAbc").textContent = "🎸 选择歌曲开始转谱";
+  submitScore(f, "");
+};
+$("abcPick").onchange = () => {
+  const on = !!($("abcPick").value || "").trim();
+  $("extractAbc").textContent = on ? "🎸 转谱所选服务器歌曲" : "🎸 选择歌曲开始转谱";
+  if (on && $("abcAudio")) $("abcAudio").value = "";
+};
+async function submitScore(file, rid) {
+  if (!file && !rid) return;
   const form = new FormData();
-  form.append("audio", file);
+  if (rid) form.append("rid", rid); else form.append("audio", file);
   // 默认纯旋律谱（SheetSage2 两种模式都会识别和弦，只是导出时写不写进 ABC）
   form.append("melody_only", $("abcChords").checked ? "false" : "true");
   // 服务端转谱有串行锁，并发两份会互相覆盖 sheetsage2-output/ —— 提交即锁住上传口
   setScoreLock(true);
-  $("abcStatus").textContent = $("abcChords").checked ? "正在上传并提交转谱任务（带和弦）…" : "正在上传并提交转谱任务…";
+  $("abcStatus").textContent = rid
+    ? "正在读取服务器歌曲并提交转谱任务" + ($("abcChords").checked ? "（带和弦）" : "") + "…"
+    : ($("abcChords").checked ? "正在上传并提交转谱任务（带和弦）…" : "正在上传并提交转谱任务…");
   try {
     const r = await fetch("/api/score", { method: "POST", body: form });
     const j = await r.json().catch(() => ({}));
@@ -6198,6 +6357,7 @@ $("abcAudio").onchange = async () => {
       const want = (rj.analysis && rj.analysis.cot_suggested)
         || ($("abcChords").checked ? "full" : "melody");
       if (curTab === "scoreSing") $("cot").value = want;
+      syncGenPresetFromFields();
       renderAbcAnalysis(rj.analysis);
       if (!rj.analysis) analyzeAbcDebounced();
       const wantedChords = $("abcChords").checked && !(rj.analysis && rj.analysis.has_chords);
@@ -6236,7 +6396,7 @@ $("abcAudio").onchange = async () => {
     $("abcRetryWrap").hidden = !$("abcChords").checked;
     stickyNotify("乐谱提取失败", friendlyErr(err), false);
   }
-};
+}
 
 // ---------- 乐谱历史（服务端持久化 data/scores/，刷新/重启不丢，可复用回填） ----------
 async function loadScoreList() {
@@ -6259,6 +6419,7 @@ async function loadScoreList() {
           const sug = rec.analysis && rec.analysis.cot_suggested;
           // 同上：③ 回填历史谱只填谱框，档位交给 ⑤ 进入时自己重放（见 switchTab）。
           if (sug && curTab === "scoreSing") $("cot").value = sug;
+          syncGenPresetFromFields();
           renderAbcAnalysis(rec.analysis);
           if (!rec.analysis) analyzeAbcDebounced();
           $("abcStatus").textContent = "✓ 已回填历史乐谱 " + s.id;
@@ -6959,8 +7120,9 @@ async function renderRvc() {
       }).join("");
       if (cur && models.includes(cur)) sel.value = cur;
       else if (models && models.length) sel.value = models[0];
-      // 音色定了就把推荐参数拉下来并自动套用：用户不该面对一堆空输入框
-      loadRvcReco(true);
+      // 音色定了就把推荐参数拉下来并自动套用：用户不该面对一堆空输入框。
+      // 启动、切页、刷新都可能走到这里，因此静默准备默认值，不弹"已填入"。
+      loadRvcReco(true, false);
     }
   } catch {}
 }
@@ -7306,7 +7468,7 @@ function applyRvcReco(silent) {
   if (!silent) toast("已套用推荐参数", "ok");
 }
 
-async function loadRvcReco(auto) {
+async function loadRvcReco(auto, announce) {
   const m = $("rvcModel").value;
   if (!m) return;
   const q = new URLSearchParams();
@@ -7320,11 +7482,11 @@ async function loadRvcReco(auto) {
     if (!res.ok) return;
     rvcReco = await res.json();
     renderRvcReco();
-    // 只在用户没手动动过旋钮时才自动套用——不抢他的手感
+    // 只在用户没手动动过旋钮时才自动套用——不抢他的手感。
+    // 启动/切页/刷新静默填默认值；只有用户在⑨主动换音色或点一键套用才给可见反馈。
     if (auto && !rvcTouched) {
-      // 一键套用会写 6 个旋钮，静默写就等于"页面自己变了"；换音色时给一句可见交代
       applyRvcReco(true);
-      toast("已按「" + m.replace(/\.pth$/i, "") + "」的推荐参数填入旋钮", "ok");
+      if (announce) toast("已按「" + m.replace(/\.pth$/i, "") + "」的推荐参数填入旋钮", "ok");
     }
   } catch (e) { /* 推荐读不到不影响换声本身，静默 */ }
 }
@@ -7338,7 +7500,7 @@ $("rvcFile").addEventListener("change", () => {
 });
 $("rvcApplyReco").onclick = () => applyRvcReco(false);
 // 换音色 = 换推荐值：源唱音域要重新量，用户改动标记也一并复位
-$("rvcModel").onchange = () => { rvcSrcF0 = null; rvcTouched = false; loadRvcReco(true); };
+$("rvcModel").onchange = () => { rvcSrcF0 = null; rvcTouched = false; loadRvcReco(true, true); };
 // 用户一旦手动调了任何一个旋钮，就不再自动覆盖（但仍刷新"是否偏离推荐值"的状态提示）
 ["rvcPitch", "rvcF0", "rvcIndexRate", "rvcProtect", "rvcRms", "rvcFilter", "rvcResample"]
   .forEach(id => { const el = $(id); if (el) el.addEventListener("change", () => { rvcTouched = true; renderRvcReco(); }); });
@@ -8494,6 +8656,8 @@ $("styleCopy").onclick = async () => {
   try { await navigator.clipboard.writeText(t); toast("Style 已复制（" + t.length + " 字符）", "ok"); }
   catch { const ta = $("styleAsm"); ta.select(); document.execCommand("copy"); toast("已复制（剪贴板 API 不可用，走了选中复制）"); }
 };
+$("styleToSing").onclick = () => sendTextToTab(styleText(), "style", "sing", "Style", "② 的曲风框");
+$("styleToScoreSing").onclick = () => sendTextToTab(styleText(), "style", "scoreSing", "Style", "⑤ 的曲风框");
 // ① 右栏「配方库 / 装配台」二选一。
 // 两个视图共用同一批 DOM id（famTabs / presetGrid / aLang / moodChips …），只是 hide 掉一个，
 // 所以 JS 里所有装配逻辑、渲染函数一行都不用改——隐藏视图里的节点照样在，照样被初始化。
@@ -8541,6 +8705,7 @@ function setScoreLock(on) {
   const go = $("extractAbc"), drop = $("abcDrop"), box = $("abcAudio");
   if (go) go.disabled = on;
   if (box) box.disabled = on;
+  if ($("abcPick")) $("abcPick").disabled = on;
   if (drop) drop.classList.toggle("on", on);
 }
 function bindDropZone(zoneId, inputId, onFiles) {
@@ -8584,6 +8749,8 @@ $("abcCopy").onclick = async () => {
   if (!v) { toast("谱框是空的", "err"); return; }
   try { await navigator.clipboard.writeText(v); toast("ABC 源码已复制", "ok"); } catch { $("abc").select(); document.execCommand("copy"); toast("已复制"); }
 };
+$("abcToEdit").onclick = () => sendTextToTab($("abc").value, "seSrc", "scoreEdit", "乐谱", "④ 的原谱框");
+$("abcToScoreSing").onclick = () => gotoSharedScore();
 $("abcRetryPure").onclick = () => {
   $("abcChords").checked = false;
   $("abcRetryWrap").hidden = true;
@@ -8654,6 +8821,7 @@ $("scoreLoadBtn").onclick = async () => {
     $("abc").value = rec.abc || "";
     const sug = rec.analysis && rec.analysis.cot_suggested;
     if (sug) $("cot").value = sug;
+    syncGenPresetFromFields();
     if (typeof renderAbcAnalysis === "function") renderAbcAnalysis(rec.analysis);
     if (typeof analyzeAbcDebounced === "function") analyzeAbcDebounced();
     toast("已载入乐谱 " + id, "ok");
@@ -8772,10 +8940,15 @@ function seSyncRange() {
 // 源谱现在是大调还是小调：只从 K: 头里读，不调接口（判定"同名/关系"够用了）。
 // 读不出来时不猜，全部选项照常可用——选错了服务端也不会崩，只是改不出想要的效果。
 function seKeyMode(abc) {
-  const m = /(^|\n)\s*K:\s*([^\n\r]*)/.exec(abc || "");
+  // 只吃本行：`[ \t]*` 而不是 `\s*`——\s 会吞掉换行，把空 K: 行的下一行音符当成调名
+  const m = /^[ \t]*K:[ \t]*([^\n\r]*)/m.exec(abc || "");
   if (!m) return null;
-  const k = m[2].trim();
-  return /m(\b|in|aj|$)/i.test(k) ? "minor" : "major";
+  // 先切出"音名 + 后缀"再判，别在整行上找 m：
+  // 旧写法 /m(\b|in|aj|$)/ 会把 K:Gmaj 判成小调（m+aj 命中），
+  // 于是"大调→小调"两项被禁用，用户以为页面做不了；K:Gmix 反而是靠运气对的。
+  const t = /^([A-G])[ \t]*([#b]?)[ \t]*([^\s]*)/i.exec(m[1].trim());
+  if (!t) return null;
+  return /^(m|min|minor)\b/i.test(t[3]) ? "minor" : "major";
 }
 function seSyncModeOptions() {
   const sel = $("seMode"), hint = $("seModeHint");
@@ -8835,9 +9008,16 @@ async function seRun(opts) {
     if (out) out.value = j.abc || "";
     if (chg) {
       const n = (j.changed || []).length;
-      chg.className = "lint" + (n ? " ok" : "");
-      chg.textContent = n ? ("✓ 已加工：" + j.changed.join("；") + (j.key ? "　·　新调号 " + j.key : ""))
-                          : "没有勾选任何加工项，结果与源谱一致。";
+      if (j.mode_noop && n === 1) {
+        // 调式操作对这份谱无效（源调式已达标）：别打绿勾说"已加工"，
+        // 那会让人以为谱子变了；用中性色如实说明。
+        chg.className = "lint";
+        chg.textContent = "ⓘ " + j.changed[0] + (j.key ? "　·　当前调号 " + j.key : "");
+      } else {
+        chg.className = "lint" + (n ? " ok" : "");
+        chg.textContent = n ? ("✓ 已加工：" + j.changed.join("；") + (j.key ? "　·　新调号 " + j.key : ""))
+                            : "没有勾选任何加工项，结果与源谱一致。";
+      }
     }
     const a = j.analysis || {};
     if (ana) {
@@ -8917,6 +9097,7 @@ $("seCopy").onclick = async () => {
   try { await navigator.clipboard.writeText(t); toast("已复制加工后的谱（" + t.length + " 字符）", "ok"); }
   catch { $("seOut").select(); document.execCommand("copy"); toast("已复制（剪贴板 API 不可用，走了选中复制）"); }
 };
+$("seToScoreSing").onclick = () => sendTextToTab($("seOut").value, "abc", "scoreSing", "加工结果谱", "⑤ 的 ABC 谱框");
 $("seSave").onclick = () => {
   if (!$("seSrc").value.trim()) { toast("原谱是空的", "err"); return; }
   seRun({ save: true });
@@ -8958,7 +9139,7 @@ let sysCache = null;
    分 4 组（端口 / 目录 / 存储与显存 / 引擎），每组一个 .kv-group + 小标题，
    再让分组本身走多列流式排布 —— 高度腰斩，且"我要看什么"变成了"我去哪一组找"。 */
 const SYS_GROUPS = [
-  { key: "port",  title: "端口与版本", match: (k) => /^(version|ports\.|gateway$|read_only|gateway_kernel\.)/.test(k) },
+  { key: "port",  title: "端口与版本", match: (k) => /^(version|ports\.|gateway$|read_only|gateway_kernel\.|security\.)/.test(k) },
   { key: "path",  title: "目录",       match: (k) => /^paths\./.test(k) },
   { key: "disk",  title: "存储与显存", match: (k) => /^(disk\.|gpu\.|backend$)/.test(k) },
   { key: "eng",   title: "引擎与模型", match: (k) => /^(engines\.|audiocpp$)/.test(k) },
@@ -8973,6 +9154,8 @@ const SYS_LABEL = {
   // 能力也不同（pyd 不做字段白名单/丢键日志），所以必须能在⑬看见（issue #4-7）
   "gateway_kernel.kind": "网关内核", "gateway_kernel.path": "内核位置",
   "gateway_kernel.note": "内核说明",
+  "security.lan_mode": "局域网模式", "security.direct_access_token": "直连令牌",
+  "security.loopback_exempt": "回环免令牌",
   // 后三个是 /api/system/info 缺席时退回 /api/health 用的裸键
   gateway: "网关", backend: "引擎模式", audiocpp: "音频引擎",
   "ports.gateway": "网关端口", "ports.dsh": "局域网入口 (dsh)", "ports.audiocpp": "引擎端口",
@@ -8998,6 +9181,8 @@ function fmtSysVal(k, v) {
   //   但通用规则会打成"⛔ 否"，一眼看过去像出了故障（实测 ⑬ 就这一行红着，
   //   而同一屏的显存空闲 5.1GB 明明是查成功才有数）。这类键直接说结论。
   if (typeof v === "boolean" && /_failed$/.test(k)) return v ? "⛔ 失败" : "✅ 正常";
+  // 安全项里 false 多半是“没开启”而不是故障，别用红叉吓人
+  if (typeof v === "boolean" && /^security\./.test(k)) return v ? "✅ 开启" : "— 未开启";
   if (typeof v === "boolean") return v ? "✅ 是" : "⛔ 否";
   if (typeof v === "number" && /_mb$/.test(k)) return v >= 1024 ? (v / 1024).toFixed(1) + " GB" : v + " MB";
   return String(v);
@@ -9956,6 +10141,9 @@ function applyConfig(c) {
     if (saved) {
       const c = JSON.parse(saved);
       if (c && (c.style || c.lyrics)) applyConfig(c);
+      // applyConfig 是直写 value、不派发事件的：档位高亮靠 cot/steps 的 change/input
+      // 事件同步，不补这一句，恢复出 full/32 的表单高亮却还停在「草稿」上。
+      syncGenPresetFromFields();
     }
   } catch (e) { console.warn("恢复上次表单失败：", e); }
   // 自动保存：内容变化即写 localStorage（防抖 400ms），iframe 销毁前兜底再存一次

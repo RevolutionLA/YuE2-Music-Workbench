@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "groups": ["创作", "声音", "系统", "工具"],
+  "pages": [
+    {"id": "style",     "no": "①", "label": "Style 设计",                 "group": "创作", "dsh": true},
+    {"id": "sing",      "no": "②", "label": "歌词+style生成歌曲",         "group": "创作", "dsh": true},
+    {"id": "score",     "no": "③", "label": "参考歌曲提取乐谱",           "group": "创作", "dsh": true},
+    {"id": "scoreEdit", "no": "④", "label": "乐谱加工",                   "group": "创作", "dsh": true},
+    {"id": "scoreSing", "no": "⑤", "label": "歌词+style+乐谱生成歌曲",    "group": "创作", "dsh": true},
+    {"id": "ailab",     "no": "⑥", "label": "歌词曲风 AI 工作台",         "group": "创作", "dsh": false},
+    {"id": "train",     "no": "⑦", "label": "音色制作",                   "group": "声音", "dsh": true},
+    {"id": "voices",    "no": "⑧", "label": "音色库",                     "group": "声音", "dsh": true},
+    {"id": "convert",   "no": "⑨", "label": "歌曲换声",                   "group": "声音", "dsh": true},
+    {"id": "sep",       "no": "⑩", "label": "人声伴奏分离",               "group": "声音", "dsh": true},
+    {"id": "history",   "no": "⑪", "label": "任务管理",                   "group": "系统", "dsh": true},
+    {"id": "settings",  "no": "⑫", "label": "设置",                       "group": "系统", "dsh": true},
+    {"id": "about",     "no": "⑬", "label": "关于",                       "group": "系统", "dsh": true},
+    {"id": "lrc",       "no": "⑭", "label": "歌词时间轴",                 "group": "工具", "dsh": true}
+  ],
+  "legacy": {
+    "compose": "sing",
+    "rvc": "convert",
+    "rvcTrain": "train",
+    "voice": "voices"
+  }
+}
