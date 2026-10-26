@@ -2165,7 +2165,7 @@ We will sing beyond the night</textarea>
   <section class="panel-tab" id="tab-scoreEdit" style="display:none;">
     <div class="page-head">
       <h1 class="page-title">乐谱加工</h1>
-      <p class="page-sub">把一份乐谱移调、换大调小调、调速度——全部是符号运算，不跑模型，改完即时出结果。</p>
+      <p class="page-sub">把一份乐谱移调、换大调小调、调速度——全部是符号运算，不跑模型，改完即时出结果。改的是谱面本身，不改歌手的声区。</p>
     </div>
     <div class="grid compose">
 
@@ -2209,7 +2209,9 @@ We will sing beyond the night</textarea>
             <div><label for="seTransRange">拖一下听感差别</label><input id="seTransRange" type="range" min="-12" max="12" step="1" value="0" /></div>
           </div>
           <div class="chips" id="seTransChips"></div>
-          <div class="hint-xs" style="margin-top:4px;">正数升高、负数降低。常见用法：女声谱给男声唱降 5~7 半音，男声谱给女声唱升 5~7；差一个八度用 ±12。</div>
+          <div class="hint-xs" style="margin-top:4px;">正数升高、负数降低，改的是<b>调性</b>：<code>K:</code> 行和每个音一起走。
+            <b>它管不了歌手唱多高</b>——实测同一份谱换个随机种子，引擎自己就能高或低整整一个八度。
+            要换男女声 / 换音区请走 ⑨ 歌曲换声；移调用来把整首歌挪到好唱、好配器的调。</div>
 
           <div class="sec" style="margin-top:18px;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.6v10.8M4.5 5.4h7M4.5 10.6h7"/></svg>② 大小调</div>
           <label for="seMode" style="margin-top:0;">调式操作</label>
@@ -8909,13 +8911,13 @@ function paintScoreModeTag() {
 // 这一页没有任务、没有进度、没有 GPU：改一个参数就打一次 /api/abc/edit，同步返回新谱。
 // 所以"预览"和"结果"是同一个东西——右边的参数就是全部输入，左边只负责显示与带走。
 const SE_TRANS_CHIPS = [
-  ["−12", -12, "降一个八度"],
-  ["−7", -7, "女声谱给男声：低五度"],
-  ["−5", -5, "女声谱给男声：低四度"],
+  ["−12", -12, "降 12 半音：谱面整体下移一个八度"],
+  ["−7", -7, "降 7 半音：五度圈后退一格（如 D → G）"],
+  ["−5", -5, "降 5 半音：纯四度（如 D → A）"],
   ["0", 0, "不改音高"],
-  ["+5", 5, "男声谱给女声：高四度"],
-  ["+7", 7, "男声谱给女声：高五度"],
-  ["+12", 12, "升一个八度"],
+  ["+5", 5, "升 5 半音：纯四度（如 D → G）"],
+  ["+7", 7, "升 7 半音：纯五度（如 D → A）"],
+  ["+12", 12, "升 12 半音：谱面整体上移一个八度"],
 ];
 let seTimer = null, seResult = null, seScoreId = null, seBusy = false;
 function sePaintChips() {

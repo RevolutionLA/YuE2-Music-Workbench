@@ -331,11 +331,12 @@ py312\python.exe scripts\download_models.py --q8     :: q8_0（约4GB，质量�
 | `audiocpp.py` | 内核运行期真正依赖的推理引擎适配层（可改，改引擎调用参数在这里） |
 | `src/lrc_align.py` | 歌词强制对齐引擎（字/词级时间戳 → LRC + 增强 ELRC 卡拉OK逐字高亮） |
 | `src/ports.py` | 端口唯一真源（ports.json 读取 + 环境变量覆盖 + 缺失回退） |
+| `src/abc_compare.py` | 谱面比对量具：调性平移（模 12）/ 逐音 DTW 贴合 / 旋律五音组重合。**只做事后度量**，不参与生成；与 `abc_edit` 共用同一套 ABC 语义，盲区写在模块文档与测试里 |
 | `ports.json` | 服务端口配置（改端口只改这一处） |
 | `web/` | **前端源文件**：`index.html` 模板 + `app.css` + `app.js`；改完运行 `scripts/build_ui.py` 生成 `static/index.html` |
 | `static/` | 工作台前端**生成物**（14 个页面，明暗双主题，单文件自包含，网关不依赖 StaticFiles） |
 | `dsh-plugin/` | 曾经是 UI 入口与鉴权宿主；v10.14 起入口已收回 7863，这一坨只剩局域网兼容与历史包袱，正在摘除 |
-| `scripts/` | 启动/停止/一键补齐运行件/模型下载（单连接与多路分块两条）/dsh 工作台启动脚本、ASR 与降噪辅助 |
+| `scripts/` | 启动/停止/一键补齐运行件/模型下载（单连接与多路分块两条）/dsh 工作台启动脚本、ASR 与降噪辅助、14 页浏览器巡检（`ui_sweep.js`）、往返回归实验（`roundtrip_eval.py`：识别→加工→生成→再识别→比对，需引擎，缺件自动跳过、`--report` 只重算不烧 GPU） |
 | `watchdog.py` | 看门狗（网关 + 工作台双进程假死自愈，无窗口静默运行） |
 | `cpp/` | YuE2 GGUF 推理引擎（`audiocpp_server.exe` + `server.json`）与模型目录；**引擎与模型都不入库**，GGUF 模型可用 `scripts/download_models.py` 自动下载 |
 | `checkpoints/` | SheetSage2 乐谱提取（含上游许可；纯旋律谱 / 旋律+和弦完整谱两档） |

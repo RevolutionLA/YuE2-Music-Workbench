@@ -661,6 +661,31 @@ class ScoreEditKeyMode(unittest.TestCase):
                 pass
         self.assertEqual(r.returncode, 0, "调式识别与后端不一致：\n" + (r.stdout or ""))
 
+class ScoreEditTransposeCopy(unittest.TestCase):
+    """④ 移调区的文案必须与实际行为一致。
+
+    曾经的写法是"女声谱给男声降 5~7、男声谱给女声升 5~7、差一个八度用 ±12"——
+    听起来专业，但实测（scripts/roundtrip_eval.py）证明**移调改的是调性，管不了声区**：
+    同一份谱换个随机种子，引擎自己就能高或低一个八度。照那句文案去用，用户会得到
+    "谱确实升八度了、唱出来还是那个高度"，然后以为加工坏了。所以把文案钉在这里。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.src = read(INDEX)
+
+    def test_says_transpose_does_not_move_register(self):
+        self.assertIn("管不了歌手唱多高", self.src)
+        self.assertIn("⑨ 歌曲换声", self.src, "必须给出正确的换声区出口（RVC），否则用户没地方去")
+
+    def test_old_misleading_advice_is_gone(self):
+        for phrase in ("差一个八度用 ±12", "女声谱给男声", "男声谱给女声"):
+            self.assertNotIn(phrase, self.src, f"这句会让用户把移调当换声区用：{phrase}")
+
+    def test_chip_tips_describe_music_not_gender(self):
+        for tip in ("谱面整体上移一个八度", "谱面整体下移一个八度", "纯五度", "纯四度"):
+            self.assertIn(tip, self.src, f"移调档位提示缺失：{tip}")
+
 
 if __name__ == "__main__":
     unittest.main()
