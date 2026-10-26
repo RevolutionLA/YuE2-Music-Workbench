@@ -309,5 +309,46 @@ class TestRvcBootResume(RvcQueuePersistBase):
         self.assertIsNone(self._output_meta(rid), "cancelled 不是错误，不该凭空多出一条失败记录")
 
 
+class TestRvcQueueStateResilience(RvcQueuePersistBase):
+    """issue #9 验收第 3 条：损坏单条记录不影响其他任务读取，并且要留下可诊断的错误。"""
+
+    def test_corrupt_file_is_moved_aside_with_warning(self):
+        app._RVC_QUEUE_STATE.parent.mkdir(parents=True, exist_ok=True)
+        app._RVC_QUEUE_STATE.write_text("{这不是 JSON", encoding="utf-8")
+
+        with self.assertLogs("fireredtts3_gateway", level="WARNING") as logs:
+            state = app._rvc_state_read()
+        self.assertEqual(state, {"items": []})
+        self.assertTrue(any("损坏" in m for m in logs.output), "整份文件损坏必须留下可诊断的日志")
+
+        leftovers = list(app._RVC_QUEUE_STATE.parent.glob("queue_state.corrupt-*.json"))
+        self.assertEqual(len(leftovers), 1, "损坏文件要另存留证，不能被下一次落盘悄悄覆盖")
+        self.assertEqual(leftovers[0].read_text(encoding="utf-8"), "{这不是 JSON")
+
+        # 清空之后照常能写：不能让一次损坏卡死后续所有提交
+        app._rvc_state_upsert({"id": "20260101_120000_deadbeef", "status": "pending", "job": {}})
+        self.assertIsNotNone(self._state_get("20260101_120000_deadbeef"))
+
+    def test_malformed_items_are_skipped_others_survive(self):
+        rid = "20260101_120001_aaaaaaaa"
+        job = self._make_job(rid)
+        app._RVC_QUEUE_STATE.parent.mkdir(parents=True, exist_ok=True)
+        app._RVC_QUEUE_STATE.write_text(json.dumps({"items": [
+            {"id": rid, "status": "pending", "job": job},
+            "一条字符串",
+            {"no_id": True},
+            None,
+        ]}, ensure_ascii=False), encoding="utf-8")
+
+        with self.assertLogs("fireredtts3_gateway", level="WARNING") as logs:
+            result = app._rvc_boot_resume()
+        self.assertTrue(any("结构不合法" in m for m in logs.output))
+        self.assertEqual(result["restored"], 1, "坏记录不许连坐同一文件里的好记录")
+        self.assertTrue(self.entered.wait(5), "好记录必须真的被重新排回队列")
+        self.assertEqual(self.worker_calls, [rid])
+        # 恢复结束时会把"只有合法条目"的状态写回文件，畸形记录不会一直挂在里面
+        self.assertEqual([it.get("id") for it in self._state_items()], [rid])
+
+
 if __name__ == "__main__":
     unittest.main()

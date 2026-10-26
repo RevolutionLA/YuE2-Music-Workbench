@@ -4115,9 +4115,31 @@ _RVC_STATE_LOCK = threading.Lock()
 
 def _rvc_state_read() -> dict:
     try:
-        return json.loads(_RVC_QUEUE_STATE.read_text(encoding="utf-8"))
-    except Exception:
+        state = json.loads(_RVC_QUEUE_STATE.read_text(encoding="utf-8"))
+        items = state.get("items") if isinstance(state, dict) else None
+        if not isinstance(items, list):
+            raise ValueError("items 不是列表")
+    except FileNotFoundError:
         return {"items": []}
+    except Exception as exc:
+        # 整份文件损坏（原子写不会自己坏，多半是手改/磁盘问题）：另存留证再清空。
+        # 直接把空队列写回去会悄悄覆盖现场，用户永远查不到"任务为什么没了"。
+        bad = _RVC_QUEUE_STATE.with_name(
+            f"queue_state.corrupt-{datetime.now():%Y%m%d_%H%M%S}.json")
+        try:
+            _RVC_QUEUE_STATE.replace(bad)
+            logger.warning("换声队列文件损坏（%s），原文件另存为 %s，本次按空队列启动",
+                           exc, bad.name)
+        except OSError:
+            logger.warning("换声队列文件损坏（%s），且无法另存留证，本次按空队列启动", exc)
+        return {"items": []}
+    # 单条畸形记录（缺 id、不是对象）跳过即可，不能连坐同一文件里的好记录
+    kept = [it for it in items
+            if isinstance(it, dict) and isinstance(it.get("id"), str) and it.get("id")]
+    if len(kept) != len(items):
+        logger.warning("换声队列文件里有 %d 条记录结构不合法，已跳过（其余 %d 条照常处理）",
+                       len(items) - len(kept), len(kept))
+    return {"items": kept}
 
 
 def _rvc_state_write(state: dict) -> None:
