@@ -17,11 +17,15 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install ruff
-        run: python -m pip install --upgrade pip ruff
+        run: python -m pip install --upgrade pip ruff pytest
       # 前端源文件（web/）与生成物（static/index.html）必须逐字节同步；
       # 只想改界面却直接改生成物的提交会在这里被拦下。
       - name: UI sources in sync
         run: python scripts/build_ui.py --check
+      # app.py 只许变小（issue #10/#11）：新代码进 src/；确需变大要在同一笔提交里
+      # 调高 BUDGETS 并写明理由。硬门禁——放在 lint job，不依赖任何运行件。
+      - name: app.py 拆分止损门
+        run: python -m pytest tests/test_app_budget.py -q
       # 发布卫生：干净 checkout 上必须没有 pyd / 真实密钥 / 模型权重 / 运行件被跟踪。
       - name: release hygiene
         run: python scripts/check_release_hygiene.py --release
