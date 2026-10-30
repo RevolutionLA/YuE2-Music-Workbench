@@ -1,0 +1,72 @@
+{
+  "label": "v10.30.0",
+  "run_at": "2026-10-31T03:32:24",
+  "commit": "f6ad37e",
+  "gateway_version": "v10.30.0",
+  "gateway_kernel": "shim",
+  "base_url": "http://127.0.0.1:7863",
+  "set": "v1",
+  "quality": "draft（off/8）",
+  "groups": [
+    {
+      "id": "zh_pop",
+      "title": "中文流行",
+      "rid": "20261031_015442_900712cf",
+      "seed": 101001,
+      "cot": "off",
+      "steps": 8,
+      "cfg_scale": 1.0,
+      "status": "done",
+      "seconds": 374.4,
+      "error": "",
+      "output": "bench/output/v10.30.0/zh_pop.wav",
+      "bytes": 16926508,
+      "sha256": "75ed955a3686a4dbb2ac34066c93259ce813e73071f9f0f4cc5ab181cd82f013"
+    },
+    {
+      "id": "en_pop",
+      "title": "英文流行",
+      "rid": "20261031_015442_5c0e0996",
+      "seed": 202002,
+      "cot": "off",
+      "steps": 8,
+      "cfg_scale": 1.0,
+      "status": "done",
+      "seconds": 1327.3,
+      "error": "",
+      "output": "bench/output/v10.30.0/en_pop.wav",
+      "bytes": 17502508,
+      "sha256": "1013f680922dbbd6cf02cf2843f0199017bf7644d116f31537f450070dd17a28"
+    },
+    {
+      "id": "mixed_pop",
+      "title": "中英混",
+      "rid": "20261031_015442_e362f14f",
+      "seed": 303003,
+      "cot": "off",
+      "steps": 8,
+      "cfg_scale": 1.0,
+      "status": "done",
+      "seconds": 794.2,
+      "error": "",
+      "output": "bench/output/v10.30.0/mixed_pop.wav",
+      "bytes": 10966828,
+      "sha256": "c523d002bca486a3fd285cbc2fcaabdca808164cfb8700b3c1b3768638bf6dec"
+    },
+    {
+      "id": "instrumental",
+      "title": "纯音乐",
+      "rid": "20261031_015442_42b77b12",
+      "seed": 404004,
+      "cot": "off",
+      "steps": 8,
+      "cfg_scale": 1.0,
+      "status": "done",
+      "seconds": 2869.8,
+      "error": "",
+      "output": "bench/output/v10.30.0/instrumental.wav",
+      "bytes": 35274028,
+      "sha256": "05ba77cac23aef414472a2b9ff429cc64d32b2d5ba03c4a531420284b1944a17"
+    }
+  ]
+}

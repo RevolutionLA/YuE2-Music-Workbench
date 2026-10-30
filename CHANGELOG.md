@@ -9,6 +9,40 @@
 版本的唯一真源是 git 的**附注标签**（`git tag -l -n`），本文件是给人看的说明；
 宣传文案里要写的版本号从本文件顶部条目取，不在别处另记一份数字（`app.py:_version_from_changelog()` 读本文件首条）。
 
+## [v10.30.0] - 2026-10-30
+
+### 修复：跑过歌词对齐后，生成被误判成"测试环境"而 503
+
+- **现象**：网关先做一次 ⑭ 歌词对齐（加载 FunASR/modelscope），之后每首歌都生成失败，
+  报「测试环境禁止真生成：mock main.generate_response，或显式设 YUE2_ALLOW_REAL_ENGINE=1」，
+  重启网关才恢复。2026-10-30 跑基准时 4 组里第 1 组成功、后 3 组全挂，现场就是这个。
+- **根因**：`_in_test_runner()` 用 `"unittest" in sys.modules` 判断"这是测试进程"；
+  而 `numpy.testing` / `transformers` 这类库一加载就会把 `unittest` 顺手导进
+  `sys.modules`——ASR 链路一跑，长期运行的网关就被永久判成测试进程。
+- **修法**：只认"进程是怎么启动的"——`YUE2_TESTING=1`、`PYTEST_CURRENT_TEST`、
+  或 `__main__` 的模块名是 `unittest.__main__` / `pytest.__main__`；库再 import 什么都不影响。
+  新增 3 条用例：numpy.testing 导入后仍判非测试进程、unittest/pytest 启动方式仍能识别。
+
+### 生成质量基准：让「每版不退步」第一次可回答（issue #12）
+
+- `bench/prompts.yaml`：5 组固定样本（中文流行 / 英文 / 中英混 / 纯音乐 / 翻唱），
+  style、歌词、seed、档位全部写死，永不修改；档位固定 draft（off/8），4 组约 10 分钟——
+  基准必须便宜到每版都跑得起。
+- `bench/run_bench.py`：走现有批量队列提交（固定 seed/步数/cfg），轮询到终态后归档到
+  `bench/output/<版本>/`，并写 `bench/results/<版本>.json`（参数、sha256、耗时、状态）；
+  跑完默认清理工作台历史里的本次条目，不污染曲库；`--dry-run` 不联网不占卡。
+- `docs/BENCHMARK.md`：怎么跑、成本、打分口径（人声清晰度 / 音乐协调性，固定同一人
+  同一时机）、历史对比表。
+- 发版约定：涉及生成路径的版本发布前跑一次基准，分数表进 CHANGELOG。
+- 首张基线表在 `docs/BENCHMARK.md`（v10.30.0 代码 × draft，4 组，音频在
+  `bench/output/v10.30.0/`，清单 `bench/results/v10.30.0.json` 带 sha256）；翻唱组要一段
+  永久固定的参考音频（`bench/assets/cover_ref.wav`），素材到位前保持 `enabled: false`。
+- **实测成本**：4 组共约 90 分钟（6 / 22 / 13 / 48 分钟）。纯音乐组 AR 生成了 4,593 个
+  token（其余组 1,428–2,279），是最贵的一组——立项时"10 分钟跑完"的估计过于乐观，
+  日常小改用 `--only zh_pop,mixed_pop`（约 20 分钟）。
+- 新增 `tests/test_bench.py` 11 条离线用例（样例集结构、dry-run、归档与清单、
+  `--archive-only`），不占卡。全量回归 **984 通过 / 1 跳过**。
+
 ## [v10.27.1] - 2026-10-27
 
 ### 工程规矩：app.py 立拆分止损线（issue #10 / #11）

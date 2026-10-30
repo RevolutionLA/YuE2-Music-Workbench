@@ -463,13 +463,19 @@ async def music_generate(request: Request) -> Response:
 
 
 def _in_test_runner() -> bool:
-    """当前进程是不是测试收集器（unittest/pytest）。
+    """当前进程是不是测试收集器本身（unittest/pytest）。
 
-    沙箱（tests/_sandbox.py）正常情况下会先设 YUE2_NO_ENGINE_AUTOSTART=1；
-    这里再按 sys.modules 兜底一层：就算有人用旧命令跑 discover，也不会拉起引擎。
+    只认"进程是怎么启动的"，不认 sys.modules 里有没有 unittest：numpy.testing /
+    transformers 这类库一加载就会把它顺手导进来，网关跑过一次 ⑭ 歌词对齐（FunASR）
+    之后再生成，就会被误判成测试进程而 503——2026-10-30 的基准实测踩到过。
+    项目自己的测试由 tests/conftest.py 设 YUE2_TESTING=1 兜底；这里只补
+    `python -m unittest` / `python -m pytest` 两种启动方式的识别。
     """
-    return ("unittest" in sys.modules or "pytest" in sys.modules
-            or bool(os.environ.get("PYTEST_CURRENT_TEST")))
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+    name = str(getattr(spec, "name", "") or "")
+    return name in ("unittest.__main__", "pytest.__main__", "py.test")
 
 
 async def generate_response(payload: dict) -> Response:

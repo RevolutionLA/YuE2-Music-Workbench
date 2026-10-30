@@ -1,0 +1,107 @@
+# 生成质量基准 · 固定样本集（issue #12）
+#
+# 规矩：写进来就永不改 —— 改了就没有历史可比性。要加样本，另开一份 prompts-*.yaml。
+# 档位固定 draft（off / 8 步）：5 首约 10 分钟，保证"每版都跑得起"。
+# 固定 seed 是唯一的可复现抓手：模型输出仍有随机性，但同 seed 同参数下版本间可比。
+#
+# 变量说明：
+#   seed   固定整数，永不改
+#   cot    固定 off（基准不带谱；melody 只用于翻唱组）
+#   steps  固定 8
+#   cfg_scale 固定 1.0
+#   enabled=false 的组不进基准，原因写在 reason 里
+
+set: v1
+
+groups:
+  - id: zh_pop
+    title: 中文流行
+    enabled: true
+    seed: 101001
+    cot: "off"
+    steps: 8
+    cfg_scale: 1.0
+    style: "Mandarin pop, warm piano and strings, 82 BPM, female vocal, intimate close-mic, gentle build"
+    lyrics: |
+      [Verse]
+      窗外的雨下得很慢
+      你说要走就别回头看
+      我把伞收在门边
+      等一句也许不会来的晚安
+      [Chorus]
+      我把灯留到最后一班
+      等一句你从没说的晚安
+      雨停以后街口很暗
+      我还是把那把伞撑开
+
+  - id: en_pop
+    title: 英文流行
+    enabled: true
+    seed: 202002
+    cot: "off"
+    steps: 8
+    cfg_scale: 1.0
+    style: "English acoustic pop, fingerpicked guitar, soft brush drums, 90 BPM, male vocal, dry intimate mix"
+    lyrics: |
+      [Verse]
+      the kettle hums on the counter
+      your coat is still by the door
+      I count the cracks in the ceiling
+      like I never did before
+      [Chorus]
+      I keep the porch light on
+      like a promise I can't let go
+      if you ever come back home
+      you'll know which way to go
+
+  - id: mixed_pop
+    title: 中英混
+    enabled: true
+    seed: 303003
+    cot: "off"
+    steps: 8
+    cfg_scale: 1.0
+    style: "bilingual Mandarin-English pop, synth pads and electric piano, 96 BPM, duet vocal, city night mood"
+    lyrics: |
+      [Verse]
+      City lights on the river, 我们并肩走
+      你说 future 太远，先看今晚的月
+      [Chorus]
+      Stay with me 再一分钟
+      把心跳留给这一夜
+      Stay with me 别急着走
+      天亮之前都算我们的
+
+  - id: instrumental
+    title: 纯音乐
+    enabled: true
+    seed: 404004
+    cot: "off"
+    steps: 8
+    cfg_scale: 1.0
+    style: "Chinese traditional instrumental, guzheng and dizi, 72 BPM, no vocals, natural room reverb"
+    lyrics: |
+      [Intro]
+      [Instrumental]
+      [Outro]
+
+  # 翻唱组要"参考音频 → 乐谱 → 按谱生成"整条链，基准里必须是一段永久固定的素材。
+  # 选一段你有权使用的 30–60 秒音频，放到 asset 指向的位置，再把 enabled 改成 true。
+  - id: cover
+    title: 翻唱（参考音频 → 乐谱 → 按谱生成）
+    enabled: false
+    reason: "缺固定参考音频：把有权使用的 30–60 秒音频放到 bench/assets/cover_ref.wav，再把 enabled 改成 true"
+    kind: cover
+    asset: bench/assets/cover_ref.wav
+    seed: 505005
+    cot: melody
+    steps: 8
+    cfg_scale: 1.0
+    style: "Mandarin pop, following the reference melody, clean band arrangement, 88 BPM"
+    lyrics: |
+      [Verse]
+      把那段旋律再唱一遍
+      让晚风替我们和声
+      [Chorus]
+      如果时间可以倒转
+      我还想站在同一个路口

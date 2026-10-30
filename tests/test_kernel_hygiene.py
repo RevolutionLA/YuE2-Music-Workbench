@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -81,6 +82,43 @@ class TestIsolation(unittest.TestCase):
             self.skipTest("引擎未部署，没有 sidecar")
         for path in sidecars:
             self.assertIn(path, _sandbox._snapshot)
+
+
+class TestRunnerDetectionDoesNotLeak(unittest.TestCase):
+    """判定"测试进程"只看启动方式；库顺手 import unittest 不能把它带偏。
+
+    2026-10-30 基准实测：网关跑完 ⑭ 歌词对齐（FunASR/modelscope）后，numpy.testing /
+    transformers 把 unittest 导进了 sys.modules，从那以后每次生成都 503
+    「测试环境禁止真生成」，直到重启网关。守卫必须只认进程启动方式。
+    """
+
+    def _fake_main(self, spec_name: str | None):
+        if spec_name is None:
+            return types.SimpleNamespace(__spec__=None)
+        return types.SimpleNamespace(__spec__=types.SimpleNamespace(name=spec_name))
+
+    def test_library_import_of_unittest_does_not_flip_guard(self):
+        import numpy.testing  # noqa: F401  —— 它确实会把 unittest 拉进 sys.modules
+        self.assertIn("unittest", sys.modules, "前提不成立：numpy.testing 没导入 unittest")
+        with mock.patch.dict(sys.modules, {"__main__": self._fake_main("app")}), \
+                mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PYTEST_CURRENT_TEST", None)
+            self.assertFalse(
+                app.main._in_test_runner(),
+                "库里顺手 import unittest 就把网关判成测试进程：用户跑过歌词对齐后生成会被 503",
+            )
+
+    def test_unittest_main_is_still_detected(self):
+        with mock.patch.dict(sys.modules, {"__main__": self._fake_main("unittest.__main__")}), \
+                mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PYTEST_CURRENT_TEST", None)
+            self.assertTrue(app.main._in_test_runner())
+
+    def test_pytest_main_is_still_detected(self):
+        with mock.patch.dict(sys.modules, {"__main__": self._fake_main("pytest.__main__")}), \
+                mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PYTEST_CURRENT_TEST", None)
+            self.assertTrue(app.main._in_test_runner())
 
 
 if __name__ == "__main__":

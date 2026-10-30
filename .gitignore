@@ -145,3 +145,10 @@ voices/
 # 本机部署现场（下载物证、依赖冻结清单等）不进仓库：里面没有产品代码，
 # 只是「这台机器当初怎么装起来的」的证据，别人重装用不上。
 deploy/
+
+# ===== 生成质量基准（issue #12）=====
+# 音频产物每首几十 MB，不入库；清单 bench/results/ 入 git 供历史对比。
+bench/output/
+bench/assets/*
+!bench/assets/.gitkeep
+!bench/results/
